@@ -9,6 +9,15 @@ squinting at two phones.
 Every criterion below is either **[verify]** — checked by `tohdr verify`, exit
 non-zero on failure — or **[manual]**, with the reason it cannot be automated.
 
+`tools/verify_gainmap.py` checks the container criteria **independently**, sharing
+no code with the Rust crates: it walks the boxes from raw bytes with stdlib
+`struct` and cross-checks the headroom against `exiftool`. `tohdr verify` uses
+our own reader, so a bug present in both our reader and our writer would sail
+through it; the Python checker exists to make that class of self-consistent error
+visible. Measured discrimination on the three reference files: IMG_4913 passes
+11/11 and exits 0; `DSC07752_iso` fails criteria 2, 5, 8, 10 and exits 1;
+`DSC07752` fails criterion 8 and exits 1.
+
 Reference values come from `docs/heic-gainmap-structure.md`, decoded byte by byte
 from the real files; the raw payloads are committed under `assets/fixtures/`.
 
@@ -22,7 +31,27 @@ rather than just the parts one broken file got wrong:
 | `auxC` boxes | 6 | 2 | **0** |
 | Apple gain-map URN | present | present | **absent** |
 | `tmap` item | present | **absent** | present |
-| MakerApple 33/48 | present, positive | present, **48 negative** | **absent** |
+| MakerApple tag count | 25 | 2 | 2 |
+| tag 48 `HDRGain` | `+0.0525` | **`-0.00812`** | **`-0.00812`** |
+| XMP `HDRGainMapHeadroom` | `4.880772` | `11.863581` | **absent** |
+| gain-map plane | half-res, 1 ch | full-res, 1 ch | full-res, **3 ch** |
+| gamma | `0.825684` | n/a (no ISO) | **`1.0`** |
+
+**The two broken files fail differently, and neither failure mode alone
+explains both.** `DSC07752` is a structurally valid *Apple* gain map — correct
+URN, correct `auxl`, single-channel plane — whose only measurable defect is the
+out-of-domain negative tag 48. `DSC07752_iso` is a valid *ISO* file whose defect
+is the 1.61-stop over-declaration (criterion 5), and which additionally lost the
+Apple URN, went full-res 3-channel, and reverted gamma to the UltraHDR nominal
+`1.0`. What they share is that both **mis-state the headroom**, via different
+fields. Hence criteria A and B are both enforced rather than picking a favorite.
+
+On that negative tag 48, precisely: Skia's arithmetic does invert it back to
+11.86x, so it is not self-inconsistent. The real problem is that 11.86x is
+3.568 stops, above the 3.0-stop ceiling Apple's tag formula can express at all —
+which is *why* it went negative. A decoder that clamps tag 48 at zero reads 8x
+instead, and one that validates its domain may reject it outright. Out-of-domain
+is a defect even when one implementation's algebra survives it.
 
 1. **[verify]** The base image is the primary item (`pitm`).
 2. **[verify]** The gain map is a separate image item, single-channel 8-bit
