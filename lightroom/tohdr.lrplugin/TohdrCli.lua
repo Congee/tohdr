@@ -1,0 +1,187 @@
+--[[----------------------------------------------------------------------
+
+TohdrCli.lua
+
+Pure-Lua logic for building the `tohdr convert` command line and locating
+the `tohdr` binary. Deliberately has ZERO `import 'LrXxx'` calls so it can
+be loaded and unit-tested with a stock `lua`/`luajit` interpreter outside
+Lightroom -- see tests/test_TohdrCli.lua. All filesystem/PATH/plugin-path
+access is pushed to the caller as plain values or injected functions.
+
+------------------------------------------------------------------------]]
+
+local M = {}
+
+-- ===========================================================================
+-- Shell quoting
+-- ===========================================================================
+
+--- Quote a single argument for POSIX `/bin/sh -c "..."` (what
+--- LrTasks.execute runs on macOS). Wrap in single quotes and escape any
+--- embedded single quote as '\'' (close quote, escaped quote, reopen quote).
+--- Single-quoting is chosen over double-quoting because inside single quotes
+--- *nothing* is special -- no `$`, `` ` ``, `\`, or `"` expansion -- which is
+--- exactly what a photo path (spaces, unicode, even literal `$` or `` ` ``)
+--- needs.
+function M.quoteArg(s)
+	assert(type(s) == "string", "quoteArg: expected a string")
+	return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
+--- Build a full shell command line from a binary path and an array of plain
+--- (unquoted) argument strings. Every element is quoted independently.
+function M.buildCommandLine(binaryPath, args)
+	local parts = { M.quoteArg(binaryPath) }
+	for _, a in ipairs(args) do
+		table.insert(parts, M.quoteArg(tostring(a)))
+	end
+	return table.concat(parts, " ")
+end
+
+-- ===========================================================================
+-- `tohdr convert` argument construction
+-- ===========================================================================
+
+--- Recognized flavor/engine/tone-map values, kept in one place so the
+--- dialog's combo-box choices and the args we emit can't drift apart. Must
+--- match crates/tohdr-cli/src/cli.rs's parse_flavor / EngineKind::parse /
+--- parse_tone_map.
+M.FLAVORS = { "apple", "iso", "both" }
+M.ENGINES = { "apple", "portable" }
+M.TONE_MAPS = { "clip", "reinhard" }
+
+local function isNonEmpty(v)
+	return v ~= nil and v ~= ""
+end
+
+--- Build the argument array (unquoted plain strings) for
+--- `tohdr convert <input> --output <output> [...]` from export settings.
+---
+--- `settings` fields consumed (all optional except flavor/engine/quality/
+--- minQuality/toneMap, which the dialog always sets a default for):
+---   tohdr_flavor        "apple" | "iso" | "both"
+---   tohdr_engine        "apple" | "portable"
+---   tohdr_maxSizeEnabled boolean
+---   tohdr_maxSizeValue  number, e.g. 4
+---   tohdr_maxSizeUnit   "MB" | "MiB"
+---   tohdr_quality       number 1..100
+---   tohdr_minQuality    number 1..100
+---   tohdr_toneMap       "clip" | "reinhard"
+---   tohdr_gainSubsample number (optional; omitted -> CLI default of 2)
+---   tohdr_headroom      number (optional; omitted -> CLI auto-derives it)
+function M.buildConvertArgs(settings, inputPath, outputPath)
+	assert(isNonEmpty(inputPath), "buildConvertArgs: inputPath is required")
+	assert(isNonEmpty(outputPath), "buildConvertArgs: outputPath is required")
+
+	local args = { "convert", inputPath, "--output", outputPath }
+
+	if isNonEmpty(settings.tohdr_flavor) then
+		table.insert(args, "--flavor")
+		table.insert(args, settings.tohdr_flavor)
+	end
+
+	if isNonEmpty(settings.tohdr_engine) then
+		table.insert(args, "--engine")
+		table.insert(args, settings.tohdr_engine)
+	end
+
+	if settings.tohdr_maxSizeEnabled and settings.tohdr_maxSizeValue then
+		local unit = isNonEmpty(settings.tohdr_maxSizeUnit) and settings.tohdr_maxSizeUnit or "MB"
+		table.insert(args, "--max-size")
+		table.insert(args, tostring(settings.tohdr_maxSizeValue) .. unit)
+	end
+
+	if settings.tohdr_quality then
+		table.insert(args, "--quality")
+		table.insert(args, tostring(settings.tohdr_quality))
+	end
+
+	if settings.tohdr_minQuality then
+		table.insert(args, "--min-quality")
+		table.insert(args, tostring(settings.tohdr_minQuality))
+	end
+
+	if isNonEmpty(settings.tohdr_toneMap) then
+		table.insert(args, "--tone-map")
+		table.insert(args, settings.tohdr_toneMap)
+	end
+
+	if settings.tohdr_gainSubsample then
+		table.insert(args, "--gain-subsample")
+		table.insert(args, tostring(settings.tohdr_gainSubsample))
+	end
+
+	if settings.tohdr_headroom then
+		table.insert(args, "--headroom")
+		table.insert(args, tostring(settings.tohdr_headroom))
+	end
+
+	table.insert(args, "--json")
+
+	return args
+end
+
+-- ===========================================================================
+-- Binary location
+-- ===========================================================================
+
+--- Split a PATH-style string (colon-separated) into a list of directories.
+--- Empty entries (leading/trailing/doubled colons, POSIX "current dir") are
+--- dropped -- we never want to silently execute a `tohdr` from cwd.
+function M.splitPath(pathEnv)
+	local dirs = {}
+	if not isNonEmpty(pathEnv) then
+		return dirs
+	end
+	for dir in pathEnv:gmatch("[^:]+") do
+		table.insert(dirs, dir)
+	end
+	return dirs
+end
+
+--- Decide which `tohdr` binary to run, in priority order:
+---   1. explicit user-configured path (settings dialog "Custom path")
+---   2. bundled binary next to the plugin (pluginBinaryPath)
+---   3. first match walking `pathDirs` (already-split PATH, each joined with
+---      "/tohdr" by the caller-supplied `joinPath`)
+---
+--- All existence checks go through the injected `fileExists(path) -> bool`
+--- so this function has no direct filesystem access and is fully testable
+--- with a fake.
+---
+--- Returns `path, nil` on success, or `nil, errorMessage` if nothing was
+--- found -- callers should show `errorMessage` to the user rather than
+--- fail silently.
+function M.locateBinary(opts)
+	local userPath = opts.userBinaryPath
+	local pluginBinaryPath = opts.pluginBinaryPath
+	local pathDirs = opts.pathDirs or {}
+	local fileExists = assert(opts.fileExists, "locateBinary: fileExists is required")
+	local joinPath = opts.joinPath or function(dir, name)
+		return dir .. "/" .. name
+	end
+	local binaryName = opts.binaryName or "tohdr"
+
+	if isNonEmpty(userPath) then
+		if fileExists(userPath) then
+			return userPath, nil
+		end
+		return nil, "The configured tohdr path does not exist: " .. userPath
+	end
+
+	if isNonEmpty(pluginBinaryPath) and fileExists(pluginBinaryPath) then
+		return pluginBinaryPath, nil
+	end
+
+	for _, dir in ipairs(pathDirs) do
+		local candidate = joinPath(dir, binaryName)
+		if fileExists(candidate) then
+			return candidate, nil
+		end
+	end
+
+	return nil, "Could not find the 'tohdr' binary. Bundle it next to the plugin, "
+		.. "put it on your PATH, or set a custom path in the export dialog."
+end
+
+return M

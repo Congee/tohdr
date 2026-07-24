@@ -1,6 +1,11 @@
 //! `tohdr bench`: compare the Apple and portable engines on one input —
-//! wall time and output size, same base/plane/metadata for both so the
-//! comparison is apples-to-apples (pun intended).
+//! wall time and output size.
+//!
+//! The source is loaded and the gain map derived **once**, and both engines
+//! encode those identical bytes. Letting each engine load the source itself
+//! would fold two different TIFF decoders into the measurement, so the
+//! numbers would no longer isolate the thing being compared. The load and
+//! derive cost is reported separately rather than hidden.
 
 use std::time::{Duration, Instant};
 
@@ -29,33 +34,24 @@ struct EngineResult {
 #[derive(Serialize, Debug)]
 struct BenchReport {
     input: String,
+    width: u32,
+    height: u32,
+    megapixels: f64,
+    /// One-time cost of decoding the source and deriving the gain map, shared
+    /// by both engines and therefore excluded from their per-engine timings.
+    load_and_derive_millis: f64,
     engines: Vec<EngineResult>,
 }
 
-fn bench_one(engine_kind: EngineKind, input: &std::path::Path, iterations: u32) -> EngineResult {
+fn bench_one(
+    engine_kind: EngineKind,
+    base: &tohdr_core::Rgb,
+    gain: &tohdr_core::GainPlane,
+    meta: &tohdr_core::GainMapMeta,
+    iterations: u32,
+) -> EngineResult {
     let engine = Engine::new(engine_kind);
     let name = engine.name().to_string();
-
-    let hdr = match engine.load_hdr(input) {
-        Ok(h) => h,
-        Err(e) => {
-            return EngineResult {
-                engine: name,
-                iterations_run: 0,
-                iterations_ok: 0,
-                mean_millis: None,
-                min_millis: None,
-                max_millis: None,
-                output_bytes: None,
-                error: Some(e.to_string()),
-            }
-        }
-    };
-
-    let white = hdr.peak_luma(PEAK_OUTLIER_FRACTION);
-    let tone_map = ToneMap::Reinhard { white };
-    let base = tone_map.to_sdr(&hdr);
-    let (gain, meta) = derive_consistent(&hdr, &base, &DeriveOptions::default());
     let opts = EncodeOptions::default();
 
     let mut durations = Vec::with_capacity(iterations as usize);
@@ -63,7 +59,7 @@ fn bench_one(engine_kind: EngineKind, input: &std::path::Path, iterations: u32) 
     let mut last_error = None;
     for _ in 0..iterations.max(1) {
         let start = Instant::now();
-        match engine.encode(&base, &gain, &meta, &opts) {
+        match engine.encode(base, gain, meta, &opts) {
             Ok(bytes) => {
                 durations.push(start.elapsed());
                 last_bytes = Some(bytes.len() as u64);
@@ -111,27 +107,54 @@ pub fn run(args: BenchArgs) -> anyhow::Result<i32> {
         None => vec![EngineKind::Apple, EngineKind::Portable],
     };
 
+    // Decode with the portable path specifically: it is the deterministic
+    // one, and using either engine's own decoder here would privilege that
+    // engine's notion of the input.
+    let prep = Instant::now();
+    let hdr = tohdr_portable::load_hdr(&args.input)
+        .map_err(|e| anyhow::anyhow!("loading {}: {e}", args.input.display()))?;
+    let white = hdr.peak_luma(PEAK_OUTLIER_FRACTION);
+    let base = ToneMap::Reinhard { white }.to_sdr(&hdr);
+    let (gain, meta) = derive_consistent(&hdr, &base, &DeriveOptions::default());
+    let load_and_derive_millis = prep.elapsed().as_secs_f64() * 1000.0;
+    eprintln!(
+        "tohdr: {}x{} source, load+derive {:.1}ms (shared by both engines)",
+        hdr.width, hdr.height, load_and_derive_millis
+    );
+
     let mut results = Vec::new();
     for kind in kinds {
         eprintln!("tohdr: benchmarking {kind} ({} iterations)", args.iterations);
-        results.push(bench_one(kind, &args.input, args.iterations));
+        results.push(bench_one(kind, &base, &gain, &meta, args.iterations));
     }
 
     let all_failed = results.iter().all(|r| r.iterations_ok == 0);
 
     let report = BenchReport {
         input: args.input.display().to_string(),
+        width: hdr.width,
+        height: hdr.height,
+        megapixels: (hdr.width as f64 * hdr.height as f64) / 1.0e6,
+        load_and_derive_millis,
         engines: results,
     };
 
     if args.json {
         println!("{}", serde_json::to_string(&report)?);
     } else {
-        println!("bench: {}", report.input);
+        println!(
+            "bench: {} ({}x{}, {:.2} MP)",
+            report.input, report.width, report.height, report.megapixels
+        );
+        println!(
+            "  shared load+derive: {:.2}ms (excluded from the per-engine numbers)",
+            report.load_and_derive_millis
+        );
         for r in &report.engines {
             match r.mean_millis {
                 Some(mean) => println!(
-                    "  {}: {}/{} ok, mean {:.2}ms (min {:.2}ms, max {:.2}ms), {} bytes",
+                    "  {}: {}/{} ok, mean {:.2}ms (min {:.2}ms, max {:.2}ms), \
+                     {} bytes, {:.1} MP/s",
                     r.engine,
                     r.iterations_ok,
                     r.iterations_run,
@@ -139,6 +162,7 @@ pub fn run(args: BenchArgs) -> anyhow::Result<i32> {
                     r.min_millis.unwrap_or(0.0),
                     r.max_millis.unwrap_or(0.0),
                     r.output_bytes.unwrap_or(0),
+                    report.megapixels / (mean / 1000.0),
                 ),
                 None => println!(
                     "  {}: 0/{} ok -- {}",
