@@ -107,6 +107,39 @@ This is a property of 1-channel gain maps, not of either encoder. The fix, if it
 matters for a given image, is a 3-channel map — permitted by ISO 21496-1 and
 already supported by our serializer (141-byte payload).
 
+## On a real photograph
+
+Everything above uses the synthetic source. The end-to-end run that matters most
+is the user's own capture, `IMG_4913.HEIC` (24.5 MP), decoded by ImageIO with
+its gain map applied, tone-mapped and re-derived by us, and re-encoded:
+
+```
+tohdr convert IMG_4913.HEIC -o real_apple.heic --engine apple --flavor both
+  -> 2,377,792 bytes, headroom 2.268 stops, 3.2 s wall clock
+```
+
+| | Apple's original | our re-derivation |
+|---|---|---|
+| image | 5712×4284 | 5712×4284 |
+| gain plane | 2856×2142 `L008` | 2856×2142 `L008` |
+| declared headroom | 2.287109 stops | 2.268141 stops |
+| `max_log2 == alt_headroom` | yes | yes |
+
+The headroom numbers agree to **0.019 stops (0.8%)** despite being produced by
+completely separate code — Apple's camera pipeline on one side, our
+`derive_consistent` on the other, from a decode of Apple's own reconstruction.
+The gain-plane geometry lands on exactly Apple's half-resolution convention.
+`tools/verify_gainmap.py`: 9 passed, 0 failed, exit 0; ImageIO reports both
+flavors present.
+
+Engine B cannot be run on this input directly — its pure-Rust decoders take
+TIFF/PNG/JPEG, not HEIC, and it reports that rather than guessing:
+
+```
+error: loading /…/IMG_4913.HEIC: unsupported extension Some("heic")
+       (want tif/tiff/png/jpg/jpeg)   [exit 1, no file written]
+```
+
 ## Caveats
 
 - One machine, one run per configuration. Means over 10 and 5 iterations
