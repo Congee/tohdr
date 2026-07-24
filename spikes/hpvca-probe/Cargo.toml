@@ -1,0 +1,12 @@
+[package]
+name = "hpvca-probe"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# Spike: does hpvca produce HEIC that Apple ImageIO actually accepts?
+# This gates Engine B (portable HEIC). Throwaway.
+
+[dependencies]
+hpvca.workspace = true

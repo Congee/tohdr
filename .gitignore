@@ -1,0 +1,7 @@
+/target
+/out
+*.heic
+*.HEIC
+*.jpg
+*.png
+!assets/**
