@@ -22,6 +22,7 @@ pub mod apple;
 pub mod derive;
 pub mod encode;
 pub mod hdr;
+pub mod xmp;
 pub mod iso21496;
 pub mod meta;
 

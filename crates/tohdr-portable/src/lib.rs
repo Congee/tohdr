@@ -117,7 +117,14 @@ impl GainMapEncoder for PortableEngine {
                 full_range: true,
             }),
             exif: None,
-            xmp: None,
+            // Apple writes the headroom three times and all three agree; a
+            // consumer reading the XMP copy rather than the tmap must not get
+            // a different number. Only emitted for flavors that claim Apple
+            // compatibility, since it is Apple's namespace.
+            xmp: opts
+                .flavor
+                .writes_apple()
+                .then(|| tohdr_core::xmp::headroom_packet(meta.alt_headroom)),
             clli: None,
         };
         Ok(tohdr_heif::mux(&req)?)
