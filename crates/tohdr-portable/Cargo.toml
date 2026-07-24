@@ -1,0 +1,12 @@
+[package]
+name = "tohdr-portable"
+version = "0.1.0"
+description = "Engine B: portable HEVC gain-map encode (hpvca) with our own HEIF muxer"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tohdr-core.workspace = true
+tohdr-heif.workspace = true
+hpvca.workspace = true

@@ -2,6 +2,10 @@
 resolver = "3"
 members = [
     "crates/tohdr-core",
+    "crates/tohdr-heif",
+    "crates/tohdr-apple",
+    "crates/tohdr-portable",
+    "crates/tohdr-cli",
     "spikes/hpvca-probe",
     "spikes/imageio-probe",
 ]
@@ -14,6 +18,20 @@ license = "Apache-2.0"
 [workspace.dependencies]
 hpvca = "0.1.12"
 tohdr-core = { path = "crates/tohdr-core" }
+tohdr-heif = { path = "crates/tohdr-heif" }
+tohdr-apple = { path = "crates/tohdr-apple" }
+tohdr-portable = { path = "crates/tohdr-portable" }
+
+# Apple framework FFI. Versions proven working by spikes/imageio-probe.
+objc2-image-io = { version = "0.3.2", features = [
+    "CGImageSource",
+    "CGImageDestination",
+    "CGImageProperties",
+    "CGImageMetadata",
+    "std",
+] }
+objc2-core-foundation = { version = "0.3.2", features = ["std"] }
+objc2-core-graphics = { version = "0.3.2", features = ["std"] }
 
 [profile.release]
 debug = 1

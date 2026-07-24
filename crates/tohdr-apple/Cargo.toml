@@ -1,0 +1,13 @@
+[package]
+name = "tohdr-apple"
+version = "0.1.0"
+description = "Engine A: HDR gain-map encode/decode through Apple ImageIO"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tohdr-core.workspace = true
+objc2-image-io.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true

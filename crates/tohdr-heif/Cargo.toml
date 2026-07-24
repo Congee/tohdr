@@ -1,0 +1,10 @@
+[package]
+name = "tohdr-heif"
+version = "0.1.0"
+description = "ISOBMFF/HEIF reader and gain-map muxer (tmap + Apple auxiliary image)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tohdr-core.workspace = true
