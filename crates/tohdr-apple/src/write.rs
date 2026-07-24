@@ -61,19 +61,32 @@ fn cf_dict(pairs: &[(&CFString, &CFType)]) -> CFRetained<CFDictionary> {
 /// a non-extended space here would clamp the headroom away before ImageIO ever
 /// sees it.
 fn cg_image_from_hdr(hdr: &HdrRgb) -> Result<CFRetained<CGImage>> {
-    let bytes: Vec<u8> = hdr.data.iter().flat_map(|v| v.to_ne_bytes()).collect();
+    // 4 components, not 3. CoreGraphics has no valid alpha-less 96 bpp RGB
+    // float layout; `CGImageCreate` accepts the arithmetic without complaint
+    // and then misreads the buffer. Measured on the same source: the 96 bpp
+    // variant decodes back to a base mean of 66.8/255 where every 128 bpp
+    // variant gives 161.4/255, and its file is 3x larger for identical
+    // content. The read side (`read::render`) already used 128 bpp.
+    let n = (hdr.width * hdr.height) as usize;
+    let mut samples: Vec<f32> = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        samples.extend_from_slice(&hdr.data[i * 3..i * 3 + 3]);
+        samples.push(1.0); // opaque; the skip channel is ignored on read
+    }
+    let bytes: Vec<u8> = samples.iter().flat_map(|v| v.to_ne_bytes()).collect();
     let data = CFData::from_bytes(&bytes);
     let provider = CGDataProvider::with_cf_data(Some(&data))
         .ok_or(Error::NullFromFramework("CGDataProviderCreateWithCFData"))?;
     let cs = unsafe { CGColorSpace::with_name(Some(kCGColorSpaceExtendedLinearSRGB)) }
         .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
 
-    // Float samples, no alpha, little-endian — spelled through the component
-    // and byte-order enums because the flat `CGBitmapInfo` aliases for these
-    // two bits are deprecated.
+    // Float samples, little-endian, 4th channel present but ignored. Spelled
+    // through the component and byte-order enums because the flat
+    // `CGBitmapInfo` aliases for those two bits are deprecated.
     let bitmap = CGBitmapInfo(
-        CGImageComponentInfo::Float.0 | CGImageByteOrderInfo::Order32Little.0
-            | CGImageAlphaInfo::None.0,
+        CGImageComponentInfo::Float.0
+            | CGImageByteOrderInfo::Order32Little.0
+            | CGImageAlphaInfo::NoneSkipLast.0,
     );
 
     unsafe {
@@ -81,8 +94,8 @@ fn cg_image_from_hdr(hdr: &HdrRgb) -> Result<CFRetained<CGImage>> {
             hdr.width as usize,
             hdr.height as usize,
             32,
-            96,
-            hdr.width as usize * 12,
+            128,
+            hdr.width as usize * 16,
             Some(&cs),
             bitmap,
             Some(&provider),

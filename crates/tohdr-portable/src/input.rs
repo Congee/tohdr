@@ -122,6 +122,41 @@ fn load_hdr_tiff_linear(img: DynamicImage) -> HdrRgb {
 /// as linear; that is the point of it being a separate public entry point.
 pub fn load_hdr_tiff_pq(path: &Path, reference_white_nits: f32) -> Result<HdrRgb> {
     let img = decode_any(path)?;
+    check_size(&img)?;
+    Ok(tiff_pq_from(img, reference_white_nits))
+}
+
+/// Largest image accepted, in pixels. `image`'s own decode limit bounds the
+/// buffer for the file's *original* format; our `to_rgb16`/`to_rgb32f`
+/// widening happens after that and is uncapped, so a 1-byte-per-pixel
+/// greyscale source that decodes inside the limit can still demand 6x that
+/// on conversion. A failed `Vec` growth aborts rather than panicking, which
+/// `panic_guard` cannot catch — so bound it here instead.
+const MAX_PIXELS: u64 = 512 * 1024 * 1024;
+
+fn check_size(img: &DynamicImage) -> Result<()> {
+    let (w, h) = (img.width() as u64, img.height() as u64);
+    let n = w.saturating_mul(h);
+    if n > MAX_PIXELS {
+        return Err(Error::UnsupportedInput(format!(
+            "{w}x{h} is {n} pixels, over the {MAX_PIXELS}-pixel limit"
+        )));
+    }
+    Ok(())
+}
+
+fn srgb_no_headroom(img: DynamicImage) -> HdrRgb {
+    let rgb8 = img.to_rgb8();
+    let (w, h) = (rgb8.width(), rgb8.height());
+    let data = rgb8
+        .pixels()
+        .flat_map(|p| p.0)
+        .map(|s| srgb_to_linear(s as f32 / 255.0))
+        .collect();
+    HdrRgb { width: w, height: h, data }
+}
+
+fn tiff_pq_from(img: DynamicImage, reference_white_nits: f32) -> HdrRgb {
     let rgb16 = img.to_rgb16();
     let (w, h) = (rgb16.width(), rgb16.height());
     let mut data = Vec::with_capacity(w as usize * h as usize * 3);
@@ -131,7 +166,7 @@ pub fn load_hdr_tiff_pq(path: &Path, reference_white_nits: f32) -> Result<HdrRgb
             data.push(pq_to_nits(n) / reference_white_nits);
         }
     }
-    Ok(HdrRgb { width: w, height: h, data })
+    HdrRgb { width: w, height: h, data }
 }
 
 /// Decode a PNG/JPEG assumed sRGB-encoded with no headroom (see module docs).
@@ -155,13 +190,22 @@ pub fn load_hdr(path: &Path) -> Result<HdrRgb> {
     match extension_lower(path).as_deref() {
         Some("tif") | Some("tiff") => {
             let img = decode_any(path)?;
+            check_size(&img)?;
             // Sample format, not extension, decides the transfer function; see
             // the module docs for what routing a float TIFF through PQ costs.
             match img {
                 DynamicImage::ImageRgb32F(_) | DynamicImage::ImageRgba32F(_) => {
                     Ok(load_hdr_tiff_linear(img))
                 }
-                _ => load_hdr_tiff_pq(path, DEFAULT_REFERENCE_WHITE_NITS),
+                DynamicImage::ImageRgb16(_) | DynamicImage::ImageRgba16(_)
+                | DynamicImage::ImageLuma16(_) | DynamicImage::ImageLumaA16(_) => {
+                    Ok(tiff_pq_from(img, DEFAULT_REFERENCE_WHITE_NITS))
+                }
+                // An 8-bit TIFF has no headroom to recover, and reading its
+                // codes as PQ is actively wrong: mid-grey 128 would decode to
+                // ~0.47x SDR white instead of ~0.22x. Treat it as what it is —
+                // an SDR sRGB image — the same as PNG and JPEG.
+                _ => Ok(srgb_no_headroom(img)),
             }
         }
         Some("png") | Some("jpg") | Some("jpeg") => load_hdr_srgb_no_headroom(path),
@@ -291,6 +335,46 @@ mod tests {
         let hdr = load_hdr(&path).expect("decode");
         assert!(hdr.data.iter().all(|&v| v >= 0.0));
         assert!(hdr.data.iter().any(|&v| (v - 3.0).abs() < 1e-3));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn write_tiff8(path: &Path, w: u32, h: u32, value: u8) {
+        let img: ImageBuffer<ImgRgb<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(w, h, ImgRgb([value, value, value]));
+        img.save(path).expect("write 8-bit tiff");
+    }
+
+    /// An 8-bit TIFF has no headroom to recover and is not PQ-coded. Reading
+    /// its codes through the PQ EOTF put mid-grey at ~0.47x SDR white instead
+    /// of ~0.22x — a silently, badly wrong image.
+    #[test]
+    fn eight_bit_tiff_is_srgb_not_pq() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tohdr_portable_test_8bit.tiff");
+        write_tiff8(&path, 4, 4, 128);
+        let hdr = load_hdr(&path).expect("decode");
+        let v = hdr.data[0];
+        let want = srgb_to_linear(128.0 / 255.0);
+        assert!(
+            (v - want).abs() < 1e-4,
+            "8-bit TIFF mid-grey should be sRGB {want:.4}, got {v:.4}"
+        );
+        assert!(
+            hdr.data.iter().all(|&x| x <= 1.0 + 1e-6),
+            "an 8-bit source cannot carry headroom"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 16-bit keeps the documented PQ reading.
+    #[test]
+    fn sixteen_bit_tiff_still_takes_the_pq_path() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tohdr_portable_test_16bit_pq.tiff");
+        write_tiff16(&path, 4, 4, u16::MAX);
+        let hdr = load_hdr(&path).expect("decode");
+        let max = hdr.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!((max - 10000.0 / DEFAULT_REFERENCE_WHITE_NITS).abs() < 1.0);
         let _ = std::fs::remove_file(&path);
     }
 

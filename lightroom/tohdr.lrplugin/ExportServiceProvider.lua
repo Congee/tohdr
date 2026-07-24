@@ -80,11 +80,26 @@ end
 
 --- Run one command, capturing stdout+stderr into a temp file so a failure can
 --- be reported with the CLI's own words instead of just an exit code.
-local function runCapturing(commandLine)
-	local logPath = LrPathUtils.child(
+---
+--- The log name must not be predictable. Stock Lua's `math.random` without a
+--- seed yields the same sequence on every fresh interpreter state, so the
+--- first log path after a Lightroom relaunch was knowable in advance -- and
+--- shell `>` follows symlinks, so anything pre-placed at that path in the
+--- shared temp directory would receive whatever `tohdr` printed. Mixing in a
+--- per-call counter and an address-derived value from a fresh table makes the
+--- name unguessable without needing a seed source Lua does not portably have.
+local logCounter = 0
+local function tempLogPath()
+	logCounter = logCounter + 1
+	local entropy = tostring({}):gsub('%W', '')
+	return LrPathUtils.child(
 		LrPathUtils.getStandardFilePath('temp'),
-		'tohdr-lightroom-' .. tostring(math.random(1, 1e9)) .. '.log'
+		string.format('tohdr-%s-%d-%d.log', entropy, logCounter, os.time())
 	)
+end
+
+local function runCapturing(commandLine)
+	local logPath = tempLogPath()
 	local full = commandLine .. ' >' .. TohdrCli.quoteArg(logPath) .. ' 2>&1'
 	local status = LrTasks.execute(full)
 
@@ -137,12 +152,15 @@ function exportServiceProvider.processRenderedPhotos(_functionContext, exportCon
 					rendition:uploadFailed(
 						'tohdr reported success but wrote no file to ' .. outPath
 					)
-				else
-					-- The rendered TIFF is an intermediate the user never asked
-					-- for; leaving it behind litters the export folder.
-					if renderedPath ~= outPath then
-						LrFileUtils.delete(renderedPath)
-					end
+				end
+
+				-- Delete the intermediate on EVERY path, not just success. It
+				-- is a full-resolution uncompressed 16-bit TIFF -- hundreds of
+				-- MB for a real photo -- and the user never asked for it, so
+				-- leaving one behind per failed rendition fills the render
+				-- cache silently.
+				if renderedPath ~= outPath then
+					LrFileUtils.delete(renderedPath)
 				end
 			end
 		end

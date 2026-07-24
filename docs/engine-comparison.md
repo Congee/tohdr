@@ -42,12 +42,37 @@ except the platform oracle, which is the argument for having one.
 ### Where Engine A is not a faithful oracle of itself
 
 `tohdr_apple::encode_from_hdr` (ImageIO authoring the whole file from an HDR
-`CGImage`, via `kCGImageDestinationEncodeToISOGainmap`) produced a file with
+`CGImage`, via `kCGImageDestinationEncodeToISOGainmap`) produces a file with
 **zero declared headroom** — `alt_headroom = 0.0`, `max_log2 = 0.0` — from a
-source with a real 2.368x peak. The container was well formed and ImageIO read
-it back happily; the gain map simply carried nothing. Not yet diagnosed. It is
-why `AppleEngine::encode` uses `encode_parts` with our own derived plane rather
+source with a real 2.368x peak. The container is well formed and ImageIO reads
+it back happily; the gain map simply carries nothing. This is why
+`AppleEngine::encode` uses `encode_parts` with our own derived plane rather
 than delegating derivation to ImageIO.
+
+Two separate bugs were tangled here, and separating them took a controlled
+sweep over pixel layouts:
+
+| `CGImage` layout | file | decoded base mean | declared headroom |
+|---|---|---|---|
+| 96 bpp RGB, `AlphaNone`, linear sRGB | 34,140 B | **66.8/255** | 0.0000 |
+| 128 bpp RGBA, `PremultipliedLast`, linear sRGB | 11,655 B | 161.4/255 | 0.0000 |
+| 128 bpp RGBX, `NoneSkipLast`, linear sRGB | 11,655 B | 161.4/255 | 0.0000 |
+| 128 bpp RGBX, `NoneSkipLast`, linear P3 | 12,018 B | 160.0/255 | 0.0000 |
+
+**Fixed:** the 96 bpp row is a genuine defect — CoreGraphics has no valid
+alpha-less 96 bpp RGB float layout, `CGImageCreate` accepts the arithmetic
+anyway, and the buffer is then misread. Its decoded base is nowhere near the
+other three and its file is 3x larger for identical content.
+`cg_image_from_hdr` now uses 128 bpp `NoneSkipLast`, matching what the read
+side already did; `encode_from_hdr`'s output dropped from 34,140 to 11,655
+bytes accordingly.
+
+**Still open:** the headroom is zero in *every* layout and both colour spaces,
+so the pixel format was never its cause. The likely explanation is that
+`kCGImageDestinationEncodeToISOGainmap` wants the source image to declare a
+content headroom, and `objc2-core-graphics` 0.3.2 exposes no way to set one —
+it binds `CGContextSetEDRTargetHeadroom` but nothing equivalent for a
+`CGImage`. Untested, because the API is not reachable from here.
 
 ## Performance
 

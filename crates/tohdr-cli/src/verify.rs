@@ -3,7 +3,7 @@
 //! `docs/heic-gainmap-structure.md`? Exits non-zero on any failed check, so
 //! it is usable as a CI gate and from the Lightroom plugin.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use serde::Serialize;
@@ -15,7 +15,21 @@ use crate::panic_guard::catch;
 
 /// Bundled reference file used when `--against` is omitted: the iPhone
 /// capture that renders correctly everywhere tested.
-const DEFAULT_REFERENCE: &str = "~/Downloads/IMG_4913.HEIC";
+/// Reference file `--against` falls back to when the caller names none.
+///
+/// Overridable via `TOHDR_REFERENCE`, because the default is one particular
+/// iPhone capture that exists only on the machine this was developed on. Its
+/// absence is not an error: the reference is printed beside the target for
+/// human comparison and never folded into the pass/fail decision.
+fn default_reference() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("TOHDR_REFERENCE") {
+        if !p.is_empty() {
+            return Some(std::path::PathBuf::from(p));
+        }
+    }
+    let p = std::path::PathBuf::from("~/Downloads/IMG_4913.HEIC");
+    p.exists().then_some(p)
+}
 
 /// A phone-class display headroom, for [`gain_weight`] reporting.
 const PHONE_HEADROOM_STOPS: f32 = 2.3;
@@ -137,8 +151,7 @@ pub fn run(args: VerifyArgs) -> anyhow::Result<i32> {
 
     let reference_path: Option<PathBuf> = match args.against {
         Some(p) => Some(p),
-        None if Path::new(DEFAULT_REFERENCE).exists() => Some(PathBuf::from(DEFAULT_REFERENCE)),
-        None => None,
+        None => default_reference(),
     };
     let reference = if let Some(ref_path) = &reference_path {
         eprintln!("tohdr: comparing against {}", ref_path.display());

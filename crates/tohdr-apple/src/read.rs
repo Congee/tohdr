@@ -360,7 +360,7 @@ fn render(
     } else {
         (unsafe { kCGColorSpaceSRGB }, 8usize, 4usize)
     };
-    let cs = unsafe { CGColorSpace::with_name(Some(cs_name)) }
+    let cs = CGColorSpace::with_name(Some(cs_name))
         .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
     let stride = w * bytes_per_px;
     let mut buf = vec![0u8; stride * h];
@@ -387,7 +387,7 @@ fn render(
         )
     }
     .ok_or(Error::NullFromFramework("CGBitmapContextCreate"))?;
-    unsafe {
+    {
         CGContext::draw_image(
             Some(&ctx),
             CGRect {

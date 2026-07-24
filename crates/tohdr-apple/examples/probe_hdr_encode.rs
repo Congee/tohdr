@@ -67,7 +67,7 @@ fn make_image(
     } else {
         unsafe { kCGColorSpaceExtendedLinearSRGB }
     };
-    let cs = unsafe { CGColorSpace::with_name(Some(name)) }?;
+    let cs = CGColorSpace::with_name(Some(name))?;
     let bitmap = CGBitmapInfo(
         CGImageComponentInfo::Float.0 | CGImageByteOrderInfo::Order32Little.0 | alpha.0,
     );
