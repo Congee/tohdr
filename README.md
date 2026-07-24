@@ -72,7 +72,11 @@ Current status against the criteria:
 | `DSC07752.heic` | **1 failed** |
 
 The remaining skip is criterion 8, MakerApple tags 33/48, which neither engine
-writes yet. It skips rather than fails: writing no tag cannot write a bad one.
+writes — deliberately. Apple's tag formula cannot express more than 3.0 stops
+without a negative `tag48`, which is exactly how `DSC07752.heic` broke; clamping
+instead makes the tags disagree with the ISO payload and fails criterion 9.
+Writing nothing is the only option that never states a wrong headroom. See
+criterion 8 in [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md).
 
 ## Lightroom Classic plugin
 
@@ -100,7 +104,6 @@ docs/                  structure teardown, acceptance criteria, engine compariso
 - **The original symptom is unconfirmed.** Nobody has opened any output of this
   project in the iOS WeChat app. Every check here is necessary; only a device
   test is sufficient.
-- MakerApple tags 33/48 are not written (criterion 8).
 - `tohdr_apple::encode_from_hdr` — letting ImageIO author the file from an HDR
   image — emits zero declared headroom from a source with real headroom.
   Undiagnosed; it is why `AppleEngine::encode` uses our own derived plane.

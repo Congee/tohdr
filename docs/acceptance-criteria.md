@@ -95,6 +95,30 @@ This is where both broken exports actually fail, and the failure is shared:
    *Caveat, stated because it matters:* that negative value still decodes back
    to 11.86x through Skia's parser, so it is a symptom of the same
    over-declaration as #5, **not** independently proven to cause the washout.
+
+   **Why our engines write no MakerApple tags at all, and why that is a
+   choice rather than a gap.** Apple's tag formula tops out at 3.0 stops: in
+   the `tag33 >= 1.0` regime it is `stops = -70 · tag48 + 3.0`, so a headroom
+   above 8x can only be expressed by pushing tag48 *negative* — precisely how
+   `DSC07752.heic` ended up at `-0.00812`.
+   `tohdr_core::apple::tags_from_headroom` clamps instead (pinned by
+   `clamps_above_8x_instead_of_reproducing_the_washout_bug`), which is the safe
+   behavior but means the tags then **understate** the headroom.
+
+   That leaves no good option for a scene needing more than 3 stops:
+
+   - write unclamped tags → negative tag48, failing this criterion, and
+     reproducing the exact defect in the broken file;
+   - write clamped tags → they disagree with the ISO payload, failing
+     criterion 9, which exists because disagreeing copies mean some consumer
+     reads the wrong number;
+   - write no tags → both criteria *skip*, and nothing can read a wrong value.
+
+   The third is the only one that never lies, so it is what we do. Note
+   `IMG_4913.HEIC` declares 2.287109 stops — comfortably under the ceiling —
+   which is why Apple could write all three copies in agreement. A future
+   engine may write the tags **when and only when** the headroom is at most 3.0
+   stops; above that, silence is correct.
 9. **[verify]** Where more than one copy of the headroom is written (ISO
    payload, XMP `HDRGainMapHeadroom`, MakerApple tags), all copies agree within
    1e-3. Apple writes it three times and all three agree — a file whose copies
