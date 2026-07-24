@@ -1,0 +1,14 @@
+[package]
+name = "tohdr-core"
+version = "0.1.0"
+description = "Flavor-neutral HDR gain-map model, ISO 21496-1 serialization, and Apple MakerNote headroom math"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+# Independent oracle for our ISO 21496-1 serializer. Deliberately NOT a runtime
+# dependency: we cross-check against it rather than trust it in the hot path.
+ultrahdr-core = "0.6"

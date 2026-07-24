@@ -1,12 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["spikes/hpvca-probe"]
+members = [
+    "crates/tohdr-core",
+    "spikes/hpvca-probe",
+    "spikes/imageio-probe",
+]
 
 [workspace.package]
 edition = "2024"
 rust-version = "1.94"
 license = "Apache-2.0"
-repository = "https://github.com/cwu/tohdr"
 
 [workspace.dependencies]
 hpvca = "0.1.12"
+tohdr-core = { path = "crates/tohdr-core" }
+
+[profile.release]
+debug = 1

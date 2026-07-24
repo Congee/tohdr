@@ -1,0 +1,6 @@
+urn:com:apple:photo:2020:aux:hdrgainmap
+urn:com:apple:photo:2020:aux:semanticskymatte
+tag:apple.com,2023:photo:aux:styledeltamap
+urn:com:apple:photo:2018:aux:portraiteffectsmatte
+urn:com:apple:photo:2019:aux:semanticskinmatte
+tag:apple.com,2023:photo:aux:linearthumbnail

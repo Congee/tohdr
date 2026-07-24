@@ -5,7 +5,7 @@
 //!
 //! Run: cargo run -p hpvca-probe --release -- [long_edge]
 
-use hpvca::{ChromaFormat, EncodeConfig};
+use hpvca::{ChromaFormat, EncodeConfig, ParallelismStrategy};
 use std::time::Instant;
 
 /// Synthetic scene with a bright specular corner, so there is real HDR-ish
@@ -103,6 +103,25 @@ fn main() {
     let t = Instant::now();
     let r = hpvca::encode_gray(&ghalf, gw, gh, &cfg);
     emit("8bit gray half-res", "out/gainmap8_half.heic", r, t.elapsed().as_secs_f64(), gw * gh);
+
+    // 6. Parallelism strategy matters structurally, not just for speed: the Grid*
+    //    strategies emit a HEIF grid (many tile items + a grid derived item),
+    //    which a gain-map remuxer would have to thread a `tmap` through. The
+    //    single-image strategies are far cheaper to remux.
+    println!("\nstrategy sweep (10-bit 420) — item count decides remux complexity:");
+    for (name, strat) in [
+        ("Single", ParallelismStrategy::Single),
+        ("Wpp", ParallelismStrategy::Wpp),
+        ("TilesWpp", ParallelismStrategy::TilesWpp),
+        ("Grid", ParallelismStrategy::Grid),
+        ("GridWpp", ParallelismStrategy::GridWpp),
+    ] {
+        let c = EncodeConfig::default().with_quality(90).with_parallelism(strat);
+        let t = Instant::now();
+        let r = hpvca::encode_rgb10(&rgb10, w, h, &c);
+        let path = format!("out/strat_{}.heic", name.to_lowercase());
+        emit(&format!("10bit {name}"), &path, r, t.elapsed().as_secs_f64(), px);
+    }
 
     println!("\nnow verify these decode in Apple ImageIO (sips / CGImageSource)");
 }

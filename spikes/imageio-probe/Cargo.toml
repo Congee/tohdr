@@ -1,0 +1,24 @@
+[package]
+name = "imageio-probe"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# Spike: exercise Apple ImageIO gain-map READ and WRITE through Rust FFI
+# (objc2-image-io / objc2-core-foundation / objc2-core-graphics). Throwaway.
+
+[[bin]]
+name = "imageio-probe"
+path = "src/main.rs"
+
+[dependencies]
+objc2-image-io = { version = "0.3.2", features = [
+    "CGImageSource",
+    "CGImageDestination",
+    "CGImageProperties",
+    "CGImageMetadata",
+    "std",
+] }
+objc2-core-foundation = { version = "0.3", features = ["std"] }
+objc2-core-graphics = { version = "0.3", features = ["std"] }
