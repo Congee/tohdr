@@ -522,15 +522,30 @@ def check(info, expect_flavor):
             f'iso={iso_lin:.6f}x xmp={xmp:.6f}x delta={d:.2e}')
 
     # 10/11. predicted weights
+    #
+    # The invariant is NOT "weight == 1.0 on a phone" -- that only holds for a
+    # scene needing <= 2.3 stops, and would fail a correctly-built file of a
+    # brighter scene. What must hold is that a display receives every stop it
+    # can show: delivered == min(display_headroom, alt_headroom). Given
+    # base_headroom == 0 that follows from criterion 5, since
+    #   delivered = max_log2 * clamp(display/alt) = alt * min(1, display/alt).
+    # An over-declaring file breaks it: DSC07752_iso encodes 1.96 stops but
+    # declares 3.568, so a 2.3-stop display gets 1.263 where it should get 1.96.
     if not iso:
-        skip(10, 'phone applies the full map', 'no ISO metadata')
+        skip(10, 'display receives every stop it can show', 'no ISO metadata')
     else:
-        wp = gain_weight(iso['base_headroom'], iso['alt_headroom'], 2.3)
-        wm = gain_weight(iso['base_headroom'], iso['alt_headroom'], 2.98)
-        delivered = iso['max_log2'][0] * wp
-        add(10, 'phone applies the full map', wp >= 0.999,
-            f'w(2.3 stops)={wp:.4f} -> {delivered:.3f} of '
-            f"{iso['max_log2'][0]:.3f} stops; w(2.98)={wm:.4f}")
+        worst = None
+        for display in (1.0, 1.5, 2.0, 2.3, 2.98, 4.0):
+            w = gain_weight(iso['base_headroom'], iso['alt_headroom'], display)
+            delivered = iso['max_log2'][0] * w
+            want = min(display, iso['max_log2'][0])
+            err = abs(delivered - want)
+            if worst is None or err > worst[3]:
+                worst = (display, delivered, want, err)
+        d, got, want, err = worst
+        add(10, 'display receives every stop it can show', err < 1e-3,
+            f'worst at {d:.2f}-stop display: delivered {got:.3f}, '
+            f'expected min(display, max_log2)={want:.3f} (err {err:.3f})')
 
     return out
 

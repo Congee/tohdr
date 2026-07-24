@@ -23,6 +23,10 @@
 
 use tohdr_core::{Flavor, GainMapMeta};
 
+mod boxes;
+mod read;
+mod write;
+
 /// HEIF item identifier. 16-bit in `infe` version 2, 32-bit in version 3; we
 /// model the wider form and narrow on write.
 pub type ItemId = u32;
@@ -140,8 +144,7 @@ pub struct MuxRequest {
 ///   `[base, gain]`, carrying the C.2.2 payload prefixed by its `ToneMapImage`
 ///   version byte, plus the `tmap` compatible brand in `ftyp`
 pub fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
-    let _ = req;
-    todo!("ISOBMFF gain-map muxer")
+    write::mux(req)
 }
 
 /// Apple's auxiliary-image type URN for a gain map, present since 2020.
@@ -151,7 +154,15 @@ pub const APPLE_GAINMAP_URN: &str = "urn:com:apple:photo:2020:aux:hdrgainmap";
 /// item payloads are returned as slices into the original buffer.
 #[derive(Debug)]
 pub struct HeifFile<'a> {
-    _bytes: &'a [u8],
+    pub(crate) bytes: &'a [u8],
+    pub(crate) brands: Vec<[u8; 4]>,
+    pub(crate) primary_item: Option<ItemId>,
+    pub(crate) items: Vec<Item>,
+    pub(crate) props: Vec<read::Prop>,
+    pub(crate) ipma: Vec<(ItemId, Vec<(u16, bool)>)>,
+    pub(crate) iloc: Vec<read::IlocItem>,
+    /// Absolute file byte range of `idat`'s body, when present.
+    pub(crate) idat: Option<(usize, usize)>,
 }
 
 /// One entry from `iinf`, with whatever properties and references we resolved.
@@ -192,43 +203,6 @@ pub struct GainMapInfo {
     pub meta: Option<GainMapMeta>,
 }
 
-impl<'a> HeifFile<'a> {
-    pub fn parse(bytes: &'a [u8]) -> Result<Self> {
-        let _ = bytes;
-        todo!("ISOBMFF reader")
-    }
-
-    /// `ftyp` compatible brands, in file order.
-    pub fn brands(&self) -> Vec<[u8; 4]> {
-        todo!()
-    }
-
-    pub fn primary_item(&self) -> Option<ItemId> {
-        todo!()
-    }
-
-    pub fn items(&self) -> &[Item] {
-        todo!()
-    }
-
-    /// An item's payload, with `iloc` extents concatenated. Handles
-    /// construction methods 0 (file offset) and 1 (`idat`-relative).
-    pub fn item_data(&self, id: ItemId) -> Result<&'a [u8]> {
-        let _ = id;
-        todo!()
-    }
-
-    /// Locate the gain map by either signaling route.
-    pub fn gain_map(&self) -> Option<GainMapInfo> {
-        todo!()
-    }
-
-    /// Pull an item out as a [`CodedImage`], resolving its `hvcC` and `ispe`.
-    ///
-    /// Fails with [`Error::Unsupported`] for a `grid` item: reassembling tiles
-    /// into one coded image is a re-encode, not a remux.
-    pub fn coded_image(&self, id: ItemId) -> Result<CodedImage> {
-        let _ = id;
-        todo!()
-    }
-}
+// `HeifFile`'s inherent methods (`parse`, `brands`, `primary_item`, `items`,
+// `item_data`, `gain_map`, `coded_image`) live in `read.rs`, next to the box
+// parsing they depend on.

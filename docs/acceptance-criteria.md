@@ -16,7 +16,10 @@ our own reader, so a bug present in both our reader and our writer would sail
 through it; the Python checker exists to make that class of self-consistent error
 visible. Measured discrimination on the three reference files: IMG_4913 passes
 11/11 and exits 0; `DSC07752_iso` fails criteria 2, 5, 8, 10 and exits 1;
-`DSC07752` fails criterion 8 and exits 1.
+`DSC07752` fails criterion 8 and exits 1. Engine B's own output
+(`--engine portable --flavor both`, synthetic 2.98-stop source) passes 9/9
+applicable and exits 0, skipping 8 and 9 — it writes no MakerApple tags and no
+XMP headroom, which is the remaining gap against IMG_4913's 11/11.
 
 Reference values come from `docs/heic-gainmap-structure.md`, decoded byte by byte
 from the real files; the raw payloads are committed under `assets/fixtures/`.
@@ -102,11 +105,22 @@ This is where both broken exports actually fail, and the failure is shared:
 Computed from metadata via `tohdr_core::hdr::gain_weight`, not measured on a
 display:
 
-10. **[verify]** A ~2.3-stop display (phone) applies weight `1.0`. Equivalent to
-    #5 given `base_headroom == 0` and `alt_headroom <= 2.3`; reported separately
-    because it is the number that maps onto the symptom. For reference, the
-    broken file yields `0.645` at 2.3 stops and `0.835` at 2.98 — the
-    Mac-fine/phone-washed asymmetry the user reported.
+10. **[verify]** Every display receives all the gain it can show:
+    `delivered == min(display_headroom, alt_headroom)`, checked across
+    1.0–4.0 stops.
+
+    *This criterion was originally written as "a ~2.3-stop display applies
+    weight 1.0", which was wrong.* That only holds when the scene needs
+    ≤ 2.3 stops, so it failed a correctly-built file of a brighter scene — our
+    own 2.98-stop test render tripped it while delivering exactly the 2.300
+    stops a 2.3-stop phone can display. The invariant above is the one that
+    actually distinguishes correct from broken, and it follows from #5 given
+    `base_headroom == 0`:
+    `delivered = max_log2 · clamp(display/alt) = alt · min(1, display/alt)`.
+    It still catches the real defect — `DSC07752_iso` encodes 1.96 stops but
+    declares 3.568, so a 2.3-stop display gets 1.263 stops where it should get
+    1.96, and the criterion fails. Measured: IMG_4913 passes, `DSC07752_iso`
+    fails.
 11. **[verify]** No display in `1.0..=4.0` stops receives *less* gain from our
     output than from IMG_4913 at the same declared headroom.
 
