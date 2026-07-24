@@ -1,0 +1,128 @@
+{
+  "_comment": [
+    "Ground truth measured from ~/Downloads/IMG_4913.HEIC (iPhone 17 Pro).",
+    "That file is the user's private capture and is NOT committed; this is the",
+    "distilled reference so `tohdr verify` and the test suite can assert against",
+    "it on any machine. Sources: heif_detail.py box walk, exiftool -G1 -a -s, and",
+    "the committed 62-byte tmap payload img4913_iso21496.bin decoded field by",
+    "field. See docs/heic-gainmap-structure.md and docs/acceptance-criteria.md."
+  ],
+  "file": {
+    "type": "HEIC",
+    "width": 5712,
+    "height": 4284,
+    "depth": 8
+  },
+  "ftyp": {
+    "major_brand": "heic",
+    "compatible_brands": [
+      "mif1", "MiHB", "MiHA", "heix", "MiHE", "MiPr", "miaf", "heic", "tmap"
+    ],
+    "_comment": "'tmap' is what advertises ISO 21496-1 signaling to a reader that checks brands before parsing items."
+  },
+  "items": {
+    "primary": 46,
+    "base": 46,
+    "gain_map": 62,
+    "tmap": 122,
+    "_comment": [
+      "Both the base (46) and the gain map (62) are `grid` items -- Apple tiles",
+      "both. Our muxer emits single non-grid items instead, which is simpler and",
+      "strictly easier for a consumer to decode; the grid is not part of the",
+      "gain-map contract. Item counts in the original: 113 hvc1 tiles, 3 grid,",
+      "4 mime (XMP), 1 tmap, 1 'uri ', 1 Exif."
+    ]
+  },
+  "refs": {
+    "gain_map_auxl": [46],
+    "tmap_dimg": [46, 62],
+    "_comment": [
+      "The gain map is auxiliary to the base ALONE. The tmap's dimg lists base",
+      "first, gain second -- that order is load-bearing for an ISO reader.",
+      "Other auxiliary images in the file (depth, mattes) point at [46, 122],",
+      "which is why a raw auxC count of 6 is not a gain-map requirement."
+    ]
+  },
+  "gain_plane": {
+    "width": 2856,
+    "height": 2142,
+    "bytes_per_row": 3200,
+    "pixel_format_fourcc": "L008",
+    "pixel_format_u32": 1278226488,
+    "channels": 1,
+    "bit_depth": 8,
+    "_comment": [
+      "Half the base resolution in each axis. bytes_per_row (3200) exceeds width",
+      "(2856): ImageIO hands back row-padded planes, so a consumer must honor the",
+      "stride. Data length as ImageIO reports it: 6854400 == 3200 * 2142."
+    ]
+  },
+  "iso21496": {
+    "payload_bytes": 62,
+    "tone_map_image_version": 0,
+    "struct_bytes": 61,
+    "minimum_version": 0,
+    "writer_version": 0,
+    "flags": 64,
+    "is_multichannel": false,
+    "use_base_colour_space": true,
+    "base_headroom": 0.0,
+    "alt_headroom": 2.287109,
+    "min_log2": -0.001963,
+    "max_log2": 2.287109,
+    "gamma": 0.825684,
+    "base_offset": 1.0e-5,
+    "alt_offset": 1.0e-5,
+    "_comment": [
+      "max_log2 == alt_headroom exactly. This is the invariant both washed-out",
+      "exports break and the single most important thing to reproduce.",
+      "Apple's gamma is 0.825684 and its offsets are 1e-5 -- NOT the ISO/UltraHDR",
+      "nominal defaults of gamma 1.0 and offsets 1/64, which are ~650x larger and",
+      "lift near-black far harder."
+    ]
+  },
+  "headroom_cross_check": {
+    "iso_alt_headroom_stops": 2.287109,
+    "iso_alt_headroom_linear": 4.880771,
+    "xmp_HDRGainMapHeadroom": 4.880772,
+    "xmp_HDRGainMapVersion": "0.2.0.0",
+    "makerapple_tag33_HDRHeadroom": 1.00999999,
+    "makerapple_tag48_HDRGain": 0.05253907666,
+    "makerapple_decoded_linear": 4.880675,
+    "_comment": [
+      "Apple writes the headroom THREE times and all three agree to ~1e-4. A file",
+      "whose copies disagree is one where some consumer reads the wrong one.",
+      "tag48 is POSITIVE; the broken export's -0.008120966145 is what",
+      "toGainMapHDR's unclamped (3.0 - stops)/70 branch emits above 8x."
+    ]
+  },
+  "icc_profiles": {
+    "base": "Display P3",
+    "tmap": "Display P3 Primaries; PQ (Adaptive Gain Curve 81B7427DF220A6FA)",
+    "others": ["sRGB IEC61966-2.1 Linear", "Display P3 Linear"],
+    "_comment": [
+      "The tmap item's profile describes the RECONSTRUCTED HDR image (P3 primaries",
+      "+ PQ), not the SDR base. A copy is committed at img4913_tmap_icc_profile.icc",
+      "(26664 bytes)."
+    ]
+  },
+  "predicted_weights": {
+    "_comment": "tohdr_core::hdr::gain_weight, base_headroom 0. IMG_4913 sits below both displays so its map applies fully everywhere.",
+    "phone_2_3_stops": 1.0,
+    "mac_xdr_2_98_stops": 1.0
+  },
+  "contrast_dsc07752_iso": {
+    "_comment": "The washed-out export, for regression tests. Decoded from dsc07752_iso21496.bin (142 bytes = 1 + 141, three channels).",
+    "payload_bytes": 142,
+    "channels": 3,
+    "alt_headroom": 3.568470,
+    "max_log2": 1.96,
+    "over_declared_by_stops": 1.608470,
+    "makerapple_tag48_HDRGain": -0.008120966145,
+    "auxc_count": 0,
+    "apple_urn_present": false,
+    "tmap_present": true,
+    "predicted_weight_phone_2_3_stops": 0.6445,
+    "predicted_weight_mac_2_98_stops": 0.8351
+  }
+}

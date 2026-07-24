@@ -1,0 +1,126 @@
+# What "as good as IMG_4913" means, measurably
+
+`IMG_4913.HEIC` (iPhone 17 Pro capture) renders as real HDR everywhere it has
+been tried, including the iOS WeChat app. `DSC07752.heic` and
+`DSC07752_iso.heic` render washed out there. This file turns "same or better
+effect" into checks a machine can run, so the claim is never a matter of
+squinting at two phones.
+
+Every criterion below is either **[verify]** — checked by `tohdr verify`, exit
+non-zero on failure — or **[manual]**, with the reason it cannot be automated.
+
+Reference values come from `docs/heic-gainmap-structure.md`, decoded byte by byte
+from the real files; the raw payloads are committed under `assets/fixtures/`.
+
+## A. Structural signaling
+
+The three files fail differently here, which is why all of it is checked
+rather than just the parts one broken file got wrong:
+
+| | IMG_4913 (good) | DSC07752 | DSC07752_iso |
+|---|---|---|---|
+| `auxC` boxes | 6 | 2 | **0** |
+| Apple gain-map URN | present | present | **absent** |
+| `tmap` item | present | **absent** | present |
+| MakerApple 33/48 | present, positive | present, **48 negative** | **absent** |
+
+1. **[verify]** The base image is the primary item (`pitm`).
+2. **[verify]** The gain map is a separate image item, single-channel 8-bit
+   (`L008`), not a 3-channel RGB image. `DSC07752_iso` ships full-res 3-channel,
+   which costs bytes for no fidelity gain on a luma-derived map.
+3. **[verify]** With a flavor including Apple: the gain-map item carries an
+   `auxC` with URN `urn:com:apple:photo:2020:aux:hdrgainmap`, **and** an `auxl`
+   `iref` from the gain map to the base. The URN alone is not enough — a
+   consumer needs the back-reference to know which image the map applies to.
+4. **[verify]** With a flavor including ISO: a `tmap` derived item exists, its
+   `dimg` lists `[base, gain]` in that order, `tmap` appears in `ftyp`'s
+   compatible brands, and its payload is exactly 62 bytes (1 `ToneMapImage`
+   version byte + the 61-byte single-channel C.2.2 struct).
+
+## B. Metadata correctness
+
+This is where both broken exports actually fail, and the failure is shared:
+
+5. **[verify]** `max_log2 == alt_headroom` (±1e-3). **The single most important
+   check.** The gain plane can deliver at most `max_log2` stops; `alt_headroom`
+   declares how much the scene needs. IMG_4913 keeps them identical (2.287109).
+   `DSC07752_iso` declares 3.568470 while encoding 1.96 — a 1.61-stop
+   over-declaration. A conformant renderer weights the map by
+   `(display - base) / (alt - base)` (libavif `src/gainmap.c:52-63`), so
+   over-declaring makes it *under-apply* the map and the flat SDR base shows
+   through. Enforced in code by `tohdr_core::hdr::derive_consistent`.
+6. **[verify]** `base_headroom == 0` for an SDR base.
+7. **[verify]** Passes libavif's own validation (`avifGainMapValidateMetadata`,
+   `src/gainmap.c:431-448`): all denominators nonzero, `max >= min`, gamma
+   numerator nonzero. Note what it does *not* check — channel-count consistency
+   — which is why `DSC07752_iso`'s redundant `is_multichannel=1` is survivable
+   and not on this list as a defect.
+8. **[verify]** MakerApple tag 48 (`HDRGain`) is **non-negative**, and tag 33
+   (`HDRHeadroom`) is present when tag 48 is. `DSC07752` carries
+   `-0.008120966145`, which `chemharuka/toGainMapHDR`'s unclamped
+   `(3.0 - stops) / 70` branch produces for any headroom above 8x — reproduced
+   to ~2e-10. `tohdr_core::apple::tags_from_headroom` clamps instead.
+   *Caveat, stated because it matters:* that negative value still decodes back
+   to 11.86x through Skia's parser, so it is a symptom of the same
+   over-declaration as #5, **not** independently proven to cause the washout.
+9. **[verify]** Where more than one copy of the headroom is written (ISO
+   payload, XMP `HDRGainMapHeadroom`, MakerApple tags), all copies agree within
+   1e-3. Apple writes it three times and all three agree — a file whose copies
+   disagree is one where some consumer will read the wrong one.
+
+## C. Predicted render behavior
+
+Computed from metadata via `tohdr_core::hdr::gain_weight`, not measured on a
+display:
+
+10. **[verify]** A ~2.3-stop display (phone) applies weight `1.0`. Equivalent to
+    #5 given `base_headroom == 0` and `alt_headroom <= 2.3`; reported separately
+    because it is the number that maps onto the symptom. For reference, the
+    broken file yields `0.645` at 2.3 stops and `0.835` at 2.98 — the
+    Mac-fine/phone-washed asymmetry the user reported.
+11. **[verify]** No display in `1.0..=4.0` stops receives *less* gain from our
+    output than from IMG_4913 at the same declared headroom.
+
+## D. Reconstruction fidelity
+
+12. **[verify]** Round-tripping the source HDR through tone map → derive →
+    encode → decode → apply keeps worst-case relative luma error under 6% on
+    pixels above 0.05 linear, and PSNR ≥ 40 dB. Dark pixels are excluded because
+    8-bit base quantization, not the gain map, dominates the ratio there.
+13. **[verify]** Reconstruction actually exceeds linear 1.0. A pipeline that
+    clamps at SDR white passes every structural check above while producing no
+    HDR at all — this is the check that catches it.
+
+## E. Platform acceptance
+
+14. **[verify]** macOS ImageIO — the platform that decides what Apple apps
+    show — reports the gain map on our output. `tohdr_apple::inspect_bytes` is
+    the oracle: `apple_aux` and/or `iso_aux` true per flavor, `gain_size` as
+    expected, `gain_pixel_format` `L008`. This is deliberately the *platform's*
+    opinion and not our own parser's, so a bug shared between our reader and
+    writer cannot hide.
+15. **[manual]** Renders as HDR in the iOS WeChat app. **Not automatable and not
+    yet confirmed.** Everything above is necessary; only a device test is
+    sufficient. WeChat's renderer is closed, and the two broken files differ in
+    *both* signaling and metadata, so which one WeChat trips on is unproven —
+    A and B are both enforced rather than betting on one.
+
+## F. Output constraints
+
+16. **[verify]** `--max-size N` produces a file of at most N bytes, or fails
+    loudly. Never silently ships an oversized file.
+
+## Where "better than IMG_4913" is available
+
+Not required to pass, but reachable and worth measuring:
+
+- **Full-resolution gain map.** Apple ships half-res. Full res costs bytes and
+  raises fidelity; `--gain-subsample 1`.
+- **Three-channel gain map.** ISO 21496-1 permits it. A highlight clipped in one
+  channel only (a saturated red light) is under-corrected by a luma-derived map;
+  3 channels track it at 3x the metadata cost. Our serializer already handles
+  141-byte payloads.
+- **10-bit base.** Removes the 8-bit banding that currently sets the noise floor
+  for criterion 12 in shadows.
+- **Both flavors at once.** IMG_4913 does this; `DSC07752*` each pick one and
+  miss the other. `Flavor::Both` is the default for exactly this reason.
