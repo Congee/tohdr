@@ -125,6 +125,51 @@ end
 -- Binary location
 -- ===========================================================================
 
+--- The PATH to search when Lightroom does not give us one.
+---
+--- Lightroom Classic launches from Finder, so it inherits a minimal
+--- environment -- `os.getenv("PATH")` inside the plugin is typically just
+--- `/usr/bin:/bin:/usr/sbin:/sbin` and will NOT contain Homebrew, Cargo, or
+--- Nix locations where a `tohdr` build actually lives. We therefore append the
+--- usual install prefixes rather than trusting the inherited value alone.
+function M.defaultPathEnv()
+	local inherited = os.getenv("PATH") or ""
+	local extra = {
+		"/opt/homebrew/bin",       -- Homebrew, Apple silicon
+		"/usr/local/bin",          -- Homebrew, Intel; most `make install`s
+		(os.getenv("HOME") or "") .. "/.cargo/bin",
+		(os.getenv("HOME") or "") .. "/.nix-profile/bin",
+		"/run/current-system/sw/bin",
+	}
+	local parts = { inherited }
+	for _, d in ipairs(extra) do
+		if d ~= "/.cargo/bin" and d ~= "/.nix-profile/bin" then
+			table.insert(parts, d)
+		end
+	end
+	return table.concat(parts, ":")
+end
+
+--- Turn a nonzero exit status plus captured output into one message worth
+--- showing a user.
+---
+--- `tohdr` prints its own diagnosis on stderr (which quality it tried, why a
+--- budget could not be met, and what to change), so the last non-empty line is
+--- almost always the actionable part. Swallowing it and reporting only an exit
+--- code would throw away the useful half.
+function M.summarizeFailure(status, output)
+	local last
+	for line in tostring(output or ""):gmatch("[^\r\n]+") do
+		if line:match("%S") then
+			last = line
+		end
+	end
+	if last then
+		return "tohdr failed (exit " .. tostring(status) .. "): " .. last
+	end
+	return "tohdr failed (exit " .. tostring(status) .. ") with no output"
+end
+
 --- Split a PATH-style string (colon-separated) into a list of directories.
 --- Empty entries (leading/trailing/doubled colons, POSIX "current dir") are
 --- dropped -- we never want to silently execute a `tohdr` from cwd.
