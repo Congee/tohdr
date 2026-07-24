@@ -238,6 +238,28 @@ fn tone_map_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImageMeta
     Ok(md)
 }
 
+/// Build the `CGImageMetadata` carrying Apple's XMP gain-map headroom, so
+/// Engine A states the headroom in the same places Engine B does.
+///
+/// `HDRGainMapHeadroom` is linear, not stops -- see `tohdr_core::xmp`, which
+/// owns that conversion and the reasoning behind it.
+fn gain_map_xmp_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImageMetadata>> {
+    let md = unsafe { CGMutableImageMetadata::new() };
+    let ns = CFString::from_str(tohdr_core::xmp::HDR_GAIN_MAP_NS);
+    let prefix = CFString::from_str("HDRGainMap");
+    unsafe { md.register_namespace_for_prefix(&ns, &prefix, std::ptr::null_mut()) };
+
+    let version = cf_num_f64(tohdr_core::xmp::HDR_GAIN_MAP_VERSION as f64);
+    let vpath = CFString::from_str("HDRGainMap:HDRGainMapVersion");
+    unsafe { md.set_value_with_path(None, &vpath, version.as_ref()) };
+
+    let headroom = cf_num_f64(meta.alt_headroom.exp2() as f64);
+    let hpath = CFString::from_str("HDRGainMap:HDRGainMapHeadroom");
+    unsafe { md.set_value_with_path(None, &hpath, headroom.as_ref()) };
+
+    Ok(md)
+}
+
 /// Attach a gain plane *we* derived to an SDR base, through ImageIO.
 ///
 /// This is the path the engine comparison uses, so both engines encode the
@@ -260,7 +282,12 @@ pub fn encode_parts(
         unsafe { kCGImageDestinationLossyCompressionQuality },
         q.as_ref(),
     )]);
-    unsafe { dest.add_image(&image, Some(&img_opts)) };
+    if opts.flavor.writes_apple() {
+        let xmp = gain_map_xmp_metadata(meta)?;
+        unsafe { dest.add_image_and_metadata(&image, Some(&xmp), Some(&img_opts)) };
+    } else {
+        unsafe { dest.add_image(&image, Some(&img_opts)) };
+    }
 
     // The gain plane, described the way ImageIO describes one when reading:
     // tightly packed 8-bit luminance, `BytesPerRow` = width.
