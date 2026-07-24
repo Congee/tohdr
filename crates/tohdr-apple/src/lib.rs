@@ -72,8 +72,7 @@ impl GainMapEncoder for AppleEngine {
         meta: &GainMapMeta,
         opts: &EncodeOptions,
     ) -> Result<Vec<u8>> {
-        let _ = (base, gain, meta, opts);
-        todo!("ImageIO gain-map write")
+        write::encode_parts(base, gain, meta, opts)
     }
 }
 
@@ -84,14 +83,12 @@ impl GainMapEncoder for AppleEngine {
 /// the *reconstruction* of base plus gain map rather than anything stored
 /// directly. `1.0` in the result is SDR diffuse white.
 pub fn load_hdr(path: &Path) -> Result<HdrRgb> {
-    let _ = path;
-    todo!("ImageIO HDR decode")
+    read::load_hdr(path)
 }
 
 /// Decode the SDR base of a file, without applying any gain map.
 pub fn load_sdr(path: &Path) -> Result<Rgb> {
-    let _ = path;
-    todo!("ImageIO SDR decode")
+    read::load_sdr(path)
 }
 
 /// What macOS ImageIO reports about a file. The comparison target for Engine B

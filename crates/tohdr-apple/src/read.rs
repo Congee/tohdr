@@ -25,13 +25,20 @@ use objc2_core_foundation::{
     CFArray, CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFURL,
     CFURLPathStyle,
 };
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_graphics::{
+    CGBitmapContextCreate, CGBitmapInfo, CGColorSpace, CGContext, CGImageAlphaInfo,
+    CGImage, CGImageByteOrderInfo, CGImageComponentInfo, kCGColorSpaceExtendedLinearSRGB,
+    kCGColorSpaceSRGB,
+};
 use objc2_image_io::{
     kCGImageAuxiliaryDataInfoDataDescription, kCGImageAuxiliaryDataInfoMetadata,
     kCGImageAuxiliaryDataTypeHDRGainMap, kCGImageAuxiliaryDataTypeISOGainMap,
     kCGImagePropertyDepth, kCGImagePropertyMakerAppleDictionary, kCGImagePropertyPixelHeight,
-    kCGImagePropertyPixelWidth, CGImageMetadata, CGImageMetadataTag, CGImageSource,
+    kCGImagePropertyPixelWidth, kCGImageSourceDecodeRequest, kCGImageSourceDecodeToHDR,
+    CGImageMetadata, CGImageMetadataTag, CGImageSource,
 };
-use tohdr_core::GainMapMeta;
+use tohdr_core::{GainMapMeta, HdrRgb, Rgb};
 
 use crate::{Error, ReadBack, Result};
 
@@ -291,6 +298,137 @@ fn analyze(isrc: &CGImageSource) -> Result<ReadBack> {
         apple_headroom,
         iso_meta,
     })
+}
+
+/// Decode any ImageIO-supported file, optionally applying its gain map, into a
+/// bitmap we own.
+///
+/// Everything goes through a `CGContext` render rather than poking at the
+/// `CGImage`'s own buffer: ImageIO hands back whatever layout the file
+/// happened to use (subsampled chroma, planar, 10-bit packed), and drawing
+/// into a context we allocated is the supported way to get one known layout
+/// out of all of them.
+fn render(
+    path: &Path,
+    hdr: bool,
+) -> Result<(u32, u32, Vec<u8>, usize)> {
+    let s = path.to_str().ok_or_else(|| {
+        Error::Unreadable(format!("path is not valid UTF-8: {}", path.display()))
+    })?;
+    let cfpath = CFString::from_str(s);
+    let url = CFURL::with_file_system_path(
+        None,
+        Some(&cfpath),
+        CFURLPathStyle::CFURLPOSIXPathStyle,
+        false,
+    )
+    .ok_or(Error::NullFromFramework("CFURLCreateWithFileSystemPath"))?;
+
+    // `kCGImageSourceDecodeRequest` = `...RequestHDRImage` is what makes
+    // ImageIO apply a gain map during decode instead of handing back the SDR
+    // base; without it an HDR HEIC silently decodes as its base image.
+    let opts = if hdr {
+        let key: &CFString = unsafe { kCGImageSourceDecodeRequest };
+        let val: &CFString = unsafe { kCGImageSourceDecodeToHDR };
+        let keys = [key];
+        let vals = [val];
+        Some(CFDictionary::<CFString, CFString>::from_slices(&keys, &vals))
+    } else {
+        None
+    };
+    let opts_ref = opts.as_ref().map(|d| {
+        let o: &CFDictionary = d.as_opaque();
+        o
+    });
+
+    let isrc = unsafe { CGImageSource::with_url(&url, opts_ref) }
+        .ok_or_else(|| Error::Unreadable(format!("ImageIO could not open {}", path.display())))?;
+    let index = unsafe { isrc.primary_image_index() };
+    let image = unsafe { isrc.image_at_index(index, opts_ref) }
+        .ok_or(Error::Missing("primary image"))?;
+
+    let w = CGImage::width(Some(&image));
+    let h = CGImage::height(Some(&image));
+    if w == 0 || h == 0 {
+        return Err(Error::Missing("nonzero image dimensions"));
+    }
+
+    // 32-bit float RGBA in extended linear sRGB for HDR (so above-white
+    // survives), 8-bit RGBA sRGB for SDR.
+    let (cs_name, bits, bytes_per_px) = if hdr {
+        (unsafe { kCGColorSpaceExtendedLinearSRGB }, 32usize, 16usize)
+    } else {
+        (unsafe { kCGColorSpaceSRGB }, 8usize, 4usize)
+    };
+    let cs = unsafe { CGColorSpace::with_name(Some(cs_name)) }
+        .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
+    let stride = w * bytes_per_px;
+    let mut buf = vec![0u8; stride * h];
+
+    let bitmap = if hdr {
+        CGBitmapInfo(
+            CGImageComponentInfo::Float.0
+                | CGImageByteOrderInfo::Order32Little.0
+                | CGImageAlphaInfo::PremultipliedLast.0,
+        )
+    } else {
+        CGBitmapInfo(CGImageAlphaInfo::PremultipliedLast.0)
+    };
+
+    let ctx = unsafe {
+        CGBitmapContextCreate(
+            buf.as_mut_ptr() as *mut c_void,
+            w,
+            h,
+            bits,
+            stride,
+            Some(&cs),
+            bitmap.0,
+        )
+    }
+    .ok_or(Error::NullFromFramework("CGBitmapContextCreate"))?;
+    unsafe {
+        CGContext::draw_image(
+            Some(&ctx),
+            CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize { width: w as f64, height: h as f64 },
+            },
+            Some(&image),
+        )
+    };
+    drop(ctx);
+
+    Ok((w as u32, h as u32, buf, bytes_per_px))
+}
+
+pub(crate) fn load_hdr(path: &Path) -> Result<HdrRgb> {
+    let (w, h, buf, bpp) = render(path, true)?;
+    let n = (w as usize) * (h as usize);
+    let mut data = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        let o = i * bpp;
+        for c in 0..3 {
+            let b = &buf[o + c * 4..o + c * 4 + 4];
+            data.push(f32::from_ne_bytes([b[0], b[1], b[2], b[3]]).max(0.0));
+        }
+    }
+    Ok(HdrRgb { width: w, height: h, data })
+}
+
+pub(crate) fn load_sdr(path: &Path) -> Result<Rgb> {
+    let (w, h, buf, bpp) = render(path, false)?;
+    let n = (w as usize) * (h as usize);
+    let mut data = Vec::with_capacity(n * 3);
+    for i in 0..n {
+        let o = i * bpp;
+        data.extend_from_slice(&[
+            buf[o] as u16,
+            buf[o + 1] as u16,
+            buf[o + 2] as u16,
+        ]);
+    }
+    Ok(Rgb { width: w, height: h, bits: 8, data })
 }
 
 pub(crate) fn inspect_path(path: &Path) -> Result<ReadBack> {

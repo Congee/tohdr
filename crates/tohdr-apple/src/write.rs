@@ -16,8 +16,8 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use objc2_core_foundation::{
-    CFBoolean, CFData, CFDictionary, CFMutableData, CFNumber, CFNumberType, CFRetained, CFString,
-    CFType,
+    CFArray, CFBoolean, CFData, CFDictionary, CFMutableData, CFNumber, CFNumberType, CFRetained,
+    CFString, CFType,
 };
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
@@ -25,10 +25,13 @@ use objc2_core_graphics::{
     kCGColorSpaceExtendedLinearSRGB, kCGColorSpaceSRGB,
 };
 use objc2_image_io::{
-    kCGImageDestinationEncodeRequest, kCGImageDestinationEncodeToISOGainmap,
-    kCGImageDestinationLossyCompressionQuality, CGImageDestination,
+    kCGImageAuxiliaryDataInfoData, kCGImageAuxiliaryDataInfoDataDescription,
+    kCGImageAuxiliaryDataInfoMetadata, kCGImageAuxiliaryDataTypeHDRGainMap,
+    kCGImageAuxiliaryDataTypeISOGainMap, kCGImageDestinationEncodeRequest,
+    kCGImageDestinationEncodeToISOGainmap, kCGImageDestinationLossyCompressionQuality,
+    CGImageDestination, CGImageMetadataTag, CGImageMetadataType, CGMutableImageMetadata,
 };
-use tohdr_core::{HdrRgb, Rgb};
+use tohdr_core::{EncodeOptions, GainMapMeta, GainPlane, HdrRgb, Rgb};
 
 use crate::{Error, Result};
 
@@ -156,32 +159,148 @@ pub fn encode_from_hdr(hdr: &HdrRgb, quality: u8) -> Result<Vec<u8>> {
     Ok(out.to_vec())
 }
 
-/// Attach a gain plane we derived ourselves to an SDR base, through ImageIO.
+/// `L008`: one 8-bit luminance channel, the `PixelFormat` Apple reports for
+/// every gain plane measured (`IMG_4913.HEIC`, `DSC07752.heic`, and ImageIO's
+/// own output).
+const PIXEL_FORMAT_L008: i64 = 1_278_226_488;
+
+/// Build the `CGImageMetadata` holding the ISO 21496-1 parameters, in the
+/// `HDRToneMap` namespace ImageIO reads them back from.
 ///
-/// Used by the engine comparison so Engine A and Engine B encode the *same*
-/// derived inputs. `_meta` is currently unused: ImageIO recomputes the ISO
-/// parameters from the plane it is handed rather than accepting ours, which is
-/// itself a finding worth keeping visible rather than papering over.
-pub fn encode_parts(base: &Rgb, quality: u8) -> Result<Vec<u8>> {
+/// Shape reverse-engineered from `IMG_4913.HEIC` via `examples/probe_meta`:
+/// three scalars at the top level plus a `ChannelMetadata` array whose single
+/// element is a *structure* tag carrying the five per-channel parameters.
+fn tone_map_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImageMetadata>> {
+    let md = unsafe { CGMutableImageMetadata::new() };
+    let ns = CFString::from_str("http://ns.apple.com/HDRToneMap/1.0/");
+    let prefix = CFString::from_str("HDRToneMap");
+    unsafe { md.register_namespace_for_prefix(&ns, &prefix, std::ptr::null_mut()) };
+
+    let set = |path: &str, v: f64| {
+        let p = CFString::from_str(path);
+        let n = cf_num_f64(v);
+        unsafe { md.set_value_with_path(None, &p, n.as_ref()) };
+    };
+    set("HDRToneMap:Version", 1.0);
+    set("HDRToneMap:BaseHeadroom", meta.base_headroom as f64);
+    set("HDRToneMap:AlternateHeadroom", meta.alt_headroom as f64);
+
+    let fields: [(&str, f64); 5] = [
+        ("GainMapMin", meta.min_log2[0] as f64),
+        ("GainMapMax", meta.max_log2[0] as f64),
+        ("Gamma", meta.gamma[0] as f64),
+        ("BaseOffset", meta.base_offset[0] as f64),
+        ("AlternateOffset", meta.alt_offset[0] as f64),
+    ];
+    let keys: Vec<CFRetained<CFString>> =
+        fields.iter().map(|(k, _)| CFString::from_str(k)).collect();
+    let vals: Vec<CFRetained<CGImageMetadataTag>> = fields
+        .iter()
+        .map(|(k, v)| {
+            let name = CFString::from_str(k);
+            let num = cf_num_f64(*v);
+            unsafe {
+                CGImageMetadataTag::new(
+                    &ns,
+                    Some(&prefix),
+                    &name,
+                    CGImageMetadataType::Default,
+                    num.as_ref(),
+                )
+            }
+            .ok_or(Error::NullFromFramework("CGImageMetadataTagCreate"))
+        })
+        .collect::<Result<_>>()?;
+
+    let key_refs: Vec<&CFString> = keys.iter().map(|k| k.as_ref()).collect();
+    let val_refs: Vec<&CGImageMetadataTag> = vals.iter().map(|v| v.as_ref()).collect();
+    let struct_dict = CFDictionary::<CFString, CGImageMetadataTag>::from_slices(&key_refs, &val_refs);
+    let struct_name = CFString::from_str("[0]");
+    let struct_tag = unsafe {
+        CGImageMetadataTag::new(
+            &ns,
+            Some(&prefix),
+            &struct_name,
+            CGImageMetadataType::Structure,
+            struct_dict.as_opaque().as_ref(),
+        )
+    }
+    .ok_or(Error::NullFromFramework("CGImageMetadataTagCreate (struct)"))?;
+
+    let arr = CFArray::<CGImageMetadataTag>::from_objects(&[struct_tag.as_ref()]);
+    let arr_path = CFString::from_str("HDRToneMap:ChannelMetadata");
+    unsafe { md.set_value_with_path(None, &arr_path, arr.as_opaque().as_ref()) };
+
+    let bpath = CFString::from_str("HDRToneMap:BaseColorIsWorkingColor");
+    let b = CFBoolean::new(meta.use_base_color_space);
+    unsafe { md.set_value_with_path(None, &bpath, b.as_ref()) };
+
+    Ok(md)
+}
+
+/// Attach a gain plane *we* derived to an SDR base, through ImageIO.
+///
+/// This is the path the engine comparison uses, so both engines encode the
+/// same derived inputs — otherwise a benchmark would be measuring two
+/// different derivations as much as two different containers.
+pub fn encode_parts(
+    base: &Rgb,
+    gain: &GainPlane,
+    meta: &GainMapMeta,
+    opts: &EncodeOptions,
+) -> Result<Vec<u8>> {
     let image = cg_image_from_sdr(base)?;
     let out = CFMutableData::new(None, 0).ok_or(Error::NullFromFramework("CFDataCreateMutable"))?;
     let uti = CFString::from_str(HEIC_UTI);
     let dest = unsafe { CGImageDestination::with_data(&out, &uti, 1, None) }
         .ok_or(Error::NullFromFramework("CGImageDestinationCreateWithData"))?;
 
-    let q = cf_num_f64((quality.clamp(1, 100) as f64) / 100.0);
-    let yes = CFBoolean::new(true);
-    let opts = cf_dict(&[
+    let q = cf_num_f64((opts.base_quality.clamp(1, 100) as f64) / 100.0);
+    let img_opts = cf_dict(&[(
+        unsafe { kCGImageDestinationLossyCompressionQuality },
+        q.as_ref(),
+    )]);
+    unsafe { dest.add_image(&image, Some(&img_opts)) };
+
+    // The gain plane, described the way ImageIO describes one when reading:
+    // tightly packed 8-bit luminance, `BytesPerRow` = width.
+    let plane = CFData::from_bytes(&gain.data);
+    let w = CFNumber::new_i64(gain.width as i64);
+    let h = CFNumber::new_i64(gain.height as i64);
+    let bpr = CFNumber::new_i64(gain.width as i64);
+    let fmt = CFNumber::new_i64(PIXEL_FORMAT_L008);
+    let desc = cf_dict(&[
+        (&CFString::from_str("Width"), w.as_ref()),
+        (&CFString::from_str("Height"), h.as_ref()),
+        (&CFString::from_str("BytesPerRow"), bpr.as_ref()),
+        (&CFString::from_str("PixelFormat"), fmt.as_ref()),
+    ]);
+
+    let md = tone_map_metadata(meta)?;
+    let aux = cf_dict(&[
         (
-            unsafe { kCGImageDestinationLossyCompressionQuality },
-            q.as_ref(),
+            unsafe { kCGImageAuxiliaryDataInfoData },
+            plane.as_ref(),
         ),
         (
-            unsafe { objc2_image_io::kCGImageDestinationPreserveGainMap },
-            yes.as_ref(),
+            unsafe { kCGImageAuxiliaryDataInfoDataDescription },
+            desc.as_opaque().as_ref(),
+        ),
+        (
+            unsafe { kCGImageAuxiliaryDataInfoMetadata },
+            md.as_ref(),
         ),
     ]);
-    unsafe { dest.add_image(&image, Some(&opts)) };
+
+    if opts.flavor.writes_iso() {
+        let k: &CFString = unsafe { kCGImageAuxiliaryDataTypeISOGainMap };
+        unsafe { dest.add_auxiliary_data_info(k, &aux) };
+    }
+    if opts.flavor.writes_apple() {
+        let k: &CFString = unsafe { kCGImageAuxiliaryDataTypeHDRGainMap };
+        unsafe { dest.add_auxiliary_data_info(k, &aux) };
+    }
+
     if !unsafe { dest.finalize() } {
         return Err(Error::FinalizeFailed);
     }
