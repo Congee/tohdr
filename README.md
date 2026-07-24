@@ -61,12 +61,19 @@ and the Python checker both called valid, while ImageIO reported no ISO gain map
 at all. The cause was a missing `grpl`/`altr` entity group; nothing but the
 platform oracle could have caught it.
 
+The second layer needed auditing too. Adversarial review found that criteria 1
+and 4 could pass *vacuously* — the "base" item was derived from `dimg[0]` and
+then compared against `dimg[0]`. Both now compare against `pitm`, which lives
+in a different box, and the fix is demonstrated with a crafted file whose
+`dimg` is reversed to `[gain, base]`: it fails, where the old checker passed
+it.
+
 Current status against the criteria:
 
 | File | Result |
 |---|---|
 | `IMG_4913.HEIC` (reference) | 11 passed, 0 failed |
-| Engine A output | 9 passed, 0 failed, 2 skipped |
+| Engine A output | 10 passed, 0 failed, 1 skipped |
 | Engine B output | 10 passed, 0 failed, 1 skipped |
 | `DSC07752_iso.heic` | **4 failed** |
 | `DSC07752.heic` | **1 failed** |
@@ -105,7 +112,10 @@ docs/                  structure teardown, acceptance criteria, engine compariso
   project in the iOS WeChat app. Every check here is necessary; only a device
   test is sufficient.
 - `tohdr_apple::encode_from_hdr` — letting ImageIO author the file from an HDR
-  image — emits zero declared headroom from a source with real headroom.
-  Undiagnosed; it is why `AppleEngine::encode` uses our own derived plane.
+  image — emits zero declared headroom from a source with real headroom. A
+  sweep over four pixel layouts and two colour spaces rules out the pixel
+  format; the likely cause is a content-headroom declaration that
+  `objc2-core-graphics` 0.3.2 provides no way to set. It is why
+  `AppleEngine::encode` uses our own derived plane instead.
 - The gain-map derivation is scalar and unoptimized; at 12 MP it costs more
   than either encoder.
