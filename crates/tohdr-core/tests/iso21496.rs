@@ -278,3 +278,60 @@ fn we_parse_oracle_bytes() {
         assert_meta_close(&meta, &parsed);
     }
 }
+
+/// The real files on disk are 1 byte longer than the C.2.2 struct libavif
+/// writes: 62 vs 61 for one channel, 142 vs 141 for three. That extra leading
+/// byte is the `ToneMapImage` version (ISO/IEC 23008-12 6.6.2.4.2) that wraps
+/// the payload inside a `tmap` item; `serialize`/`parse` deliberately speak the
+/// bare struct, so callers must strip it. Both arithmetics confirm the split:
+/// 62 = 1 + 61 and 142 = 1 + 141 exactly.
+const TONE_MAP_IMAGE_VERSION_LEN: usize = 1;
+
+#[test]
+fn parses_real_apple_payload() {
+    let raw = include_bytes!("../../../assets/fixtures/img4913_iso21496.bin");
+    assert_eq!(raw.len(), 62);
+    assert_eq!(raw[0], 0, "ToneMapImage version");
+
+    let m = tohdr_core::iso21496::parse(&raw[TONE_MAP_IMAGE_VERSION_LEN..])
+        .expect("real iPhone payload must parse");
+
+    // Apple stores every fraction over 1_000_000; these are those values.
+    assert!((m.alt_headroom - 2.287109).abs() < 1e-6, "{}", m.alt_headroom);
+    assert_eq!(m.base_headroom, 0.0);
+    assert!((m.min_log2[0] - -0.001963).abs() < 1e-6);
+    assert!((m.max_log2[0] - 2.287109).abs() < 1e-6);
+    assert!((m.gamma[0] - 0.825684).abs() < 1e-6);
+    assert!((m.base_offset[0] - 1.0e-5).abs() < 1e-9);
+    assert!((m.alt_offset[0] - 1.0e-5).abs() < 1e-9);
+    assert!(m.use_base_color_space, "flags byte 0x40");
+
+    // Apple's own file holds the invariant the washed-out exports break.
+    assert_eq!(m.max_log2[0], m.alt_headroom);
+
+    // Our own bytes must survive a round trip through the same values. They are
+    // not byte-identical to Apple's: we quantize over 1<<16, Apple over 1e6.
+    let again = tohdr_core::iso21496::parse(&tohdr_core::iso21496::serialize(&m)).unwrap();
+    assert!((again.alt_headroom - m.alt_headroom).abs() < 5e-4);
+    assert!((again.gamma[0] - m.gamma[0]).abs() < 5e-4);
+}
+
+#[test]
+fn parses_real_three_channel_payload() {
+    let raw = include_bytes!("../../../assets/fixtures/dsc07752_iso21496.bin");
+    assert_eq!(raw.len(), 142, "1 version byte + 141-byte 3-channel struct");
+
+    let m = tohdr_core::iso21496::parse(&raw[TONE_MAP_IMAGE_VERSION_LEN..])
+        .expect("3-channel payload must parse");
+
+    // The defect, asserted: 3.568 stops declared, 1.96 actually encoded.
+    assert!((m.alt_headroom - 3.568470).abs() < 1e-6, "{}", m.alt_headroom);
+    assert!((m.max_log2[0] - 1.96).abs() < 1e-6, "{}", m.max_log2[0]);
+    assert!(
+        m.alt_headroom - m.max_log2[0] > 1.6,
+        "over-declared headroom is what a renderer under-applies"
+    );
+    // Flagged multichannel, yet all three channels are identical.
+    assert_eq!(m.min_log2[0], m.min_log2[2]);
+    assert_eq!(m.gamma[0], m.gamma[2]);
+}

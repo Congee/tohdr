@@ -250,18 +250,18 @@ offset  bytes                  field                         value
 6-9     00 00 00 00            base_hdr_headroom_num            0
 10-13   00 0f 42 40            base_hdr_headroom_den            1,000,000
                                 -> hdr_capacity_min = 2^0.0    = 1.0
-14-17   00 22 e6 05            alternate_hdr_headroom_num       2,286,597
+14-17   00 22 e6 05            alternate_hdr_headroom_num       2,287,109
 18-21   00 0f 42 40            alternate_hdr_headroom_den       1,000,000
-                                -> hdr_capacity_max = 2^2.286597 = 4.8827
+                                -> hdr_capacity_max = 2^2.287109 = 4.880771
 22-25   ff ff f8 55            gain_map_min_num (signed)        -1,963
 26-29   00 0f 42 40            gain_map_min_den                 1,000,000
                                 -> min_content_boost = 2^-0.001963 = 0.99864
-30-33   00 22 e6 05            gain_map_max_num                 2,286,597
+30-33   00 22 e6 05            gain_map_max_num                 2,287,109
 34-37   00 0f 42 40            gain_map_max_den                 1,000,000
-                                -> max_content_boost = 2^2.286597  = 4.8827
-38-41   00 0c 99 54            gain_map_gamma_num                826,196
+                                -> max_content_boost = 2^2.287109 = 4.880771
+38-41   00 0c 99 54            gain_map_gamma_num                825,684
 42-45   00 0f 42 40            gain_map_gamma_den                1,000,000
-                                -> gamma = 0.826196
+                                -> gamma = 0.825684
 46-49   00 00 00 0a            base_offset_num (signed)          10
 50-53   00 0f 42 40            base_offset_den                   1,000,000
                                 -> offset_sdr = 0.00001
@@ -279,7 +279,13 @@ Full hexdump (62 bytes):
 00000030: 000a 000f 4240 0000 000a 000f 4240       ....B@......B@
 ```
 
-**Cross-validation**: `exiftool -a -u -G1` reports `[XMP-HDRGainMap] HDR Gain Map Headroom : 4.880772` for IMG_4913 — matches `2^2.286597 = 4.8827` (small rounding in the last digit is expected, XMP stores its own separately-rounded float). This confirms the field mapping above, independent of the libultrahdr-derived struct.
+**Cross-validation**: `exiftool -a -u -G1` reports `[XMP-HDRGainMap] HDR Gain Map Headroom : 4.880772` for IMG_4913, against `2^2.287109 = 4.880771` from these bytes — agreement to 1e-6, so the field mapping is confirmed independently of the libultrahdr-derived struct.
+
+Third independent agreement: decoding the MakerApple tags of the same file through Skia's formula (`tag33=1.00999999`, `tag48=0.05253907666`, see `crates/tohdr-core/src/apple.rs`) yields **4.880675x**, within 1e-4 of both. Apple writes this headroom three times — ISO `tmap` payload, XMP, and MakerNote — and all three agree.
+
+**The extra header byte, resolved by arithmetic**: this 6-byte header is one byte longer than the 5 that libavif writes (`minimum_version` u16 + `writer_version` u16 + flags). The offset-4 "reserved" byte above is the wrong reading — the byte is a leading `ToneMapImage` version at offset **0** (ISO/IEC 23008-12 6.6.2.4.2), which wraps the C.2.2 struct inside a `tmap` item, with the two versions shifted to bytes 1-2 and 3-4. The file sizes prove it: libavif's C.2.2 struct is 61 bytes for one channel and 141 for three, and the two real payloads are exactly **62 = 1 + 61** and **142 = 1 + 141**. A 5-byte header cannot produce 142 at all (`142 - 5 - 16 = 121`, not a multiple of the 40-byte per-channel block).
+
+Both readings decode identical field values, since either way the fractions begin at byte 6 — but only the version-prefix reading generalizes. `crates/tohdr-core/tests/iso21496.rs` asserts this against both fixtures: strip one byte, and our parser reads Apple's real payload field-for-field.
 
 ### DSC07752_iso payload — decode (142 bytes, multichannel)
 
@@ -299,7 +305,9 @@ channel B: identical to R
 
 **Cross-validation**: `exiftool` reports `[XMP-HDRGainMap] HDR Gain Map Headroom : 11.863581` for **DSC07752.heic** (the non-ISO sibling from the same source) — matches `2^3.56847 = 11.8636` almost exactly. That number is carried through from the original camera/tool metadata into both re-encodes.
 
-**But it does not match the gain map's own encoded range**: the metadata claims `hdr_capacity_max = 11.86x`, but the gain-map picture itself only encodes up to `max_content_boost = 3.89x` (`gain_map_max = 1.96` in log2). In the gold file these two numbers are **identical** (both 2.286597 → 4.88x) by construction. This 3x discrepancy in DSC07752_iso is a real, decodable, structural defect — not a guess.
+**But it does not match the gain map's own encoded range**: the metadata claims `hdr_capacity_max = 11.86x`, but the gain-map picture itself only encodes up to `max_content_boost = 3.89x` (`gain_map_max = 1.96` in log2). In the gold file these two numbers are **identical** (both 2.287109 → 4.880771x) by construction. This 3x discrepancy in DSC07752_iso is a real, decodable, structural defect — not a guess.
+
+Why that produces a washed-out render specifically on a phone: the standard weight is `w = clamp((display_hr - base_hr) / (alt_hr - base_hr), 0, 1)`, all in log2 stops (libavif `src/gainmap.c:61`). With `base_hr = 0` and `alt_hr = 3.568`, a ~2.3-stop phone display gets `w = 0.645`, so only 1.26 of the map's 1.96 encoded stops are applied. A Mac XDR panel (~2.98 stops) gets `w = 0.835` → 1.64 stops, noticeably closer to full. The gold file's `alt_hr = 2.287` is *below* both displays' headroom, so `w` clamps to 1.0 and the map applies in full everywhere. That asymmetry matches the reported symptom — fine on the Mac, washed on the phone — but it is a prediction from the metadata, not a measurement of any particular app's renderer.
 
 ---
 

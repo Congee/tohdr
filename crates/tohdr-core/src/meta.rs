@@ -63,19 +63,44 @@ pub struct GainMapMeta {
 }
 
 impl Default for GainMapMeta {
-    /// SDR base, ~2 stops of headroom, gamma 1.0 — a sane starting point, not
-    /// a spec default.
+    /// What an iPhone actually writes, decoded field-by-field from
+    /// `assets/fixtures/img4913_iso21496.bin` — deliberately *not* the
+    /// ISO/UltraHDR nominal defaults (gamma 1.0, offsets 1/64), which Apple
+    /// does not use. Only the headroom is scene-dependent; see
+    /// [`Self::with_headroom_stops`].
     fn default() -> Self {
-        const EPS: f32 = 1.0 / 64.0;
+        // Apple's offsets are 1e-5, ~650x smaller than UltraHDR's 1/64, so
+        // near-black pixels get far less lift.
+        const APPLE_OFFSET: f32 = 1.0e-5;
         Self {
-            min_log2: [0.0; 3],
-            max_log2: [2.0; 3],
-            gamma: [1.0; 3],
-            base_offset: [EPS; 3],
-            alt_offset: [EPS; 3],
+            min_log2: [-0.001963; 3],
+            max_log2: [APPLE_REFERENCE_STOPS; 3],
+            gamma: [0.825684; 3],
+            base_offset: [APPLE_OFFSET; 3],
+            alt_offset: [APPLE_OFFSET; 3],
             base_headroom: 0.0,
-            alt_headroom: 2.0,
+            alt_headroom: APPLE_REFERENCE_STOPS,
             use_base_color_space: true,
+        }
+    }
+}
+
+/// IMG_4913's headroom, 2.287109 stops == 4.880771x linear (exiftool reports
+/// 4.880772 for the same file). Scene-specific — a placeholder, not a constant
+/// to ship as-is.
+const APPLE_REFERENCE_STOPS: f32 = 2.287109;
+
+impl GainMapMeta {
+    /// Retargets the headroom, keeping `max_log2 == alt_headroom` — the
+    /// invariant IMG_4913 holds and both washed-out exports violate. Declaring
+    /// more headroom than the map encodes makes a conformant renderer
+    /// under-apply it (weight is `(display - base) / (alt - base)`, libavif
+    /// `src/gainmap.c:61`), so the flat SDR base shows through.
+    pub fn with_headroom_stops(stops: f32) -> Self {
+        Self {
+            max_log2: [stops; 3],
+            alt_headroom: stops,
+            ..Self::default()
         }
     }
 }
