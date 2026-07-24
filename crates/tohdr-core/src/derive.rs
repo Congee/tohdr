@@ -90,12 +90,12 @@ impl Default for DeriveOptions {
     }
 }
 
-const EPS: f32 = 1e-6;
+pub(crate) const EPS: f32 = 1e-6;
 // BT.709 luma weights, matching libavif's grayscale conversion for
 // single-channel gain maps (`src/gainmap.c:700-704`, `avifColorPrimariesComputeYCoeffs`).
-const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+pub(crate) const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
-fn srgb_to_linear(c: f32) -> f32 {
+pub(crate) fn srgb_to_linear(c: f32) -> f32 {
     let c = c.clamp(0.0, 1.0);
     if c <= 0.04045 {
         c / 12.92
@@ -104,7 +104,7 @@ fn srgb_to_linear(c: f32) -> f32 {
     }
 }
 
-fn linear_to_srgb(c: f32) -> f32 {
+pub(crate) fn linear_to_srgb(c: f32) -> f32 {
     let c = c.clamp(0.0, 1.0);
     if c <= 0.0031308 {
         c * 12.92
@@ -113,7 +113,7 @@ fn linear_to_srgb(c: f32) -> f32 {
     }
 }
 
-fn sample_encoded(img: &Rgb, x: u32, y: u32, c: usize) -> f32 {
+pub(crate) fn sample_encoded(img: &Rgb, x: u32, y: u32, c: usize) -> f32 {
     let idx = (y as usize * img.width as usize + x as usize) * 3 + c;
     img.data[idx] as f32 / img.max_value() as f32
 }
@@ -129,7 +129,13 @@ fn luma_linear(img: &Rgb, x: u32, y: u32) -> f32 {
 /// pixel coordinate, returning a value in `0.0..=1.0`. Bilinear is a
 /// reasonable, cheap choice for the up to 2x-subsampled planes this module
 /// produces; libavif uses its general `avifImageScale` for the same purpose.
-fn sample_gain_bilinear(gain: &GainPlane, x: u32, y: u32, base_w: u32, base_h: u32) -> f32 {
+pub(crate) fn sample_gain_bilinear(
+    gain: &GainPlane,
+    x: u32,
+    y: u32,
+    base_w: u32,
+    base_h: u32,
+) -> f32 {
     if gain.width == base_w && gain.height == base_h {
         return gain.data[y as usize * gain.width as usize + x as usize] as f32 / 255.0;
     }
@@ -166,14 +172,37 @@ fn sample_gain_bilinear(gain: &GainPlane, x: u32, y: u32, base_w: u32, base_h: u
 pub fn derive(hdr: &Rgb, sdr_base: &Rgb, opts: &DeriveOptions) -> (GainPlane, GainMapMeta) {
     assert_eq!(hdr.width, sdr_base.width, "hdr/base width mismatch");
     assert_eq!(hdr.height, sdr_base.height, "hdr/base height mismatch");
-    let (w, h) = (hdr.width, hdr.height);
+    derive_from_luma(
+        hdr.width,
+        hdr.height,
+        |x, y| luma_linear(hdr, x, y),
+        |x, y| luma_linear(sdr_base, x, y),
+        opts,
+    )
+}
+
+/// The derivation kernel, over linear-light luma samplers rather than [`Rgb`].
+///
+/// Exists so the extended-range path ([`crate::hdr`]) and the fixed-range
+/// [`derive`] share one copy of the equations: an above-white HDR source cannot
+/// round-trip through [`Rgb`] at all (module docs, "Transfer function"), but
+/// everything past luma extraction is identical. Both samplers return **linear**
+/// light with `1.0` at SDR diffuse white; `alt_luma` may exceed `1.0`, which is
+/// exactly what [`Rgb`] cannot hold.
+pub fn derive_from_luma(
+    w: u32,
+    h: u32,
+    alt_luma: impl Fn(u32, u32) -> f32,
+    base_luma: impl Fn(u32, u32) -> f32,
+    opts: &DeriveOptions,
+) -> (GainPlane, GainMapMeta) {
     let n = w as usize * h as usize;
 
     let mut log2_gain = vec![0f32; n];
     for y in 0..h {
         for x in 0..w {
-            let base = luma_linear(sdr_base, x, y);
-            let alt = luma_linear(hdr, x, y);
+            let base = base_luma(x, y);
+            let alt = alt_luma(x, y);
             let ratio = (alt + opts.alt_offset) / (base + opts.base_offset);
             log2_gain[y as usize * w as usize + x as usize] = ratio.max(EPS).log2();
         }
