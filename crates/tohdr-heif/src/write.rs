@@ -79,7 +79,7 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
     }
 
     // --- ftyp ---
-    let mut brands = vec![*b"mif1", *b"heic", *b"miaf"];
+    let mut brands = vec![*b"mif1", *b"heic", *b"miaf", *b"heix", *b"MiHA", *b"MiHB"];
     if req.flavor.writes_iso() {
         brands.push(*b"tmap");
     }
@@ -99,6 +99,8 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
         props.push(colr_box(c));
         assocs.push((base_id, props.len() as u16, true));
     }
+    props.push(irot_box(0));
+    assocs.push((base_id, props.len() as u16, true));
 
     props.push(ispe_box(req.gain.width, req.gain.height));
     assocs.push((gain_id, props.len() as u16, false));
@@ -106,10 +108,25 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
     assocs.push((gain_id, props.len() as u16, false));
     props.push(hvcc_box(&req.gain.hvcc));
     assocs.push((gain_id, props.len() as u16, true));
+    // A gain map is not a colour image, but it still needs a `colr`: both
+    // `IMG_4913.HEIC` (item 62) and ImageIO's own ISO output (item 11) put an
+    // essential `nclx` with everything "unspecified" (2/2/2) and full range on
+    // the gain-map item, and ImageIO reports no ISO gain map at all when it is
+    // absent -- measured, and the last thing separating our `tmap` from one
+    // ImageIO accepts.
+    props.push(colr_box(&ColourInfo::Nclx {
+        primaries: 2,
+        transfer: 2,
+        matrix: 2,
+        full_range: true,
+    }));
+    assocs.push((gain_id, props.len() as u16, true));
     if req.flavor.writes_apple() {
         props.push(auxc_box(crate::APPLE_GAINMAP_URN));
         assocs.push((gain_id, props.len() as u16, true));
     }
+    props.push(irot_box(0));
+    assocs.push((gain_id, props.len() as u16, true));
 
     if let Some(id) = tmap_id {
         // Every image item, derived ones included, is expected to carry an
@@ -117,10 +134,23 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
         // base's own dimensions for generic-item-enumeration convenience.
         props.push(ispe_box(req.base.width, req.base.height));
         assocs.push((id, props.len() as u16, false));
+        // `pixi` and `colr` are not decoration here. macOS ImageIO reports
+        // `iso_aux = false` for an otherwise byte-valid `tmap` that lacks
+        // them — measured, not assumed — so a file without them is invisible
+        // as an ISO gain map to every Apple consumer. `IMG_4913.HEIC` carries
+        // `colr`/`ispe`/`pixi` on its own `tmap` (item 122).
+        //
+        // The `tmap` stands for the *reconstructed* image, so its `pixi`
+        // describes 3 colour channels regardless of the gain plane's own
+        // single channel.
+        props.push(pixi_box(3, req.base.bit_depth));
+        assocs.push((id, props.len() as u16, false));
         if let Some(c) = &req.tmap_colour {
             props.push(colr_box(c));
             assocs.push((id, props.len() as u16, true));
         }
+        props.push(irot_box(0));
+        assocs.push((id, props.len() as u16, true));
     }
 
     if let Some((max_cll, max_pall)) = req.clli {
@@ -156,12 +186,28 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
     let mut meta = Vec::new();
     let meta_pos = begin_fullbox(&mut meta, b"meta", 0, 0);
     write_hdlr(&mut meta);
+    // `pitm` names the base, matching `IMG_4913.HEIC` and `DSC07752_iso.heic`.
+    // Pointing it at the `tmap` was tried and changes nothing about whether
+    // ImageIO recognizes the gain map.
     write_pitm(&mut meta, base_id);
     write_iinf(&mut meta, base_id, gain_id, tmap_id, exif_id, xmp_id);
     if !iref_entries.is_empty() {
         write_iref(&mut meta, &iref_entries);
     }
     write_iprp(&mut meta, &props, &assocs);
+    if let Some(id) = tmap_id {
+        // The box that makes a `tmap` visible to macOS. Without it ImageIO
+        // enumerates the base and the `tmap` as two unrelated images and
+        // reports no ISO gain map at all; with it, one image with the gain
+        // map attached. Every file ImageIO accepts carries it and no file
+        // lacking it is accepted -- see docs/heic-gainmap-structure.md.
+        //
+        // `altr` means "these are alternatives, prefer the first", so the
+        // `tmap` leads and the base follows: a reader that understands tone
+        // mapping shows the reconstruction, one that does not falls back to
+        // the SDR base.
+        write_grpl_altr(&mut meta, next_id, &[id, base_id]);
+    }
     if !idat_body.is_empty() {
         let p = begin_box(&mut meta, b"idat");
         meta.extend_from_slice(&idat_body);
@@ -414,6 +460,34 @@ fn colr_box(c: &ColourInfo) -> Vec<u8> {
     }
     end_box(&mut b, p);
     b
+}
+
+/// `grpl` holding a single `altr` EntityToGroupBox.
+///
+/// The grouping type *is* the box's four-CC (ISO/IEC 14496-12 8.18.2), so
+/// `altr` is both the box name and the semantics: an alternative-entity group
+/// whose members are listed in preference order.
+fn write_grpl_altr(buf: &mut Vec<u8>, group_id: u32, entities: &[u32]) {
+    let g = begin_box(buf, b"grpl");
+    let a = begin_fullbox(buf, b"altr", 0, 0);
+    buf.extend_from_slice(&group_id.to_be_bytes());
+    buf.extend_from_slice(&(entities.len() as u32).to_be_bytes());
+    for e in entities {
+        buf.extend_from_slice(&e.to_be_bytes());
+    }
+    end_box(buf, a);
+    end_box(buf, g);
+}
+
+/// `irot`, the rotation transform. Angle is in 90-degree counter-clockwise
+/// steps, so `0` is a no-op — which is exactly what Apple writes on every item
+/// of an unrotated capture, as an *essential* property.
+fn irot_box(angle: u8) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let p = begin_box(&mut buf, b"irot");
+    buf.push(angle & 0x03);
+    end_box(&mut buf, p);
+    buf
 }
 
 fn clli_box(max_cll: u16, max_pall: u16) -> Vec<u8> {

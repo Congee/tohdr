@@ -100,8 +100,22 @@ impl GainMapEncoder for PortableEngine {
             gain: gain_coded,
             meta: *meta,
             flavor: opts.flavor,
-            base_colour: None,
-            tmap_colour: None,
+            base_colour: Some(tohdr_heif::ColourInfo::Nclx {
+                primaries: 1,  // BT.709 / sRGB
+                transfer: 13,  // sRGB
+                matrix: 6,     // BT.601
+                full_range: true,
+            }),
+            // The `tmap` describes the reconstructed HDR image, not the SDR
+            // base: Display P3 primaries with the PQ transfer, which is what
+            // `IMG_4913.HEIC` puts here (as an ICC profile rather than
+            // `nclx`).
+            tmap_colour: Some(tohdr_heif::ColourInfo::Nclx {
+                primaries: 12, // Display P3
+                transfer: 16,  // SMPTE ST 2084 (PQ)
+                matrix: 6,
+                full_range: true,
+            }),
             exif: None,
             xmp: None,
             clli: None,

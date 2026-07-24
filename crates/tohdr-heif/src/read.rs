@@ -11,6 +11,9 @@ use tohdr_core::iso21496;
 /// A decoded `ipco` entry. `Other` covers property types we don't interpret
 /// (e.g. `iscl`) — they still occupy a slot, since `ipma` associations index
 /// into `ipco` positionally and every property counts toward that index.
+// Several variants carry payloads we parse but do not yet consume; keeping
+// them decoded means a future reader change is a match arm, not a re-parse.
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) enum Prop {
     Ispe { width: u32, height: u32 },
@@ -298,6 +301,9 @@ impl<'a> HeifFile<'a> {
 /// byte 22 is the NAL-unit arrays, which we do not need.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HvccConfig {
+    /// Kept for diagnostics: hpvca codes 4:0:0 under Main Still Picture (3),
+    /// which mandates 4:2:0, where Apple uses RExt (4).
+    #[allow(dead_code)]
     pub profile_idc: u8,
     /// 0 = monochrome, 1 = 4:2:0, 2 = 4:2:2, 3 = 4:4:4.
     pub chroma_format: u8,

@@ -11,3 +11,6 @@ tohdr-core.workspace = true
 objc2-image-io.workspace = true
 objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true
+
+[dev-dependencies]
+tohdr-portable.workspace = true

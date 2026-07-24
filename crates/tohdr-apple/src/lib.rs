@@ -14,6 +14,11 @@ use std::path::Path;
 
 use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, Rgb};
 
+mod read;
+mod write;
+
+pub use write::{encode_from_hdr, encode_parts};
+
 #[derive(Debug)]
 pub enum Error {
     /// A CoreFoundation constructor returned NULL.
@@ -127,13 +132,11 @@ impl ReadBack {
 
 /// Ask ImageIO what it sees in a file on disk.
 pub fn inspect(path: &Path) -> Result<ReadBack> {
-    let _ = path;
-    todo!("ImageIO read-back")
+    read::inspect_path(path)
 }
 
 /// Ask ImageIO what it sees in an in-memory file, so an encode can be verified
 /// without touching the filesystem.
 pub fn inspect_bytes(bytes: &[u8]) -> Result<ReadBack> {
-    let _ = bytes;
-    todo!("ImageIO read-back from memory")
+    read::inspect_bytes(bytes)
 }
