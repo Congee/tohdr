@@ -27,7 +27,7 @@ use crate::GainMapMeta;
 /// not relative.
 const RATIONAL_DENOM: u32 = 1 << 16;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ParseError {
     /// Fewer bytes than the declared layout requires.
     Truncated,
@@ -35,6 +35,26 @@ pub enum ParseError {
     UnsupportedVersion(u16),
     /// A fraction's denominator was 0 (undefined value, per `avifGainMapValidateMetadata`, `src/gainmap.c:431-441`).
     ZeroDenominator,
+    /// A log2 quantity was far outside anything a real capture produces.
+    ///
+    /// The numerator is a signed 32-bit value over a fixed 65536 denominator,
+    /// so a crafted payload can encode ~32768 stops. `hdr::apply_hdr`
+    /// deliberately has no output clamp (it must represent real headroom), so
+    /// such a value makes `exp2` overflow and every reconstructed sample
+    /// becomes infinite. Rejecting at the parse boundary keeps that from being
+    /// the pixel path's problem.
+    OutOfRange { field: &'static str, value: f32 },
+}
+
+/// Widest log2 range accepted from a file. 64 stops is 1.8e19:1, orders of
+/// magnitude beyond any camera, display, or file format in use.
+const MAX_ABS_LOG2: f32 = 64.0;
+
+fn check_range(field: &'static str, value: f32) -> Result<f32, ParseError> {
+    if !value.is_finite() || value.abs() > MAX_ABS_LOG2 {
+        return Err(ParseError::OutOfRange { field, value });
+    }
+    Ok(value)
 }
 
 impl core::fmt::Display for ParseError {
@@ -43,6 +63,9 @@ impl core::fmt::Display for ParseError {
             Self::Truncated => write!(f, "truncated ISO 21496-1 gain map metadata"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported minimum_version {v}"),
             Self::ZeroDenominator => write!(f, "zero denominator in gain map fraction"),
+            Self::OutOfRange { field, value } => {
+                write!(f, "{field} out of range: {value}")
+            }
         }
     }
 }
@@ -205,6 +228,16 @@ pub fn parse(bytes: &[u8]) -> Result<GainMapMeta, ParseError> {
             base_offset[c] = base_offset[0];
             alt_offset[c] = alt_offset[0];
         }
+    }
+
+    check_range("base_hdr_headroom", base_headroom)?;
+    check_range("alternate_hdr_headroom", alt_headroom)?;
+    for c in 0..3 {
+        check_range("gain_map_min", min_log2[c])?;
+        check_range("gain_map_max", max_log2[c])?;
+        check_range("gamma", gamma[c])?;
+        check_range("base_offset", base_offset[c])?;
+        check_range("alternate_offset", alt_offset[c])?;
     }
 
     Ok(GainMapMeta {

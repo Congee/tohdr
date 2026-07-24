@@ -200,9 +200,21 @@ pub fn derive_consistent(
         opts,
     );
     // The plane can deliver at most max_log2 stops, so that is the honest
-    // declaration. A map with no range at all (fully SDR source) declares zero
-    // headroom rather than a negative one.
-    meta.alt_headroom = meta.max_log2[0].max(0.0);
+    // declaration — unconditionally, including when it is negative.
+    //
+    // Clamping this to `max(0.0)` looked harmless but broke the one invariant
+    // this function exists to hold. A base brighter than the source (an
+    // independently graded SDR trim with lifted shadows, say) yields a
+    // negative max_log2; clamping left `alt_headroom = 0` while `max_log2`
+    // stayed negative, so the two disagreed. Worse, with `base_headroom` also
+    // 0 that made `base == alt`, and `gain_weight` returns 0 for *every*
+    // display in that case — silently switching the map off rather than
+    // applying a small one.
+    //
+    // A negative `alt_headroom` is representable (the ISO field is signed) and
+    // well defined: `gain_weight` takes libavif's `alt < base` branch, which
+    // correctly gives a positive-headroom display no gain from a darkening map.
+    meta.alt_headroom = meta.max_log2[0];
     (plane, meta)
 }
 

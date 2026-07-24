@@ -44,8 +44,16 @@ pub fn headroom_from_tags(tag33: f64, tag48: f64) -> f32 {
     } else {
         -0.303 * tag48 + 2.303
     };
-    // SkExif.cpp:96.
-    2f64.powf(stops.max(0.0)) as f32
+    // SkExif.cpp:96, plus an upper bound Skia does not need and we do: these
+    // tags come from a MakerNote in an untrusted file, and the formula is
+    // linear in tag48 with no domain check, so a corrupt tag48 of -1e30 gives
+    // `stops = 7e31` and `2^stops` overflows to +inf. An infinite "headroom"
+    // then flows into GainMapMeta and out through every consumer. 16 stops is
+    // 65536x, already far past any display or any value tags_from_headroom
+    // will encode.
+    const MAX_STOPS: f64 = 16.0;
+    let stops = if stops.is_nan() { 0.0 } else { stops.clamp(0.0, MAX_STOPS) };
+    2f64.powf(stops) as f32
 }
 
 /// The log2-stops point at which encoding switches from the shallow

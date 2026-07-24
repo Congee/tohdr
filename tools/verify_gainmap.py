@@ -366,13 +366,57 @@ def analyze(path):
             break
     info['tmap_dimg'] = tmap_dimg
 
-    gain_item = None
-    if apple_gain_items:
-        gain_item = apple_gain_items[0]
-    elif tmap_dimg and len(tmap_dimg) >= 2:
-        gain_item = tmap_dimg[1]
+    # Identify the gain map WITHOUT consulting `pitm` or the tmap's `dimg`,
+    # so the criteria that compare against those fields are real comparisons.
+    #
+    # Deriving it from `dimg[1]` and then checking `dimg[1] == gain` (as this
+    # did) is a tautology: a writer emitting [gain, base] would have passed.
+    # The two independent signals are the Apple auxC URN and the fact that a
+    # gain map is single-channel where the base is three-channel.
+    #
+    # Grid tiles have to come out of the candidate set first -- IMG_4913 has
+    # ~120 of them, and its gain tiles are single-channel too, so without this
+    # the pixi signal is hopelessly ambiguous. A tile is an item that some
+    # NON-tmap item derives from.
+    tile_ids = set()
+    for t, f, to in refs:
+        if t == 'dimg' and f not in tmap_items:
+            tile_ids.update(to)
+    coded = [
+        i for i, t in types.items()
+        if t in ('hvc1', 'hev1', 'grid') and i not in tile_ids
+    ]
+
+    def channels(iid):
+        b = item_prop(iid, 'pixi')
+        if not b:
+            return None
+        d = parse_pixi(buf, b)
+        return len(d) if d else None
+
+    gain_item = apple_gain_items[0] if apple_gain_items else None
+    if gain_item is None and tmap_dimg:
+        # No Apple URN. Use `pitm` -- which is independent of `dimg` -- to say
+        # which of the tmap's two inputs is NOT the base. Deliberately does not
+        # assume the gain map is single-channel: a 3-channel gain map is
+        # exactly what criterion 2 exists to catch, and identifying the item by
+        # its channel count would make that criterion unable to see it.
+        others = [i for i in tmap_dimg if i != info.get('primary_item')]
+        if len(others) == 1:
+            gain_item = others[0]
+    if gain_item is None:
+        single = [i for i in coded if channels(i) == 1]
+        if len(single) == 1:
+            gain_item = single[0]
+
+    # `pitm` is the independent statement of which item is the base; criterion
+    # 1 checks that claim against the gain map's identity rather than against
+    # itself, and criterion 4 checks dimg's order against it.
+    base_item = info.get('primary_item')
+
     info['gain_item'] = gain_item
-    info['base_item'] = (tmap_dimg[0] if tmap_dimg else info.get('primary_item'))
+    info['base_item'] = base_item
+    info['coded_items'] = coded
 
     if gain_item is not None:
         b = item_prop(gain_item, 'ispe')
@@ -438,11 +482,21 @@ def check(info, expect_flavor):
         add(0, 'some gain-map signaling present', has_apple or has_iso,
             f'apple={has_apple} iso={has_iso}')
 
-    # 1. base is primary
-    add(1, 'base image is the primary item',
-        info.get('primary_item') is not None
-        and info.get('base_item') == info.get('primary_item'),
-        f"pitm={info.get('primary_item')} base={info.get('base_item')}")
+    # 1. base is primary. `base_item` is identified structurally (see analyze),
+    # never from `pitm`, so this is a real comparison of two independent
+    # signals rather than a field against itself.
+    pitm = info.get('primary_item')
+    gain_id = info.get('gain_item')
+    # Real content: the primary item must be an actual image, and must be
+    # neither the gain map nor the tmap. Comparing pitm to a base that was
+    # *derived from* pitm proved nothing.
+    ok1 = (pitm is not None
+           and pitm in info.get('coded_items', [])
+           and gain_id is not None and pitm != gain_id
+           and pitm not in info.get('tmap_items', []))
+    add(1, 'base image is the primary item', ok1,
+        f"pitm={pitm} gain={gain_id} tmaps={info.get('tmap_items')} "
+        f"(pitm must be a coded image that is neither)")
 
     # 2. gain map is single-channel 8-bit
     pixi = info.get('gain_pixi')
@@ -466,12 +520,19 @@ def check(info, expect_flavor):
     if want_iso and (expect_flavor is not None or has_iso):
         dimg = info.get('tmap_dimg')
         brand_ok = 'tmap' in info.get('brands', [])
-        order_ok = bool(dimg) and len(dimg) == 2 and dimg[0] == info.get('base_item') \
-            and dimg[1] == gain
+        # Both operands are identified structurally in analyze(), so this
+        # really does check the dimg ORDER rather than restating it.
+        base_id = info.get('base_item')
+        # `dimg[0] == pitm` is the real order test: pitm comes from a
+        # different box entirely, so a writer emitting [gain, base] fails here.
+        order_ok = (bool(dimg) and len(dimg) == 2
+                    and base_id is not None and gain is not None
+                    and dimg[0] == base_id and dimg[1] == gain
+                    and dimg[0] != dimg[1])
         size_ok = bool(iso) and iso['payload_bytes'] in (62, 142) and iso['exact']
         add(4, 'tmap item, dimg [base,gain], tmap brand, exact payload',
             brand_ok and order_ok and size_ok,
-            f'brand={brand_ok} dimg={dimg} payload='
+            f'brand={brand_ok} dimg={dimg} want=[{base_id}, {gain}] payload='
             f'{iso["payload_bytes"] if iso else None} exact={iso["exact"] if iso else None}')
     else:
         skip(4, 'ISO tmap signaling', 'flavor does not include ISO')

@@ -526,11 +526,16 @@ fn parse_ipma(
     let large_index = flags_bytes[2] & 1 != 0;
     let count = r.u32()?;
 
-    let mut out = Vec::with_capacity(count as usize);
+    // Same unbounded-reservation hazard as `parse_iloc`; smallest entry here
+    // is 3 bytes (16-bit item id + a zero association count).
+    const MIN_IPMA_ENTRY: usize = 3;
+    let plausible = r.remaining() / MIN_IPMA_ENTRY;
+    let mut out = Vec::with_capacity((count as usize).min(plausible));
     for _ in 0..count {
         let item_id = if version == 0 { r.u16()? as u32 } else { r.u32()? };
         let assoc_count = r.u8()? as usize;
-        let mut assocs = Vec::with_capacity(assoc_count);
+        // Bounded by a u8, so at most 255 -- but still clamp to what remains.
+        let mut assocs = Vec::with_capacity(assoc_count.min(r.remaining()));
         for _ in 0..assoc_count {
             if large_index {
                 let v = r.u16()?;
@@ -559,7 +564,16 @@ fn parse_iloc(bytes: &[u8], b: &crate::boxes::BoxHeader) -> Result<Vec<IlocItem>
 
     let item_count = if version == 2 { r.u32()? } else { r.u16()? as u32 };
 
-    let mut out = Vec::with_capacity(item_count as usize);
+    // `item_count` is four attacker-controlled bytes and each `IlocItem` is
+    // tens of bytes, so reserving for the claim outright is a ~137 GiB request
+    // from a 46-byte file -- and an allocation failure is `handle_alloc_error`,
+    // an abort no caller can catch. The smallest possible entry is 8 bytes
+    // (id + method + data_ref + extent_count, all at their narrowest), so the
+    // body bounds how many can really follow. Reserve the smaller of the two
+    // and let the vector grow if the claim turns out to be honest.
+    const MIN_ILOC_ENTRY: usize = 8;
+    let plausible = r.remaining() / MIN_ILOC_ENTRY;
+    let mut out = Vec::with_capacity((item_count as usize).min(plausible));
     for _ in 0..item_count {
         let item_id = if version == 2 { r.u32()? } else { r.u16()? as u32 };
         let construction_method = if version == 1 || version == 2 {
@@ -570,14 +584,24 @@ fn parse_iloc(bytes: &[u8], b: &crate::boxes::BoxHeader) -> Result<Vec<IlocItem>
         r.skip(2)?; // data_reference_index — we only support "this file" (0)
         let base_offset = r.uint(base_offset_size)?;
         let extent_count = r.u16()?;
-        let mut extents = Vec::with_capacity(extent_count as usize);
+        let mut extents =
+            Vec::with_capacity((extent_count as usize).min(r.remaining() / 2));
         for _ in 0..extent_count {
             if (version == 1 || version == 2) && index_size > 0 {
                 r.uint(index_size)?; // extent_index: unused (no item_reference construction)
             }
             let ext_offset = r.uint(offset_size)?;
             let ext_length = r.uint(length_size)?;
-            extents.push((base_offset + ext_offset, ext_length));
+            // Both operands come straight out of the file and can each be a
+            // full u64, so a plain `+` panics in debug and wraps in release --
+            // and a wrapped offset can land back in bounds and hand out the
+            // wrong bytes as item data.
+            let abs = base_offset.checked_add(ext_offset).ok_or_else(|| {
+                Error::Malformed(format!(
+                    "iloc extent offset overflows: {base_offset} + {ext_offset}"
+                ))
+            })?;
+            extents.push((abs, ext_length));
         }
         out.push(IlocItem { item_id, construction_method, extents });
     }

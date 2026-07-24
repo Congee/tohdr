@@ -208,12 +208,21 @@ pub fn derive_from_luma(
         }
     }
 
+    // Fold over the finite samples only. A single `+inf` — a dead sensor
+    // pixel, an EXR artifact, an exposure-fusion overflow — used to make
+    // `max_log2` infinite, and the guard below then reset *both* bounds to
+    // zero, discarding the legitimate range computed from every other pixel
+    // in the frame. One bad sample turned the whole image back into its flat
+    // SDR base.
     let mut min_log2 = f32::INFINITY;
     let mut max_log2 = f32::NEG_INFINITY;
     for &v in &log2_gain {
-        min_log2 = min_log2.min(v);
-        max_log2 = max_log2.max(v);
+        if v.is_finite() {
+            min_log2 = min_log2.min(v);
+            max_log2 = max_log2.max(v);
+        }
     }
+    // Only when there is no finite sample at all is there nothing to encode.
     if !min_log2.is_finite() || !max_log2.is_finite() {
         min_log2 = 0.0;
         max_log2 = 0.0;
@@ -229,6 +238,12 @@ pub fn derive_from_luma(
     for y in 0..h {
         for x in 0..w {
             let v = log2_gain[y as usize * w as usize + x as usize];
+            // Fold the non-finite samples onto the finite range rather than
+            // letting them through: `NaN` would survive `clamp` and poison the
+            // bucket average (and `as u8` would then silently store 0), while
+            // `+inf` is most honestly read as "at least the brightest thing we
+            // measured".
+            let v = if v.is_nan() { min_log2 } else { v.clamp(min_log2, max_log2) };
             let norm = if range > 0.0 {
                 ((v - min_log2) / range).clamp(0.0, 1.0).powf(opts.gamma)
             } else {
