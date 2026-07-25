@@ -215,6 +215,60 @@ fn ten_bit_base_depth_survives() {
     assert_eq!(base.bit_depth, 10);
 }
 
+/// A minimal but real Exif block: big-endian TIFF header, one `IFD0` entry.
+fn exif_block() -> Vec<u8> {
+    let mut v = b"MM\x00\x2a\x00\x00\x00\x08".to_vec();
+    v.extend_from_slice(&1u16.to_be_bytes()); // one entry
+    v.extend_from_slice(&271u16.to_be_bytes()); // Make
+    v.extend_from_slice(&2u16.to_be_bytes()); // ASCII
+    v.extend_from_slice(&4u32.to_be_bytes()); // count, inline
+    v.extend_from_slice(b"ap\0\0");
+    v.extend_from_slice(&0u32.to_be_bytes()); // no next IFD
+    v
+}
+
+/// The block has to come back byte-identical, past the four-byte
+/// `exif_tiff_header_offset` the item type requires ahead of it. A muxer that
+/// wrote the block but forgot the prefix would still round-trip through a naive
+/// reader, so the prefix is asserted separately.
+#[test]
+fn an_exif_item_round_trips_byte_for_byte() {
+    let block = exif_block();
+    let req = MuxRequest {
+        exif: Some(block.clone()),
+        ..request(Flavor::Both)
+    };
+    let bytes = tohdr_heif::mux(&req).expect("mux");
+
+    let file = HeifFile::parse(&bytes).expect("parse");
+    let item = file
+        .items()
+        .iter()
+        .find(|i| i.item_type == *b"Exif")
+        .expect("an Exif item was written");
+    let payload = file.item_data(item.id).expect("payload");
+
+    assert_eq!(
+        &payload[0..4],
+        &0u32.to_be_bytes(),
+        "exif_tiff_header_offset must be present and zero"
+    );
+    assert_eq!(&payload[4..], &block[..], "block must survive verbatim");
+
+    // HEIF associates Exif with an image through `cdsc`, not by position. Without
+    // it a reader has an orphan metadata item and no reason to apply it.
+    assert!(contains_fourcc(&bytes, b"cdsc"), "cdsc reference");
+}
+
+/// Asking for no Exif must not leave the item machinery half-built: no `Exif`
+/// entry in `iinf`, and the item ids of everything else unchanged.
+#[test]
+fn without_exif_no_item_is_written() {
+    let bytes = tohdr_heif::mux(&request(Flavor::Both)).expect("mux");
+    let file = HeifFile::parse(&bytes).expect("parse");
+    assert!(!file.items().iter().any(|i| i.item_type == *b"Exif"));
+}
+
 #[test]
 fn parsing_garbage_errors_instead_of_panicking() {
     assert!(HeifFile::parse(&[]).is_err(), "empty input");

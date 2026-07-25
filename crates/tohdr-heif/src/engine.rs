@@ -106,6 +106,12 @@ impl<C: PlaneCodec + Sync> GainMapEncoder for MuxEngine<C> {
         self.0.name()
     }
 
+    /// Our own muxer writes the `Exif` item, so this is unconditional — it does
+    /// not depend on which plane codec is installed.
+    fn carries_exif(&self) -> bool {
+        true
+    }
+
     fn encode(
         &self,
         base: &Rgb,
@@ -155,7 +161,7 @@ impl<C: PlaneCodec + Sync> GainMapEncoder for MuxEngine<C> {
                 matrix: 6,
                 full_range: true,
             }),
-            exif: None,
+            exif: opts.exif.map(<[u8]>::to_vec),
             // Apple writes the headroom three times and all three agree; a
             // consumer reading the XMP copy rather than the tmap must not get
             // a different number. Only emitted for flavors that claim Apple

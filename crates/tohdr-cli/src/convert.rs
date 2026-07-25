@@ -28,6 +28,12 @@ pub struct ConvertReport {
     /// silently got an SDR one instead, `"derived"` is the only visible
     /// symptom before the output turns out washed out.
     pub gain_map_source: String,
+    /// `"none"` when the source carried no Exif, `"dropped-<engine>"` when it did
+    /// and the engine cannot carry it, else where it came from — `tiff-ifd0`,
+    /// `heif-exif-item`, `jpeg-app1`.
+    pub exif_source: String,
+    /// Metadata tags carried into the output, excluding the sub-IFD pointers.
+    pub exif_tags: usize,
     pub quality: u8,
     pub gain_quality: u8,
     pub gain_subsample: u32,
@@ -66,6 +72,16 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
                 "derived from the source's HDR pixels"
             }
         );
+        println!(
+            "  exif: {}",
+            match report.exif_source.as_str() {
+                "none" => "none in the source".to_string(),
+                s if s.starts_with("dropped-") => {
+                    format!("dropped, {} writes no Exif item", &s["dropped-".len()..])
+                }
+                s => format!("{} tags carried from the source ({s})", report.exif_tags),
+            }
+        );
         if let Some(max) = report.max_size {
             println!(
                 "  budget: <= {max} bytes, {} attempt(s), within budget: {}",
@@ -98,6 +114,22 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     // headroom in it. See `tohdr_portable::gainmap_tiff`.
     let embedded = tohdr_portable::read_gainmap_tiff(&args.input)
         .with_context(|| format!("reading {}", args.input.display()))?;
+
+    // Read before the pixels, and never fatal: a damaged or absent Exif block is
+    // a reason to convert without metadata, not a reason to refuse the photo.
+    // The source is read a second time for this, which is a few ms against a
+    // decode, and buys a reader that does not have to thread through two loaders
+    // and three image formats.
+    let source_exif = match tohdr_portable::read_source_exif(&args.input) {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!(
+                "tohdr: warning: could not read Exif from {}: {e}; converting without it",
+                args.input.display()
+            );
+            None
+        }
+    };
 
     let loader = Engine::new(args.engine);
     let (hdr, base, tone_map_used, gain_map_source) = match embedded {
@@ -195,10 +227,37 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     step!("tohdr: encoder is {}", engine.name());
     drop(loader);
 
+    // Only hand the block to an engine that writes one. The distinction survives
+    // into the report because "the source had no Exif" and "this engine dropped
+    // it" look identical in the output file and are not the same problem.
+    let carried_exif = source_exif.as_ref().filter(|_| engine.carries_exif());
+    if let Some(found) = &source_exif {
+        match carried_exif {
+            Some(_) => step!(
+                "tohdr: carrying {} Exif tags from the source ({})",
+                found.tag_count,
+                found.origin
+            ),
+            None => eprintln!(
+                "tohdr: warning: {} carries {} Exif tags but the {} engine writes no Exif item, \
+                 so camera, lens, exposure and date are dropped. `--engine portable` keeps them",
+                args.input.display(),
+                found.tag_count,
+                engine.name()
+            ),
+        }
+    }
+    let (exif_source, exif_tags) = match carried_exif {
+        Some(found) => (found.origin.to_string(), found.tag_count),
+        None if source_exif.is_some() => (format!("dropped-{}", engine.name()), 0),
+        None => ("none".to_string(), 0),
+    };
+
     let opts = EncodeOptions {
         flavor: args.flavor,
         base_quality: args.quality,
         gain_quality: args.quality,
+        exif: carried_exif.map(|e| e.tiff.as_slice()),
     };
 
     let (bytes, quality_used, attempts, within_budget) = if let Some(max_bytes) = args.max_size {
@@ -250,6 +309,8 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         flavor: format!("{:?}", args.flavor).to_ascii_lowercase(),
         tone_map: tone_map_used,
         gain_map_source: gain_map_source.to_string(),
+        exif_source,
+        exif_tags,
         quality: quality_used,
         gain_quality: quality_used,
         gain_subsample: derive_opts.subsample,

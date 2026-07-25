@@ -21,6 +21,7 @@
 pub mod apple;
 pub mod derive;
 pub mod encode;
+pub mod exif;
 pub mod hdr;
 pub mod par;
 pub mod xmp;

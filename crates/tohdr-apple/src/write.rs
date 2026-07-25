@@ -29,7 +29,9 @@ use objc2_image_io::{
     kCGImageAuxiliaryDataInfoMetadata, kCGImageAuxiliaryDataTypeHDRGainMap,
     kCGImageAuxiliaryDataTypeISOGainMap, kCGImageDestinationEncodeRequest,
     kCGImageDestinationEncodeToISOGainmap, kCGImageDestinationLossyCompressionQuality,
-    CGImageDestination, CGImageMetadataTag, CGImageMetadataType, CGMutableImageMetadata,
+    kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary, kCGImagePropertyTIFFDictionary,
+    CGImageDestination, CGImageMetadataTag, CGImageMetadataType, CGImageSource,
+    CGMutableImageMetadata,
 };
 use tohdr_core::{EncodeOptions, GainMapMeta, GainPlane, HdrRgb, Rgb};
 
@@ -337,6 +339,51 @@ fn gain_map_xmp_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImage
     Ok(md)
 }
 
+/// Turn a raw Exif block into the property dictionaries ImageIO writes from.
+///
+/// ImageIO's destination API takes no raw Exif: metadata goes in as
+/// `kCGImageProperty*Dictionary` entries, keyed by CF strings. Rather than carry
+/// a table mapping every TIFF tag number onto its key — several hundred lines
+/// that would silently drop each tag Apple adds — this hands the block to
+/// ImageIO's *reader* and passes what comes back straight to its writer. The
+/// wrapper exists because `CGImageSource` will not read a TIFF with no pixels in
+/// it; see [`tohdr_core::exif::wrap_in_jpeg`].
+///
+/// Returns the pairs to merge into the image's options dictionary, empty if the
+/// block yielded nothing. Never an error: losing metadata must not fail an
+/// encode that would otherwise succeed.
+fn exif_property_pairs(block: &[u8]) -> Vec<(&'static CFString, CFRetained<CFType>)> {
+    let Some(carrier) = tohdr_core::exif::wrap_in_jpeg(block) else {
+        return Vec::new();
+    };
+    let data = CFData::from_bytes(&carrier);
+    let Some(isrc) = (unsafe { CGImageSource::with_data(&data, None) }) else {
+        return Vec::new();
+    };
+    let Some(props) = (unsafe { isrc.properties_at_index(0, None) }) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for key in [
+        unsafe { kCGImagePropertyExifDictionary },
+        unsafe { kCGImagePropertyTIFFDictionary },
+        unsafe { kCGImagePropertyGPSDictionary },
+    ] {
+        let ptr = unsafe { props.value(key as *const CFString as *const c_void) };
+        if ptr.is_null() {
+            continue;
+        }
+        // Retained because `props` is dropped at the end of this function while
+        // the values have to outlive it, up to the `add_image` call.
+        let value = unsafe { &*(ptr as *const CFType) };
+        out.push((key, unsafe {
+            CFRetained::retain(NonNull::from(value))
+        }));
+    }
+    out
+}
+
 /// Attach a gain plane *we* derived to an SDR base, through ImageIO.
 ///
 /// This is the path the engine comparison uses, so both engines encode the
@@ -355,10 +402,14 @@ pub fn encode_parts(
         .ok_or(Error::NullFromFramework("CGImageDestinationCreateWithData"))?;
 
     let q = cf_num_f64((opts.base_quality.clamp(1, 100) as f64) / 100.0);
-    let img_opts = cf_dict(&[(
+    let mut pairs: Vec<(&CFString, &CFType)> = vec![(
         unsafe { kCGImageDestinationLossyCompressionQuality },
         q.as_ref(),
-    )]);
+    )];
+    // Held in a binding so the retained dictionaries outlive `add_image`.
+    let exif = opts.exif.map(exif_property_pairs).unwrap_or_default();
+    pairs.extend(exif.iter().map(|(k, v)| (*k, v.as_ref())));
+    let img_opts = cf_dict(&pairs);
     if opts.flavor.writes_apple() {
         let xmp = gain_map_xmp_metadata(meta)?;
         unsafe { dest.add_image_and_metadata(&image, Some(&xmp), Some(&img_opts)) };

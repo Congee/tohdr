@@ -186,6 +186,14 @@ impl GainMapEncoder for Engine {
         }
     }
 
+    fn carries_exif(&self) -> bool {
+        match self {
+            Engine::Apple(e) => e.carries_exif(),
+            Engine::Hardware(e) => e.carries_exif(),
+            Engine::Portable(e) => e.carries_exif(),
+        }
+    }
+
     fn encode(
         &self,
         base: &Rgb,

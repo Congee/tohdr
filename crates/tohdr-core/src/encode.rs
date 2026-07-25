@@ -42,8 +42,13 @@ impl Flavor {
 }
 
 /// Knobs an engine honors when muxing.
+///
+/// Borrows `exif` rather than owning it so the type stays `Copy`:
+/// [`encode_within_budget`] derives a fresh `EncodeOptions` per quality it tries,
+/// and a block that is 20 KB on an iPhone capture should not be cloned once per
+/// binary-search step.
 #[derive(Clone, Copy, Debug)]
-pub struct EncodeOptions {
+pub struct EncodeOptions<'a> {
     pub flavor: Flavor,
     /// Base-image quality, `1..=100`. Engine-specific in meaning; both engines
     /// map it onto their codec's rate control.
@@ -52,14 +57,23 @@ pub struct EncodeOptions {
     /// a smooth, low-frequency correction, and Apple ships it at half
     /// resolution for the same reason.
     pub gain_quality: u8,
+    /// The source's Exif block to carry through, as a standalone TIFF structure
+    /// with no `exif_tiff_header_offset` prefix — what
+    /// `tohdr_portable::exif::read` returns. `None` writes no Exif, which is
+    /// what every caller did before this existed.
+    ///
+    /// An engine that cannot carry it must say so rather than drop it quietly;
+    /// see [`GainMapEncoder::carries_exif`].
+    pub exif: Option<&'a [u8]>,
 }
 
-impl Default for EncodeOptions {
+impl Default for EncodeOptions<'_> {
     fn default() -> Self {
         Self {
             flavor: Flavor::default(),
             base_quality: 85,
             gain_quality: 85,
+            exif: None,
         }
     }
 }
@@ -74,6 +88,16 @@ pub trait GainMapEncoder {
 
     /// Label for logs and benchmark tables, e.g. `"apple-imageio"`.
     fn name(&self) -> &'static str;
+
+    /// Whether this backend writes [`EncodeOptions::exif`] into its output.
+    ///
+    /// Defaults to `false` so a backend has to claim the capability rather than
+    /// inherit it. The point is that a caller can tell the user their metadata
+    /// was dropped, instead of the block being silently ignored by an engine
+    /// that never looked at the field.
+    fn carries_exif(&self) -> bool {
+        false
+    }
 
     fn encode(
         &self,

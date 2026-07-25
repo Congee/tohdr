@@ -15,10 +15,12 @@ use std::path::Path;
 use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, Rgb};
 
 mod codec;
+pub mod exif;
 pub mod gainmap_tiff;
 mod input;
 
 pub use codec::{HpvcaCodec, YUV444_QUALITY_THRESHOLD};
+pub use exif::{read as read_source_exif, Origin as ExifOrigin, SourceExif};
 pub use gainmap_tiff::{read as read_gainmap_tiff, GainMapTiff};
 pub use input::{load_hdr_tiff_pq, DEFAULT_REFERENCE_WHITE_NITS};
 
@@ -84,6 +86,10 @@ impl GainMapEncoder for PortableEngine {
 
     fn name(&self) -> &'static str {
         "portable-hpvca"
+    }
+
+    fn carries_exif(&self) -> bool {
+        tohdr_heif::MuxEngine::new(HpvcaCodec).carries_exif()
     }
 
     fn encode(

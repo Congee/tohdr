@@ -342,31 +342,39 @@ fn reconstruct(base: &Plane<'_>, gain: &Plane<'_>, declared: GainMapMeta) -> Gai
 // TIFF, both byte orders, uncompressed strips.
 // ---------------------------------------------------------------------------
 
-struct Tiff<'a> {
-    bytes: &'a [u8],
-    little_endian: bool,
-    first_ifd: usize,
+// `pub(crate)` rather than private: `crate::exif` rebuilds an Exif block out of
+// the same IFDs this module reads pixels from, and a second TIFF parser in the
+// same crate would be a second thing to keep correct.
+pub(crate) struct Tiff<'a> {
+    pub(crate) bytes: &'a [u8],
+    pub(crate) little_endian: bool,
+    pub(crate) first_ifd: usize,
 }
 
 #[derive(Clone, Copy)]
-struct Entry {
-    typ: u16,
-    count: u32,
+pub(crate) struct Entry {
+    pub(crate) typ: u16,
+    pub(crate) count: u32,
     /// Absolute offset of the value bytes. For values of four bytes or fewer
     /// TIFF stores them in the entry itself, and then this points at the entry
     /// field — so readers need no special case.
-    value_off: usize,
+    pub(crate) value_off: usize,
 }
 
-struct Ifd(Vec<(u16, Entry)>);
+pub(crate) struct Ifd(Vec<(u16, Entry)>);
 
 impl Ifd {
-    fn get(&self, tag: u16) -> Option<Entry> {
+    pub(crate) fn get(&self, tag: u16) -> Option<Entry> {
         self.0.iter().find(|(t, _)| *t == tag).map(|(_, e)| *e)
+    }
+
+    /// Every entry, in the order the file lists them.
+    pub(crate) fn entries(&self) -> &[(u16, Entry)] {
+        &self.0
     }
 }
 
-fn type_size(typ: u16) -> usize {
+pub(crate) fn type_size(typ: u16) -> usize {
     match typ {
         1 | 2 | 6 | 7 => 1,
         3 | 8 => 2,
@@ -379,7 +387,7 @@ fn type_size(typ: u16) -> usize {
 impl<'a> Tiff<'a> {
     /// `Ok(None)` for anything that is not a classic TIFF, including BigTIFF —
     /// LrC writes classic even for the 1.08 GB 32-bit export.
-    fn open(bytes: &'a [u8]) -> Result<Option<Self>> {
+    pub(crate) fn open(bytes: &'a [u8]) -> Result<Option<Self>> {
         if bytes.len() < 8 {
             return Ok(None);
         }
@@ -429,7 +437,7 @@ impl<'a> Tiff<'a> {
         })
     }
 
-    fn read_ifd(&self, at: usize) -> Result<Ifd> {
+    pub(crate) fn read_ifd(&self, at: usize) -> Result<Ifd> {
         let n = self.u16(at)? as usize;
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
@@ -450,7 +458,7 @@ impl<'a> Tiff<'a> {
 
     /// SHORT/LONG (and their signed twins) as `u32`, which is every numeric
     /// tag this module reads.
-    fn integers(&self, e: &Entry) -> Result<Vec<u32>> {
+    pub(crate) fn integers(&self, e: &Entry) -> Result<Vec<u32>> {
         let size = type_size(e.typ);
         if !matches!(e.typ, 1 | 3 | 4 | 8 | 9) || size == 0 {
             return Err(Error::Decode(format!(
@@ -470,7 +478,7 @@ impl<'a> Tiff<'a> {
         Ok(out)
     }
 
-    fn bytes_of(&self, e: &Entry) -> Result<&'a [u8]> {
+    pub(crate) fn bytes_of(&self, e: &Entry) -> Result<&'a [u8]> {
         self.slice(e.value_off, e.count as usize * type_size(e.typ).max(1))
     }
 }

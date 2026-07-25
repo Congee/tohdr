@@ -68,6 +68,14 @@ impl GainMapEncoder for AppleEngine {
         "apple-imageio"
     }
 
+    /// Not by writing an `Exif` item directly — ImageIO owns the container here.
+    /// The block is re-parsed by ImageIO and handed back to it as property
+    /// dictionaries, so what lands in the file is ImageIO's re-serialization
+    /// rather than the source's bytes. See `write::exif_property_pairs`.
+    fn carries_exif(&self) -> bool {
+        true
+    }
+
     fn encode(
         &self,
         base: &Rgb,
