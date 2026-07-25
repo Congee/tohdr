@@ -19,13 +19,17 @@ This file is about the pipeline around them.
 
 Stage breakdown of the 2.60 s, from `cargo run --release --example profile -p tohdr-apple`:
 
-| Phase | ms | % |
-|---|---|---|
-| decode (ImageIO → `HdrRgb`) | 2001.6 | 66.2 |
-| encode (Engine A) | 590.0 | 19.5 |
-| derive gain plane | 258.5 | 8.6 |
-| tone map → SDR base | 109.5 | 3.6 |
-| `peak_luma` | 62.1 | 2.1 |
+| Phase | ms | % | peak RSS after |
+|---|---|---|---|
+| decode (ImageIO → `HdrRgb`) | 1757.7 | 63.1 | 1494 MiB |
+| encode (Engine A) | 588.0 | 21.1 | 2397 MiB |
+| derive gain plane | 309.3 | 11.1 | 1877 MiB |
+| tone map → SDR base | 79.9 | 2.9 | 1820 MiB |
+| `peak_luma` | 49.9 | 1.8 | 1494 MiB |
+
+(`peak RSS after` is `getrusage`'s high-water mark, so it only rises; rows are
+sorted by cost, not by execution order. Execution order is decode → `peak_luma`
+→ tone map → derive → encode.)
 
 Our own code — everything except ImageIO's decode and encode — went from
 3243 ms to 408 ms, a factor of 7.9.
@@ -96,6 +100,13 @@ contexts at once (`examples/probe_band_parallel.rs`):
 to the single-threaded full-frame path — verified by building with a band budget
 large enough to force one band and comparing SHA-256 of the finished HEIC.
 
+The placement arithmetic itself gets its own check. CoreGraphics' origin is
+bottom-left, so a band's rect is `origin.y = (rows + y0) - h`, which is easy to
+get subtly wrong only on the last band. `examples/probe_band_geometry.rs`
+compares each band against a full single-shot decode, byte for byte, over
+heights of 97, 3 and 1 rows and band sizes from 1 to 200 — every case where the
+split does not divide evenly, plus `band_rows > h`. All pass.
+
 ## `tohdr batch`
 
 The ~1150 ms serial decode is the part of a conversion that cannot be spread at
@@ -149,4 +160,60 @@ After that the largest item is Engine A's encode at 590 ms, inside
 VideoToolbox. The remaining shared stages total 430 ms and are already parallel
 and table-driven; fusing tone-map and derive into one pass would save a read of
 689 MiB and a read of 345 MiB, worth perhaps 30 ms of the 3021 ms total. Neither
-SIMD nor GPU has been needed to get here.
+SIMD nor GPU has been needed for *our* code.
+
+That last sentence is about this pipeline, not about Engine B's codec, which is a
+different problem. It has now been profiled properly (`samply`, symbolized,
+aggregated by encoder stage) and the answer for the *software* codec is that SIMD
+is already in use upstream and a GPU is bounded by Amdahl at ~1.9x against a
+needed 8x: Engine A is a fixed-function ASIC and no software encoder catches it.
+
+Which is why Engine B stopped trying to. Its codec is now swappable
+(`tohdr_heif::PlaneCodec`), and on Apple Silicon it drives the same media block
+Engine A does, without ImageIO in the way: at 60 MP, **431 ms against Engine A's
+545 ms** for a single cold encode, and **221 ms** for the second file of the same
+size, because `VTCompressionSession`s are pooled rather than rebuilt. The software
+codec is kept as the fallback. See ["Engine B-hw"](engine-comparison.md).
+
+That pooling is worth 17–24% of a `batch` of TIFFs and nothing measurable on a
+batch of 60 MP RAWs, and the reason is this file's own thesis: a RAW batch is
+bound by the demosaic above, so the encode is a tenth of the work and four
+concurrent jobs absorb whatever it saves. Engine B's encode being 2.5x faster
+warm does not move a wall clock that is waiting on `draw_image`.
+
+## Memory: what one conversion actually holds
+
+Peak RSS was the metric this file used to quote (4.25 GB → 2.47 GB). Two things
+learned since are worth writing down, because both change how to read it.
+
+**The full-resolution `log2_gain` intermediate is gone.** `derive_from_luma` used
+to store one `f32` per *input* pixel between its two passes — 230 MiB at 60 MP,
+allocated even at `--gain-subsample 2` where the output plane is a quarter that
+size. It now evaluates its kernel twice instead of storing it once
+(`par::map_row_ranges` is the reduction that makes the first pass storage-free).
+`f32` arithmetic is deterministic, so the recomputed values are bit-identical and
+the encoded plane does not change — verified by SHA-256 on a real 60 MP raw,
+`14,134,384` bytes either way. The trade is 173 ms → 309 ms on the derive phase
+for 230 MiB off the peak.
+
+**Dropping a dead buffer does not lower RSS.** `HdrRgb` is 689 MiB and is dead
+after derive, so dropping it before the allocating encode phase looks like free
+savings. It is not: measured with `task_info(MACH_TASK_BASIC_INFO)` — a gauge
+that can fall, unlike `getrusage`'s high-water mark — live RSS does not move at
+all across the drop, and `malloc_zone_pressure_relief` releases nothing. macOS
+libmalloc marks the span `MADV_FREE_REUSABLE` and the pages stay counted until
+the kernel wants them. So **RSS overstates real pressure here**, and the
+`--jobs` ceiling this file used to attribute to memory does not bind on a 64 GB
+machine. Eight 60 MP raws, best of one:
+
+| jobs | wall s | peak RSS | peak footprint |
+|---|---|---|---|
+| 2 | 13.98 | 5.07 GB | 7.13 GB |
+| 4 | 10.93 | 8.52 GB | 10.31 GB |
+| 6 | 10.47 | 9.66 GB | 11.04 GB |
+| 8 | 9.69 | 13.26 GB | 13.52 GB |
+| 10 | 10.09 | 12.29 GB | 13.33 GB |
+
+Memory scales roughly linearly while wall time flattens after four jobs. On this
+machine the binding constraint is CPU, not memory; on a 16 GB machine it would be
+memory, and there the `log2_gain` removal is what buys a job.
