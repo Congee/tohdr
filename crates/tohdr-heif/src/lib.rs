@@ -24,8 +24,11 @@
 use tohdr_core::{Flavor, GainMapMeta};
 
 mod boxes;
+mod engine;
 mod read;
 mod write;
+
+pub use engine::{chroma_for, coded_image_from_heic, MuxEngine, MuxEngineError, PlaneCodec};
 
 /// HEIF item identifier. 16-bit in `infe` version 2, 32-bit in version 3; we
 /// model the wider form and narrow on write.

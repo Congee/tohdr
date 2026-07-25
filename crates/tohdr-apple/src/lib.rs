@@ -17,7 +17,10 @@ use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, 
 mod read;
 mod write;
 
-pub use write::{encode_from_hdr, encode_parts};
+pub use write::{encode_from_hdr, encode_parts, encode_plane_heic_gray, encode_plane_heic_rgb};
+
+pub mod vtenc;
+pub use vtenc::CodedPlane;
 
 #[derive(Debug)]
 pub enum Error {

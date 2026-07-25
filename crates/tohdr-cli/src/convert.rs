@@ -69,13 +69,16 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         ($($t:tt)*) => { if progress { eprintln!($($t)*); } };
     }
 
-    let engine = Engine::new(args.engine);
+    // Loading only needs the *family*: which decoder reads the source. Which
+    // plane codec encodes it depends on the base image, which does not exist
+    // yet — that choice is made below, once it can be made from facts.
+    let loader = Engine::new(args.engine);
     step!(
         "tohdr: loading {} with {} engine",
         args.input.display(),
-        engine.name()
+        loader.name()
     );
-    let hdr = engine
+    let hdr = loader
         .load_hdr(&args.input)
         .with_context(|| format!("loading HDR source {}", args.input.display()))?;
 
@@ -97,6 +100,21 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     step!("tohdr: deriving gain plane (subsample {})", derive_opts.subsample);
     let (gain, mut meta) = derive_consistent(&hdr, &base, &derive_opts);
 
+    // `hdr` is dead from here on and is the largest allocation in the process —
+    // extended-range f32 RGB is 12 bytes/px, 689 MiB at 60 MP, against 345 MiB
+    // for `base` and 14 MiB for a subsample-2 `gain`. Dropping it before the
+    // encode, which allocates again for the `CGImage` and VideoToolbox, is
+    // correct hygiene.
+    //
+    // Do not expect it to lower peak RSS: it measurably does not. Live resident
+    // size (`task_info`, which can fall — not `getrusage`'s high-water mark)
+    // does not move across this drop, and `malloc_zone_pressure_relief`
+    // releases nothing, because macOS libmalloc marks the span
+    // MADV_FREE_REUSABLE and the pages stay counted until the kernel wants
+    // them. The pages *are* available to the system; RSS simply overstates it.
+    // See docs/performance.md, "Memory: what one conversion actually holds".
+    drop(hdr);
+
     let derived_headroom = meta.max_log2[0];
     let mut headroom_overridden = false;
     if let Some(stops) = args.headroom {
@@ -111,6 +129,20 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         }
         meta.alt_headroom = stops;
     }
+
+    // Now the base is in hand, so Engine B can pick its plane codec. The
+    // hardware path is the default for `--engine portable`; when it cannot serve
+    // this particular job the software codec takes over and says so, because the
+    // two produce different files.
+    let (engine, downgraded) = Engine::for_job(args.engine, &base, args.quality);
+    if let Some(why) = downgraded {
+        eprintln!(
+            "tohdr: note: encoding with {} instead of the media block — {why}",
+            engine.name()
+        );
+    }
+    step!("tohdr: encoder is {}", engine.name());
+    drop(loader);
 
     let opts = EncodeOptions {
         flavor: args.flavor,

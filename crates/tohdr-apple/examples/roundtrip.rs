@@ -119,11 +119,20 @@ fn main() {
 
     let apple = tohdr_apple::AppleEngine;
     let portable = tohdr_portable::PortableEngine;
+    // The hardware codec is measured here for the same reason as the other two:
+    // it is faster *and* writes fewer bytes at the same `--quality`, and fewer
+    // bytes at equal quality is a claim that has to be checked against the
+    // reconstruction rather than assumed.
+    let hardware = tohdr_heif::MuxEngine::new(tohdr_apple::vtenc::VideoToolboxCodec);
 
     let runs: Vec<(&str, Result<Vec<u8>, String>)> = vec![
         (
             "apple-imageio",
             apple.encode(&base, &gain, &meta, &opts).map_err(|e| e.to_string()),
+        ),
+        (
+            "hardware-videotoolbox",
+            hardware.encode(&base, &gain, &meta, &opts).map_err(|e| e.to_string()),
         ),
         (
             "portable-hpvca",

@@ -22,7 +22,7 @@ use objc2_core_foundation::{
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
     CGImageAlphaInfo, CGImageByteOrderInfo, CGImageComponentInfo,
-    kCGColorSpaceExtendedLinearSRGB, kCGColorSpaceSRGB,
+    kCGColorSpaceExtendedLinearSRGB, kCGColorSpaceGenericGrayGamma2_2, kCGColorSpaceSRGB,
 };
 use objc2_image_io::{
     kCGImageAuxiliaryDataInfoData, kCGImageAuxiliaryDataInfoDataDescription,
@@ -166,6 +166,70 @@ pub fn encode_from_hdr(hdr: &HdrRgb, quality: u8) -> Result<Vec<u8>> {
     ]);
 
     unsafe { dest.add_image(&image, Some(&opts)) };
+    if !unsafe { dest.finalize() } {
+        return Err(Error::FinalizeFailed);
+    }
+    Ok(out.to_vec())
+}
+
+/// Encode one plane as a single-image HEIC, i.e. the hardware equivalent of
+/// `hpvca::encode_rgb`.
+///
+/// This exists so the muxing half of Engine B can keep our own
+/// [`tohdr_heif`](../../tohdr_heif/index.html) muxer while the *encode* half
+/// runs on the platform's media block. On Apple Silicon ImageIO routes HEVC
+/// through VideoToolbox, which is the same fixed-function encoder Engine A
+/// reaches — and profiling established that the encoder, not our muxer, is
+/// where Engine B's entire deficit lives (see `docs/engine-comparison.md`).
+///
+/// The output is hpvca's contract exactly: one coded image item, no `grid`, so
+/// [`tohdr_heif::HeifFile::coded_image`] can pull the HEVC and `hvcC` straight
+/// back out with no re-encode.
+pub fn encode_plane_heic_rgb(rgb: &Rgb, quality: u8) -> Result<Vec<u8>> {
+    let image = cg_image_from_sdr(rgb)?;
+    finalize_single_image(&image, quality)
+}
+
+/// The gain-plane counterpart of [`encode_plane_heic_rgb`]. Single-channel, to
+/// match ISO 21496-1 and Apple's own `L008` planes.
+pub fn encode_plane_heic_gray(gain: &GainPlane, quality: u8) -> Result<Vec<u8>> {
+    let data = CFData::from_bytes(&gain.data);
+    let provider = CGDataProvider::with_cf_data(Some(&data))
+        .ok_or(Error::NullFromFramework("CGDataProviderCreateWithCFData"))?;
+    let cs = unsafe { CGColorSpace::with_name(Some(kCGColorSpaceGenericGrayGamma2_2)) }
+        .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName (gray)"))?;
+    let image = unsafe {
+        CGImage::new(
+            gain.width as usize,
+            gain.height as usize,
+            8,
+            8,
+            gain.width as usize,
+            Some(&cs),
+            CGBitmapInfo(CGImageAlphaInfo::None.0),
+            Some(&provider),
+            std::ptr::null(),
+            false,
+            CGColorRenderingIntent::RenderingIntentDefault,
+        )
+    }
+    .ok_or(Error::NullFromFramework("CGImageCreate (gray)"))?;
+    finalize_single_image(&image, quality)
+}
+
+/// Shared tail of the two plane encoders: a HEIC destination holding exactly one
+/// image, no gain-map request and no auxiliary data.
+fn finalize_single_image(image: &CGImage, quality: u8) -> Result<Vec<u8>> {
+    let out = CFMutableData::new(None, 0).ok_or(Error::NullFromFramework("CFDataCreateMutable"))?;
+    let uti = CFString::from_str(HEIC_UTI);
+    let dest = unsafe { CGImageDestination::with_data(&out, &uti, 1, None) }
+        .ok_or(Error::NullFromFramework("CGImageDestinationCreateWithData"))?;
+    let q = cf_num_f64((quality.clamp(1, 100) as f64) / 100.0);
+    let opts = cf_dict(&[(
+        unsafe { kCGImageDestinationLossyCompressionQuality },
+        q.as_ref(),
+    )]);
+    unsafe { dest.add_image(image, Some(&opts)) };
     if !unsafe { dest.finalize() } {
         return Err(Error::FinalizeFailed);
     }

@@ -8,6 +8,9 @@ license.workspace = true
 
 [dependencies]
 tohdr-core.workspace = true
+# For `vtenc::VideoToolboxCodec`: the `PlaneCodec` seam and `CodedImage` live in
+# tohdr-heif, so Engine B can mux hardware-encoded planes.
+tohdr-heif.workspace = true
 objc2-image-io.workspace = true
 objc2-core-foundation.workspace = true
 objc2-core-graphics.workspace = true

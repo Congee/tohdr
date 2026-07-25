@@ -17,6 +17,7 @@ use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, 
 mod codec;
 mod input;
 
+pub use codec::{HpvcaCodec, YUV444_QUALITY_THRESHOLD};
 pub use input::{load_hdr_tiff_pq, DEFAULT_REFERENCE_WHITE_NITS};
 
 #[derive(Debug)]
@@ -49,6 +50,17 @@ impl From<tohdr_heif::Error> for Error {
     }
 }
 
+impl From<tohdr_heif::MuxEngineError> for Error {
+    fn from(e: tohdr_heif::MuxEngineError) -> Self {
+        match e {
+            tohdr_heif::MuxEngineError::Encode { plane, message } => {
+                Error::Encode(format!("{plane}: {message}"))
+            }
+            tohdr_heif::MuxEngineError::Mux(e) => Error::Mux(e),
+        }
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::Io(e)
@@ -57,7 +69,11 @@ impl From<std::io::Error> for Error {
 
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// The portable encoder.
+/// The portable encoder: [`HpvcaCodec`] wired into [`tohdr_heif::MuxEngine`].
+///
+/// A named type rather than a type alias so the many call sites that use it as a
+/// unit value keep working, and so this crate's error type stays the one they
+/// already match on.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PortableEngine;
 
@@ -75,59 +91,7 @@ impl GainMapEncoder for PortableEngine {
         meta: &GainMapMeta,
         opts: &EncodeOptions,
     ) -> Result<Vec<u8>> {
-        let base_heic = codec::encode_base_heic(base, opts.base_quality)
-            .map_err(|e| Error::Encode(format!("base: {e}")))?;
-        let gain_heic = codec::encode_gain_heic(gain, opts.gain_quality)
-            .map_err(|e| Error::Encode(format!("gain: {e}")))?;
-
-        // Both HEICs above are hpvca's own single-item container, not our
-        // target multi-item gain-map file — pull the coded HEVC + `hvcC` back
-        // out of each so `tohdr_heif::mux` can re-assemble them together.
-        let base_file = tohdr_heif::HeifFile::parse(&base_heic)?;
-        let base_item = base_file
-            .primary_item()
-            .ok_or_else(|| Error::Encode("hpvca base output has no primary item".into()))?;
-        let base_coded = base_file.coded_image(base_item)?;
-
-        let gain_file = tohdr_heif::HeifFile::parse(&gain_heic)?;
-        let gain_item = gain_file
-            .primary_item()
-            .ok_or_else(|| Error::Encode("hpvca gain output has no primary item".into()))?;
-        let gain_coded = gain_file.coded_image(gain_item)?;
-
-        let req = tohdr_heif::MuxRequest {
-            base: base_coded,
-            gain: gain_coded,
-            meta: *meta,
-            flavor: opts.flavor,
-            base_colour: Some(tohdr_heif::ColourInfo::Nclx {
-                primaries: 1,  // BT.709 / sRGB
-                transfer: 13,  // sRGB
-                matrix: 6,     // BT.601
-                full_range: true,
-            }),
-            // The `tmap` describes the reconstructed HDR image, not the SDR
-            // base: Display P3 primaries with the PQ transfer, which is what
-            // `IMG_4913.HEIC` puts here (as an ICC profile rather than
-            // `nclx`).
-            tmap_colour: Some(tohdr_heif::ColourInfo::Nclx {
-                primaries: 12, // Display P3
-                transfer: 16,  // SMPTE ST 2084 (PQ)
-                matrix: 6,
-                full_range: true,
-            }),
-            exif: None,
-            // Apple writes the headroom three times and all three agree; a
-            // consumer reading the XMP copy rather than the tmap must not get
-            // a different number. Only emitted for flavors that claim Apple
-            // compatibility, since it is Apple's namespace.
-            xmp: opts
-                .flavor
-                .writes_apple()
-                .then(|| tohdr_core::xmp::headroom_packet(meta.alt_headroom)),
-            clli: None,
-        };
-        Ok(tohdr_heif::mux(&req)?)
+        Ok(tohdr_heif::MuxEngine::new(HpvcaCodec).encode(base, gain, meta, opts)?)
     }
 }
 

@@ -24,6 +24,7 @@
 
 use hpvca::{BitDepth, ChromaFormat, EncodeConfig, EncodeError, ParallelismStrategy, Yuv};
 use tohdr_core::{GainPlane, Rgb};
+use tohdr_heif::{CodedImage, PlaneCodec};
 
 /// Above this `base_quality`, encode 4:4:4 instead of 4:2:0.
 ///
@@ -31,7 +32,10 @@ use tohdr_core::{GainPlane, Rgb};
 /// only pays for itself once quality is high enough that those bits would
 /// otherwise go mostly unused by heavy quantization anyway. Tunable; not
 /// derived from measurement.
-const YUV444_QUALITY_THRESHOLD: u8 = 95;
+///
+/// Public because it is also a *codec selection* input: the hardware path is
+/// 4:2:0 only, so asking for this quality means asking for this codec.
+pub const YUV444_QUALITY_THRESHOLD: u8 = 95;
 
 /// Picks 4:4:4 over 4:2:0 for the base image once quality is high enough that
 /// chroma subsampling would be the visible bottleneck.
@@ -47,11 +51,32 @@ pub(crate) fn choose_base_chroma(base_quality: u8) -> ChromaFormat {
 /// requirement from the module docs. `chroma` is only meaningful for the RGB
 /// path; the gray path below ignores whatever is set here (see
 /// [`encode_gain_heic`]).
+///
+/// # Why SAO is off
+///
+/// hpvca implements Sample Adaptive Offset with an analysis encode *before* the
+/// real one, so leaving it on roughly doubles the transform/RDO work — its own
+/// docs say as much. It is on by default, and it was the single largest cost in
+/// this engine. `examples/probe_engine_b_speed.rs` at 60 MP, q85:
+///
+/// ```text
+///                          base ms   gain ms      bytes
+///   sao on (the default)     1714.1     970.0     215148
+///   sao off                   643.3     431.1     202559
+/// ```
+///
+/// 2.5x faster *and* 6% smaller — SAO was not paying for its bits here, so this
+/// is not the usual speed-for-quality trade. The same holds on a real 60 MP
+/// photograph, where it is what takes this engine from 15x Engine A to
+/// competitive; see `docs/engine-comparison.md`. Variance boost was measured at
+/// the same time and left alone: it costs ~25% of the base encode with SAO on,
+/// nothing with SAO off, and changes no bytes either way.
 pub(crate) fn config_for(quality: u8, chroma: ChromaFormat) -> EncodeConfig {
     EncodeConfig::default()
         .with_quality(quality.clamp(1, 100))
         .with_parallelism(ParallelismStrategy::TilesWpp)
         .with_chroma(chroma)
+        .with_sao(false)
 }
 
 /// Encode the SDR base as a single-item HEIC.
@@ -101,6 +126,52 @@ pub(crate) fn encode_gain_heic(gain: &GainPlane, quality: u8) -> Result<Vec<u8>,
     hpvca::encode_yuv(&yuv, &cfg)
 }
 
+/// The pure-Rust plane codec: no Apple frameworks, no GPL, no media block.
+///
+/// Slower than the platform encoder by roughly 6x on Apple Silicon (see
+/// `docs/engine-comparison.md`), and the only backend available where there is
+/// no hardware path — so it stays the fallback rather than being retired.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HpvcaCodec;
+
+impl PlaneCodec for HpvcaCodec {
+    type Error = crate::Error;
+
+    fn name(&self) -> &'static str {
+        "portable-hpvca"
+    }
+
+    /// hpvca converts RGB with the **BT.601** matrix. Measured, not read off a
+    /// header: declaring BT.601 reconstructs at 69.31 dB and declaring BT.709 at
+    /// 51.81 dB on the same coded bytes (`probe_vt_colour.rs`). The media block
+    /// picks the other one, which is why this lives on the codec.
+    fn base_colour(&self) -> tohdr_heif::ColourInfo {
+        tohdr_heif::ColourInfo::Nclx {
+            primaries: 1, // BT.709 / sRGB
+            transfer: 13, // sRGB
+            matrix: 6,    // BT.601 / SMPTE 170M
+            // ImageIO's reconstruction is indifferent to this flag on both
+            // codecs (same PSNR either way), so it stays as it has been.
+            full_range: true,
+        }
+    }
+
+    fn encode_base(&self, base: &Rgb, quality: u8) -> Result<CodedImage, crate::Error> {
+        // hpvca hands back its own single-item HEIC rather than a bare
+        // bitstream, so the coded HEVC has to come back out before it can be
+        // placed next to the gain plane in one file.
+        let heic =
+            encode_base_heic(base, quality).map_err(|e| crate::Error::Encode(e.to_string()))?;
+        Ok(tohdr_heif::coded_image_from_heic(&heic, "base")?)
+    }
+
+    fn encode_gain(&self, gain: &GainPlane, quality: u8) -> Result<CodedImage, crate::Error> {
+        let heic =
+            encode_gain_heic(gain, quality).map_err(|e| crate::Error::Encode(e.to_string()))?;
+        Ok(tohdr_heif::coded_image_from_heic(&heic, "gain")?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +211,21 @@ mod tests {
     /// First box in any well-formed ISOBMFF/HEIF file is `ftyp`, size-prefixed.
     fn looks_like_isobmff(bytes: &[u8]) -> bool {
         bytes.len() > 12 && &bytes[4..8] == b"ftyp"
+    }
+
+    /// Locks in the 21 dB finding from `probe_vt_colour.rs`: this codec's output
+    /// must be declared BT.601. The hardware codec declares BT.709, and the day
+    /// these two agree by accident is the day one of them is wrong.
+    #[test]
+    fn declares_the_bt601_matrix_it_actually_writes() {
+        match PlaneCodec::base_colour(&HpvcaCodec) {
+            tohdr_heif::ColourInfo::Nclx { matrix, primaries, transfer, .. } => {
+                assert_eq!(matrix, 6, "hpvca writes BT.601; see probe_vt_colour.rs");
+                assert_eq!(primaries, 1);
+                assert_eq!(transfer, 13);
+            }
+            other => panic!("expected an nclx declaration, got {other:?}"),
+        }
     }
 
     #[test]

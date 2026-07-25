@@ -166,6 +166,17 @@ pub struct BatchArgs {
     #[arg(long = "gain-subsample", default_value_t = 2)]
     pub gain_subsample: u32,
 
+    /// Give every file its own `VTCompressionSession` instead of reusing one.
+    ///
+    /// Only affects `--engine portable` on a machine with a media block. Reuse
+    /// is worth about 20% of a batch's wall time and is byte-transparent — every
+    /// output is identical either way, which is checked by a test and by
+    /// `tohdr-apple/examples/probe_vt_session_reuse.rs`. This flag exists so
+    /// that claim can be re-measured rather than taken on faith, and as an
+    /// escape hatch if some future VideoToolbox disagrees.
+    #[arg(long)]
+    pub no_session_reuse: bool,
+
     /// Emit one JSON object for the whole run instead of per-file text.
     #[arg(long)]
     pub json: bool,
@@ -225,6 +236,18 @@ pub struct BenchArgs {
     /// Restrict the comparison to one engine. Default is both.
     #[arg(long, value_parser = parse_engine)]
     pub engine: Option<EngineKind>,
+
+    /// Make every iteration create a fresh `VTCompressionSession`, as a cold
+    /// process does.
+    ///
+    /// Only affects the hardware codec. Iterations after the first normally
+    /// reuse a pooled session — which is what `tohdr batch` gets, and is why
+    /// this command reports the first iteration separately from the rest. Pass
+    /// this to measure what pooling is worth, or to check a suspicion that a
+    /// reused session encodes differently (it does not; see
+    /// `tohdr-apple/examples/probe_vt_session_reuse.rs`).
+    #[arg(long)]
+    pub no_session_reuse: bool,
 
     #[arg(long)]
     pub json: bool,

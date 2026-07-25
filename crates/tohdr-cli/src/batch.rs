@@ -27,6 +27,35 @@
 //! is worse across the board (13.6 s against 10.7 s at three jobs): a job in
 //! ImageIO's serial decode is not using its share, and a static cap stops
 //! anyone else from taking it.
+//!
+//! # Encoder reuse across files
+//!
+//! `--engine portable` on Apple Silicon keeps its `VTCompressionSession`s in a
+//! pool (`tohdr_apple::vtenc`) rather than building one per file, which cuts a
+//! 12.19 MP plane encode from 97 ms to 27 ms. How much of that reaches the wall
+//! clock depends entirely on what fraction of the batch is encoding, and the two
+//! ends of that are far apart. Interleaved A/B, four repeats each,
+//! `--no-session-reuse` against the default:
+//!
+//! ```text
+//!   24 x 12.19 MP TIFF, jobs 4     3.30 s -> 2.74 s      -17%
+//!   24 x 12.19 MP TIFF, jobs 1     4.96 s -> 3.76 s      -24%
+//!    8 x 60.2 MP ARW,   jobs 1    18.86 s -> 17.68 s      -6%
+//!    8 x 60.2 MP ARW,   jobs 4    12.29 s -> 12.45 s     none
+//! ```
+//!
+//! A RAW batch is decode-bound — ImageIO's demosaic is ~1.15 s per file and
+//! single-threaded — so the encode is a tenth of the work, and at four jobs the
+//! saved milliseconds are simply filled by another file's decode. That is the
+//! same argument this module is built on, read in the other direction: when
+//! every core is already busy, making one stage faster moves nothing. The TIFF
+//! rows are what it looks like when the encode *is* the work.
+//!
+//! Reuse is on by default anyway, because it is free: output is byte-identical
+//! (a cold single `convert` and all 24 files of a pooled batch share one
+//! SHA-256) and peak RSS is unchanged to within 0.4%, since the sessions exist
+//! during the encode either way — the pool only keeps them alive between
+//! encodes.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -120,13 +149,46 @@ fn output_for(input: &Path, dir: &Path) -> PathBuf {
     dir.join(name)
 }
 
+/// Reject input sets where two sources would claim one output path.
+///
+/// Output names come from the stem alone, so `a/DSC1.ARW` and `b/DSC1.ARW`
+/// both want `<out>/DSC1.heic`. With `--jobs > 1` two workers then write that
+/// file at once and the survivor is whichever finished last — silent loss of
+/// one conversion. Refusing up front is the only answer that keeps the
+/// input->output mapping predictable; disambiguating by hand would make the
+/// name depend on directory order.
+fn check_output_collisions(inputs: &[PathBuf], dir: &Path) -> anyhow::Result<()> {
+    let mut claims: std::collections::HashMap<PathBuf, Vec<&PathBuf>> =
+        std::collections::HashMap::new();
+    for input in inputs {
+        claims.entry(output_for(input, dir)).or_default().push(input);
+    }
+    let mut clashes: Vec<_> = claims.iter().filter(|(_, v)| v.len() > 1).collect();
+    if clashes.is_empty() {
+        return Ok(());
+    }
+    clashes.sort_by_key(|(out, _)| *out);
+    let mut msg = format!("{} output name(s) claimed by more than one input:", clashes.len());
+    for (out, sources) in clashes {
+        msg.push_str(&format!("\n  {} <- ", out.display()));
+        let names: Vec<String> = sources.iter().map(|p| p.display().to_string()).collect();
+        msg.push_str(&names.join(", "));
+    }
+    msg.push_str("\nconvert these separately, into different --output-dir directories");
+    anyhow::bail!(msg)
+}
+
 /// How many files to convert at once when `--jobs` is not given.
 fn default_jobs(cores: usize) -> usize {
     cores.div_ceil(2).clamp(1, 4)
 }
 
 pub fn run(args: BatchArgs) -> anyhow::Result<i32> {
+    if args.no_session_reuse {
+        tohdr_apple::vtenc::set_session_reuse(false);
+    }
     let inputs = collect_inputs(&args.inputs)?;
+    check_output_collisions(&inputs, &args.output_dir)?;
     let cores = tohdr_core::par::available_cores();
     let jobs = args.jobs.unwrap_or_else(|| default_jobs(cores)).clamp(1, inputs.len());
 
@@ -295,6 +357,33 @@ mod tests {
         std::fs::write(&odd, b"x").unwrap();
         assert_eq!(collect_inputs(&[odd.clone()]).unwrap(), vec![odd]);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn same_stem_in_two_directories_is_refused_before_any_work() {
+        let inputs = vec![
+            PathBuf::from("/shoot-a/DSC07746.ARW"),
+            PathBuf::from("/shoot-b/DSC07746.arw"),
+            PathBuf::from("/shoot-a/DSC07747.ARW"),
+        ];
+        let err = check_output_collisions(&inputs, Path::new("/out")).unwrap_err().to_string();
+        assert!(err.contains("/out/DSC07746.heic"), "{err}");
+        assert!(err.contains("/shoot-a/DSC07746.ARW"), "{err}");
+        assert!(err.contains("/shoot-b/DSC07746.arw"), "{err}");
+        assert!(!err.contains("DSC07747"), "the file that is fine must not be named: {err}");
+    }
+
+    #[test]
+    fn a_differing_extension_alone_still_collides() {
+        // `raw.tif` and `raw.png` are different inputs but one output name.
+        let inputs = vec![PathBuf::from("/src/raw.tif"), PathBuf::from("/src/raw.png")];
+        assert!(check_output_collisions(&inputs, Path::new("/out")).is_err());
+    }
+
+    #[test]
+    fn distinct_stems_pass() {
+        let inputs = vec![PathBuf::from("/a/one.arw"), PathBuf::from("/b/two.arw")];
+        assert!(check_output_collisions(&inputs, Path::new("/out")).is_ok());
     }
 
     #[test]
