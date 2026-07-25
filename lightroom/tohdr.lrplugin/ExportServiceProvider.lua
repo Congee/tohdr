@@ -49,14 +49,46 @@ exportServiceProvider.sectionsForTopOfDialog = TohdrExportDialog.sectionsForTopO
 --- Force the intermediate Lightroom renders to something `tohdr` can actually
 --- read with headroom intact. See the file header for why this is not left to
 --- the user.
+---
+--- Every key here was read out of Lightroom's own preferences after driving the
+--- Export dialog by hand and confirming the resulting file carried a gain map:
+--- LrC stores the dialog's state under an `AgExport_` prefix, and an export
+--- service receives the same table under `LR_`. That was necessary because the
+--- LrC 15.3 SDK Guide documents none of it -- the string "HDR" does not occur
+--- anywhere in the guide, `LR_export_colorSpace` is documented as accepting
+--- only sRGB/AdobeRGB/ProPhotoRGB, and `LR_export_bitDepth` as only 8 or 16.
+--- The guide is simply behind the app; it also omits PNG, AVIF and JPEG XL,
+--- which the dialog has offered for releases.
+---
+--- Three things here were wrong until the pref dump settled them:
+---   * `LR_export_useHDR` was invented. No such key exists in LrC 15.4.1's
+---     export module or in any documentation. It was silently ignored, so
+---     every intermediate this plugin ever rendered was SDR.
+---   * `ProPhotoRGB` is a wide-gamut *SDR* space, and `tohdr` reads no ICC
+---     profile on this path -- it assumed sRGB primaries and a PQ transfer for
+---     any 16-bit TIFF, so the pixels were misread twice over.
+---   * TIFF takes the bit depth from `bitDepthOthers`, not `bitDepth`; the
+---     latter is the JPEG-era key. Both are set, since setting the wrong one
+---     is silent.
 function exportServiceProvider.updateExportSettings(exportSettings)
 	exportSettings.LR_format = 'TIFF'
+	-- The dialog's "HDR Output" checkbox. With it set, the colour-space values
+	-- gain an `_hdr` suffix and Lightroom writes a *pair* of images into one
+	-- TIFF: the SDR rendition in IFD0, and a full-resolution gain map in a
+	-- SubIFD carrying ISO 21496-1 metadata. `tohdr` transcodes that pair
+	-- directly rather than deriving anything.
+	exportSettings.LR_enableHDRDisplay = true
+	-- "HDR sRGB (Rec. 709)". Not P3 or Rec. 2020, both of which the dialog also
+	-- offers: `tohdr` is BT.709 end to end and reads no ICC profile here, so
+	-- wider primaries would be silently mislabelled rather than converted.
+	exportSettings.LR_export_colorSpace = 'sRGB_hdr'
+	exportSettings.LR_export_colorSpaceNonJPEG = 'sRGB_hdr'
 	exportSettings.LR_export_bitDepth = 16
-	exportSettings.LR_export_colorSpace = 'ProPhotoRGB'
+	exportSettings.LR_export_bitDepthOthers = 16
+	-- Not 32: the float variant carries the identical gain map with the roles
+	-- reversed (HDR base, downward map) at 1.5x the bytes, and `tohdr` wants
+	-- the SDR base so it can ship Lightroom's own rendition.
 	exportSettings.LR_tiff_compressionMethod = 'compressionMethod_None'
-	-- Ask Lightroom for HDR pixels rather than a tone-mapped SDR rendition.
-	-- Only meaningful for photos in HDR edit mode; harmless otherwise.
-	exportSettings.LR_export_useHDR = true
 end
 
 --- Locate the binary using the pure-Lua policy in TohdrCli, supplying it the
@@ -151,6 +183,27 @@ function exportServiceProvider.processRenderedPhotos(_functionContext, exportCon
 				elseif not LrFileUtils.exists(outPath) then
 					rendition:uploadFailed(
 						'tohdr reported success but wrote no file to ' .. outPath
+					)
+				elseif output:find('gain map: derived', 1, true) then
+					-- The intermediate had no gain map in it, so `tohdr` fell
+					-- back to deriving one from whatever pixels it found. On
+					-- this path those pixels are Lightroom's SDR rendition,
+					-- already clipped at diffuse white, and a gain map derived
+					-- from them describes no HDR at all: the output would pass
+					-- every structural check and still render washed out. That
+					-- is the failure this whole project exists to prevent, so
+					-- it is reported rather than shipped.
+					--
+					-- Two causes, and the user can tell them apart: the photo
+					-- is not in HDR edit mode (Develop's HDR toggle off, so
+					-- there is genuinely no headroom to carry), or this build
+					-- of Lightroom did not honour the HDR export keys.
+					LrFileUtils.delete(outPath)
+					rendition:uploadFailed(
+						'Lightroom rendered an SDR intermediate with no gain map, so the HEIC '
+							.. 'would have carried no HDR. Check that this photo is in HDR edit '
+							.. 'mode in Develop; if it is, this Lightroom version may not accept '
+							.. 'the HDR export settings the plugin requests.'
 					)
 				end
 

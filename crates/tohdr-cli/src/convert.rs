@@ -22,6 +22,12 @@ pub struct ConvertReport {
     pub engine: String,
     pub flavor: String,
     pub tone_map: String,
+    /// `"lightroom-embedded"` when the source carried its own gain map and we
+    /// transcoded it, `"derived"` when we computed one. The Lightroom plugin
+    /// checks this: it asks Lightroom for an HDR intermediate, and if it
+    /// silently got an SDR one instead, `"derived"` is the only visible
+    /// symptom before the output turns out washed out.
+    pub gain_map_source: String,
     pub quality: u8,
     pub gain_quality: u8,
     pub gain_subsample: u32,
@@ -48,6 +54,18 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
             report.headroom_stops,
             if report.headroom_overridden { ", overridden" } else { "" },
         );
+        // Printed on both paths, not just the interesting one: the Lightroom
+        // plugin distinguishes them by this line, and a *missing* line then
+        // means "an older binary" rather than "derived", which is the
+        // difference between degrading gracefully and failing every photo.
+        println!(
+            "  gain map: {}",
+            if report.gain_map_source == "lightroom-embedded" {
+                "transcoded from the source's own, not derived"
+            } else {
+                "derived from the source's HDR pixels"
+            }
+        );
         if let Some(max) = report.max_size {
             println!(
                 "  budget: <= {max} bytes, {} attempt(s), within budget: {}",
@@ -72,26 +90,59 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     // Loading only needs the *family*: which decoder reads the source. Which
     // plane codec encodes it depends on the base image, which does not exist
     // yet — that choice is made below, once it can be made from facts.
-    let loader = Engine::new(args.engine);
-    step!(
-        "tohdr: loading {} with {} engine",
-        args.input.display(),
-        loader.name()
-    );
-    let hdr = loader
-        .load_hdr(&args.input)
-        .with_context(|| format!("loading HDR source {}", args.input.display()))?;
+    // A Lightroom Classic "HDR Output" TIFF already contains a finished gain
+    // map and Lightroom's own SDR rendition of the edit, so it needs neither a
+    // decoder nor a tone-map — only the reconstruction that turns the pair back
+    // into extended-range RGB. Checked before the engine's loader runs, because
+    // both engines would otherwise read IFD0 alone and see an SDR image with no
+    // headroom in it. See `tohdr_portable::gainmap_tiff`.
+    let embedded = tohdr_portable::read_gainmap_tiff(&args.input)
+        .with_context(|| format!("reading {}", args.input.display()))?;
 
-    let white = hdr.peak_luma(PEAK_OUTLIER_FRACTION);
-    let tone_map = match args.tone_map {
-        ToneMapKind::Clip => ToneMap::Clip,
-        ToneMapKind::Reinhard => ToneMap::Reinhard { white },
+    let loader = Engine::new(args.engine);
+    let (hdr, base, tone_map_used, gain_map_source) = match embedded {
+        Some(g) => {
+            step!(
+                "tohdr: {} carries a Lightroom gain map, {:.4} stops declared; using its own \
+                 SDR rendition as the base and skipping the tone-map",
+                args.input.display(),
+                g.declared.alt_headroom,
+            );
+            (
+                g.hdr,
+                g.base,
+                "none-lightroom-sdr".to_string(),
+                "lightroom-embedded",
+            )
+        }
+        None => {
+            step!(
+                "tohdr: loading {} with {} engine",
+                args.input.display(),
+                loader.name()
+            );
+            let hdr = loader
+                .load_hdr(&args.input)
+                .with_context(|| format!("loading HDR source {}", args.input.display()))?;
+
+            let white = hdr.peak_luma(PEAK_OUTLIER_FRACTION);
+            let tone_map = match args.tone_map {
+                ToneMapKind::Clip => ToneMap::Clip,
+                ToneMapKind::Reinhard => ToneMap::Reinhard { white },
+            };
+            step!(
+                "tohdr: tone-mapping to SDR base ({:?}, peak {white:.3}x)",
+                args.tone_map
+            );
+            let base = tone_map.to_sdr(&hdr);
+            (
+                hdr,
+                base,
+                format!("{:?}", args.tone_map).to_ascii_lowercase(),
+                "derived",
+            )
+        }
     };
-    step!(
-        "tohdr: tone-mapping to SDR base ({:?}, peak {white:.3}x)",
-        args.tone_map
-    );
-    let base = tone_map.to_sdr(&hdr);
 
     let derive_opts = DeriveOptions {
         subsample: args.gain_subsample.max(1),
@@ -197,7 +248,8 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         output: args.output.display().to_string(),
         engine: engine.name().to_string(),
         flavor: format!("{:?}", args.flavor).to_ascii_lowercase(),
-        tone_map: format!("{:?}", args.tone_map).to_ascii_lowercase(),
+        tone_map: tone_map_used,
+        gain_map_source: gain_map_source.to_string(),
         quality: quality_used,
         gain_quality: quality_used,
         gain_subsample: derive_opts.subsample,

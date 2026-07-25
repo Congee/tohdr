@@ -41,11 +41,32 @@ until the file fits, and **fails the photo loudly** rather than writing an
 oversized file. Failures surface per photo through `uploadFailed`, carrying the
 CLI's own last line of stderr rather than a bare exit code.
 
-The intermediate render is forced to uncompressed 16-bit ProPhoto RGB TIFF with
-`LR_export_useHDR`, and deleted after conversion. That is not configurable on
-purpose: a JPEG or 8-bit intermediate has already discarded the above-white
-highlights the gain map is derived from, and would yield a structurally perfect
-file containing no HDR.
+The intermediate render is forced to an uncompressed 16-bit **HDR sRGB (Rec.
+709)** TIFF with `LR_enableHDRDisplay`, and deleted after conversion. That is
+not configurable on purpose: a JPEG or 8-bit intermediate has already discarded
+the above-white highlights, and would yield a structurally perfect file
+containing no HDR.
+
+What that intermediate actually contains is worth knowing, because it changes
+what the CLI does with it. Lightroom does not write one HDR image; it writes a
+**pair** in one TIFF — the SDR rendition in `IFD0`, and a full-resolution
+3-channel 16-bit gain map in a SubIFD (`PhotometricInterpretation = 52553`)
+carrying ISO 21496-1 metadata in tag 52557. So `tohdr` transcodes a finished
+gain map and ships *Lightroom's own* SDR rendition as the base, instead of
+tone-mapping one itself. See `crates/tohdr-portable/src/gainmap_tiff.rs`.
+
+Because that is the whole point, the plugin verifies it happened: if `tohdr`
+reports `gain map: derived`, the intermediate had no gain map in it, the output
+is deleted and the photo fails with an explanation. A gain map derived from an
+already-clipped SDR rendition describes no HDR at all, and shipping one is the
+exact failure this project exists to prevent.
+
+Three settings keys were wrong before LrC's own preferences were dumped and
+read: `LR_export_useHDR` does not exist (it was silently ignored, so every
+intermediate was SDR), `ProPhotoRGB` is a wide-gamut *SDR* space that the CLI
+then misread as PQ with sRGB primaries, and TIFF takes its bit depth from
+`LR_export_bitDepthOthers` rather than `LR_export_bitDepth`. None of this is in
+the LrC 15.3 SDK Guide, in which the string "HDR" does not appear at all.
 
 ## Verification status
 
@@ -73,8 +94,15 @@ Be clear about which half of this is proven.
 - That the export dialog renders, and that the `LrView` layout is right.
 - That `processRenderedPhotos`, `waitForRender`, `uploadFailed` and
   `configureProgress` behave as expected against a real export session.
-- That `LR_export_useHDR` is the correct settings key for HDR output on
-  15.4.1, and that Lightroom honours the forced TIFF settings.
+- That `LR_enableHDRDisplay` / `LR_export_colorSpaceNonJPEG = 'sRGB_hdr'` /
+  `LR_export_bitDepthOthers` are accepted under those names by an export
+  service. The names and values are confirmed to be what the *dialog* stores
+  (`AgExport_enableHDRDisplay`, `AgExport_export_colorSpaceNonJPEG`,
+  `AgExport_export_bitDepthOthers`), and a hand-driven export with exactly
+  those settings does produce a gain-map TIFF — but the `AgExport_` to `LR_`
+  mapping is a convention read off the documented keys, not something Adobe
+  states for these three. If Lightroom ignores them the plugin now fails the
+  photo with an explanation instead of shipping an SDR file.
 - Any end-to-end export of an actual photo.
 
 Installing the plugin needs the Plug-in Manager GUI, and this work did not

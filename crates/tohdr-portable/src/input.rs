@@ -13,8 +13,7 @@
 //!   can represent above-white light directly, so applying a transfer function
 //!   to it would be inventing one; taking the samples as-is is the only
 //!   reading that preserves what the file already says.
-//! - **Integer TIFF** — [`load_hdr`]'s primary input, matching what Lightroom
-//!   Classic's HDR export produces — is assumed **PQ (ST 2084) encoded**: the
+//! - **Integer TIFF** — assumed **PQ (ST 2084) encoded**: the
 //!   16-bit code value is treated as the PQ signal linearly rescaled to
 //!   `0..=65535` (`code / 65535`), decoded to nits via the ST 2084 EOTF, then
 //!   divided by a reference white so `1.0` lands at SDR diffuse white. That
@@ -35,6 +34,17 @@
 //!   samples, so "no headroom" is the honest floor rather than a guess.
 //! - [`load_sdr`] always assumes sRGB, for all three formats — SDR files are
 //!   display-referred by definition, so there is no headroom question there.
+//!
+//! # What this module is *not* the right reader for
+//!
+//! A Lightroom Classic "HDR Output" TIFF does not need any of these
+//! assumptions, and the integer one is actively wrong for it: its `IFD0` is
+//! **sRGB-encoded, not PQ**, and read as PQ at 203 nits it decodes to a
+//! fictional 5.6 stops of headroom. It is also not a single image — the HDR
+//! lives in a gain map in a SubIFD that neither the `image` crate nor the
+//! `tiff` crate's IFD-chain walk can reach. [`crate::gainmap_tiff`] handles
+//! that format, and `tohdr convert` tries it first; this module sees such a
+//! file only if that reader declined it.
 //!
 //! Get the assumption wrong for a given file and the image decodes without
 //! error but is simply wrong — too flat (an sRGB source read as PQ headroom)

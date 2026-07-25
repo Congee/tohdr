@@ -15,9 +15,11 @@ use std::path::Path;
 use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, Rgb};
 
 mod codec;
+pub mod gainmap_tiff;
 mod input;
 
 pub use codec::{HpvcaCodec, YUV444_QUALITY_THRESHOLD};
+pub use gainmap_tiff::{read as read_gainmap_tiff, GainMapTiff};
 pub use input::{load_hdr_tiff_pq, DEFAULT_REFERENCE_WHITE_NITS};
 
 #[derive(Debug)]
