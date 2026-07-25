@@ -20,6 +20,9 @@ pub struct Cli {
 pub enum Command {
     /// Encode a gain-map HEIC from an HDR source.
     Convert(ConvertArgs),
+    /// Convert many sources at once, overlapping the part of each that cannot
+    /// be parallelized.
+    Batch(BatchArgs),
     /// Report what's actually in a HEIC's gain map, both flavors.
     Inspect(InspectArgs),
     /// Check a file's gain map against the correctness invariants IMG_4913 holds.
@@ -75,7 +78,7 @@ fn parse_quality(s: &str) -> Result<u8, String> {
     }
 }
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Clone)]
 pub struct ConvertArgs {
     /// HDR source: a plain HDR file, or an existing gain-map HEIC to remux.
     pub input: PathBuf,
@@ -123,6 +126,72 @@ pub struct ConvertArgs {
     /// Emit a machine-readable JSON result on stdout instead of text.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct BatchArgs {
+    /// Source files, or directories to convert everything convertible inside.
+    #[arg(required = true)]
+    pub inputs: Vec<PathBuf>,
+
+    /// Directory for the outputs. Created if missing; names keep their stem.
+    #[arg(short = 'o', long = "output-dir")]
+    pub output_dir: PathBuf,
+
+    /// Files to convert at once. Defaults to half the cores, capped at four —
+    /// one conversion already uses every core, and past four the gain is a few
+    /// percent for ~2.5 GB more peak memory each.
+    #[arg(short = 'j', long)]
+    pub jobs: Option<usize>,
+
+    #[arg(long, default_value = "both", value_parser = parse_flavor)]
+    pub flavor: Flavor,
+
+    #[arg(long, default_value = "apple", value_parser = parse_engine)]
+    pub engine: EngineKind,
+
+    /// Target output size per file, e.g. `4MB`.
+    #[arg(long = "max-size", value_parser = parse_size)]
+    pub max_size: Option<u64>,
+
+    #[arg(long, default_value_t = 85, value_parser = parse_quality)]
+    pub quality: u8,
+
+    #[arg(long = "min-quality", default_value_t = 40, value_parser = parse_quality)]
+    pub min_quality: u8,
+
+    #[arg(long = "tone-map", default_value = "reinhard", value_parser = parse_tone_map)]
+    pub tone_map: ToneMapKind,
+
+    #[arg(long = "gain-subsample", default_value_t = 2)]
+    pub gain_subsample: u32,
+
+    /// Emit one JSON object for the whole run instead of per-file text.
+    #[arg(long)]
+    pub json: bool,
+}
+
+impl BatchArgs {
+    /// The per-file settings, as `convert` would have received them.
+    ///
+    /// `--headroom` is deliberately absent from `batch`: it is a per-image
+    /// override, and one value forced across a folder is the defect described
+    /// in docs/heic-gainmap-structure.md applied wholesale.
+    pub fn convert_args_for(&self, input: &std::path::Path, output: PathBuf) -> ConvertArgs {
+        ConvertArgs {
+            input: input.to_path_buf(),
+            output,
+            flavor: self.flavor,
+            engine: self.engine,
+            max_size: self.max_size,
+            quality: self.quality,
+            min_quality: self.min_quality,
+            tone_map: self.tone_map,
+            gain_subsample: self.gain_subsample,
+            headroom: None,
+            json: false,
+        }
+    }
 }
 
 #[derive(clap::Args, Debug)]

@@ -11,10 +11,22 @@
 //! anything that needs `(x, y)` can still compute it.
 
 /// Worker count: the machine's parallelism, or 1 if it cannot be determined.
+///
+/// Cached because this runs once per parallel region. Deliberately not
+/// throttled when several conversions share the machine: `tohdr batch` measured
+/// that slower, since a job blocked in ImageIO's serial decode holds a share it
+/// is not using.
 pub fn threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
+    static CORES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CORES.get_or_init(|| {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+    })
+}
+
+/// Alias for [`threads`], for callers deciding *how many* concurrent jobs to
+/// run rather than how to split one.
+pub fn available_cores() -> usize {
+    threads()
 }
 
 /// Rows per chunk for `rows` rows across `threads()` workers, rounded up to a

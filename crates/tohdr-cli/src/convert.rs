@@ -16,26 +16,61 @@ use crate::engine::Engine;
 const PEAK_OUTLIER_FRACTION: f64 = 0.001;
 
 #[derive(Serialize, Debug)]
-struct ConvertReport {
-    input: String,
-    output: String,
-    engine: String,
-    flavor: String,
-    tone_map: String,
-    quality: u8,
-    gain_quality: u8,
-    gain_subsample: u32,
-    headroom_stops: f32,
-    headroom_overridden: bool,
-    bytes_written: u64,
-    max_size: Option<u64>,
-    attempts: u32,
-    within_budget: Option<bool>,
+pub struct ConvertReport {
+    pub input: String,
+    pub output: String,
+    pub engine: String,
+    pub flavor: String,
+    pub tone_map: String,
+    pub quality: u8,
+    pub gain_quality: u8,
+    pub gain_subsample: u32,
+    pub headroom_stops: f32,
+    pub headroom_overridden: bool,
+    pub bytes_written: u64,
+    pub max_size: Option<u64>,
+    pub attempts: u32,
+    pub within_budget: Option<bool>,
 }
 
 pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
+    let report = convert_one(&args, true)?;
+    if args.json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        println!(
+            "wrote {} ({} bytes, {} engine, {} flavor, quality {}, headroom {:.3} stops{})",
+            report.output,
+            report.bytes_written,
+            report.engine,
+            report.flavor,
+            report.quality,
+            report.headroom_stops,
+            if report.headroom_overridden { ", overridden" } else { "" },
+        );
+        if let Some(max) = report.max_size {
+            println!(
+                "  budget: <= {max} bytes, {} attempt(s), within budget: {}",
+                report.attempts,
+                report.within_budget.unwrap_or(false)
+            );
+        }
+    }
+    Ok(0)
+}
+
+/// One source file to one gain-map HEIC.
+///
+/// Split out from [`run`] so `tohdr batch` drives the identical pipeline rather
+/// than a parallel reimplementation of it. `progress` is off for batch, whose
+/// workers would otherwise interleave their step lines.
+pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<ConvertReport> {
+    macro_rules! step {
+        ($($t:tt)*) => { if progress { eprintln!($($t)*); } };
+    }
+
     let engine = Engine::new(args.engine);
-    eprintln!(
+    step!(
         "tohdr: loading {} with {} engine",
         args.input.display(),
         engine.name()
@@ -49,7 +84,7 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
         ToneMapKind::Clip => ToneMap::Clip,
         ToneMapKind::Reinhard => ToneMap::Reinhard { white },
     };
-    eprintln!(
+    step!(
         "tohdr: tone-mapping to SDR base ({:?}, peak {white:.3}x)",
         args.tone_map
     );
@@ -59,7 +94,7 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
         subsample: args.gain_subsample.max(1),
         ..DeriveOptions::default()
     };
-    eprintln!("tohdr: deriving gain plane (subsample {})", derive_opts.subsample);
+    step!("tohdr: deriving gain plane (subsample {})", derive_opts.subsample);
     let (gain, mut meta) = derive_consistent(&hdr, &base, &derive_opts);
 
     let derived_headroom = meta.max_log2[0];
@@ -84,7 +119,7 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
     };
 
     let (bytes, quality_used, attempts, within_budget) = if let Some(max_bytes) = args.max_size {
-        eprintln!(
+        step!(
             "tohdr: searching quality for a <= {max_bytes} byte output (floor q{})",
             args.min_quality
         );
@@ -115,7 +150,7 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
             Some(true),
         )
     } else {
-        eprintln!("tohdr: encoding at quality {}", args.quality);
+        step!("tohdr: encoding at quality {}", args.quality);
         let bytes = engine
             .encode(&base, &gain, &meta, &opts)
             .context("encoding")?;
@@ -125,7 +160,7 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
     std::fs::write(&args.output, &bytes)
         .with_context(|| format!("writing {}", args.output.display()))?;
 
-    let report = ConvertReport {
+    Ok(ConvertReport {
         input: args.input.display().to_string(),
         output: args.output.display().to_string(),
         engine: engine.name().to_string(),
@@ -140,29 +175,5 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
         max_size: args.max_size,
         attempts,
         within_budget,
-    };
-
-    if args.json {
-        println!("{}", serde_json::to_string(&report)?);
-    } else {
-        println!(
-            "wrote {} ({} bytes, {} engine, {} flavor, quality {}, headroom {:.3} stops{})",
-            report.output,
-            report.bytes_written,
-            report.engine,
-            report.flavor,
-            report.quality,
-            report.headroom_stops,
-            if report.headroom_overridden { ", overridden" } else { "" },
-        );
-        if let Some(max) = report.max_size {
-            println!(
-                "  budget: <= {max} bytes, {} attempt(s), within budget: {}",
-                report.attempts,
-                report.within_budget.unwrap_or(false)
-            );
-        }
-    }
-
-    Ok(0)
+    })
 }

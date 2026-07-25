@@ -1,10 +1,12 @@
 //! `tohdr` command line: produce and inspect HDR gain-map HEICs.
 //!
 //! Subcommands dispatch to modules that each own one concern:
-//! [`convert`] encodes, [`inspect`] and [`verify`] read back, [`bench`]
-//! compares engines. [`cli`] is parsing only, so `--help` works even while
-//! every engine crate underneath is still `todo!()`.
+//! [`convert`] encodes one file and [`batch`] many, [`inspect`] and
+//! [`verify`] read back, [`bench`] compares engines. [`cli`] is parsing only,
+//! so `--help` works even while every engine crate underneath is still
+//! `todo!()`.
 
+mod batch;
 mod bench;
 mod cli;
 mod convert;
@@ -22,6 +24,7 @@ fn main() {
 
     let result = match cli.command {
         Command::Convert(args) => convert::run(args),
+        Command::Batch(args) => batch::run(args),
         Command::Inspect(args) => inspect::run(args),
         Command::Verify(args) => verify::run(args),
         Command::Bench(args) => bench::run(args),
