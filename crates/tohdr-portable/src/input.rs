@@ -44,7 +44,7 @@
 use std::path::Path;
 
 use image::DynamicImage;
-use tohdr_core::{HdrRgb, Rgb};
+use tohdr_core::{par, HdrRgb, Rgb};
 
 use crate::{Error, Result};
 
@@ -89,10 +89,24 @@ pub(crate) fn srgb_to_linear(c: f32) -> f32 {
 }
 
 fn decode_any(path: &Path) -> Result<DynamicImage> {
-    image::ImageReader::open(path)?
+    // Bound the image from its header, before the decoder allocates anything.
+    // Doing it here rather than only after `decode()` is what lets the
+    // allocation limit below be loosened safely.
+    let (w, h) = image::ImageReader::open(path)?
         .with_guessed_format()?
-        .decode()
-        .map_err(|e| Error::Decode(e.to_string()))
+        .into_dimensions()
+        .map_err(|e| Error::Decode(e.to_string()))?;
+    check_dimensions(w, h)?;
+
+    let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
+    // `image`'s default cap is 512 MiB, which rejects a 60 Mpx 16-bit TIFF —
+    // 345 MiB of samples plus the decoder's working set — and that is an
+    // ordinary camera export, not an attack. The header check above is the
+    // real bound; this only has to be loose enough not to pre-empt it.
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    reader.limits(limits);
+    reader.decode().map_err(|e| Error::Decode(e.to_string()))
 }
 
 fn extension_lower(path: &Path) -> Option<String> {
@@ -134,9 +148,12 @@ pub fn load_hdr_tiff_pq(path: &Path, reference_white_nits: f32) -> Result<HdrRgb
 /// `panic_guard` cannot catch — so bound it here instead.
 const MAX_PIXELS: u64 = 512 * 1024 * 1024;
 
-fn check_size(img: &DynamicImage) -> Result<()> {
-    let (w, h) = (img.width() as u64, img.height() as u64);
-    let n = w.saturating_mul(h);
+/// Ceiling for the decoder's own allocations, implied by [`MAX_PIXELS`] at the
+/// widest layout `image` decodes into (16-bit RGBA, 8 bytes per pixel).
+const MAX_DECODE_BYTES: u64 = MAX_PIXELS * 8;
+
+fn check_dimensions(w: u32, h: u32) -> Result<()> {
+    let n = (w as u64).saturating_mul(h as u64);
     if n > MAX_PIXELS {
         return Err(Error::UnsupportedInput(format!(
             "{w}x{h} is {n} pixels, over the {MAX_PIXELS}-pixel limit"
@@ -145,42 +162,49 @@ fn check_size(img: &DynamicImage) -> Result<()> {
     Ok(())
 }
 
+fn check_size(img: &DynamicImage) -> Result<()> {
+    check_dimensions(img.width(), img.height())
+}
+
+/// Map every integer sample through `lut`, in parallel.
+///
+/// Both transfer functions this file applies are per-sample and the sources are
+/// integers, so a table over every representable code reproduces the curve
+/// *exactly* rather than approximating it, and turns a few hundred million
+/// `powf` evaluations into indexed loads.
+fn expand<T: Copy + Into<usize> + Sync>(src: &[T], w: u32, lut: &[f32]) -> Vec<f32> {
+    let mut data = vec![0f32; src.len()];
+    let row_len = w as usize * 3;
+    par::for_each_row_chunk_mut(&mut data, row_len, 1, |start_row, out| {
+        let base = start_row * row_len;
+        for (i, v) in out.iter_mut().enumerate() {
+            *v = lut[src[base + i].into()];
+        }
+    });
+    data
+}
+
 fn srgb_no_headroom(img: DynamicImage) -> HdrRgb {
     let rgb8 = img.to_rgb8();
     let (w, h) = (rgb8.width(), rgb8.height());
-    let data = rgb8
-        .pixels()
-        .flat_map(|p| p.0)
-        .map(|s| srgb_to_linear(s as f32 / 255.0))
-        .collect();
+    let lut: Vec<f32> = (0..=u8::MAX).map(|c| srgb_to_linear(c as f32 / 255.0)).collect();
+    let data = expand(rgb8.as_raw(), w, &lut);
     HdrRgb { width: w, height: h, data }
 }
 
 fn tiff_pq_from(img: DynamicImage, reference_white_nits: f32) -> HdrRgb {
     let rgb16 = img.to_rgb16();
     let (w, h) = (rgb16.width(), rgb16.height());
-    let mut data = Vec::with_capacity(w as usize * h as usize * 3);
-    for px in rgb16.pixels() {
-        for &s in &px.0 {
-            let n = s as f32 / u16::MAX as f32;
-            data.push(pq_to_nits(n) / reference_white_nits);
-        }
-    }
+    let lut: Vec<f32> = (0..=u16::MAX)
+        .map(|c| pq_to_nits(c as f32 / u16::MAX as f32) / reference_white_nits)
+        .collect();
+    let data = expand(rgb16.as_raw(), w, &lut);
     HdrRgb { width: w, height: h, data }
 }
 
 /// Decode a PNG/JPEG assumed sRGB-encoded with no headroom (see module docs).
 fn load_hdr_srgb_no_headroom(path: &Path) -> Result<HdrRgb> {
-    let img = decode_any(path)?;
-    let rgb8 = img.to_rgb8();
-    let (w, h) = (rgb8.width(), rgb8.height());
-    let mut data = Vec::with_capacity(w as usize * h as usize * 3);
-    for px in rgb8.pixels() {
-        for &s in &px.0 {
-            data.push(srgb_to_linear(s as f32 / 255.0));
-        }
-    }
-    Ok(HdrRgb { width: w, height: h, data })
+    Ok(srgb_no_headroom(decode_any(path)?))
 }
 
 /// Decode an HDR source with pure-Rust decoders only. Dispatches on file
