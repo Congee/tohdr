@@ -105,6 +105,44 @@ where
     out.into_iter().map(|o| o.expect("every chunk ran")).collect()
 }
 
+/// Map each chunk of a *virtual* row range to a value, in parallel, returning
+/// the per-chunk results in order for the caller to combine.
+///
+/// The reduction counterpart to [`map_row_chunks`] for a pass with no backing
+/// slice to walk — a fold over samples computed on the fly rather than stored.
+/// That distinction is the point: it lets a two-pass algorithm recompute its
+/// kernel in the first pass instead of parking a full-resolution intermediate
+/// in memory between the passes.
+///
+/// `f` receives `(start_row, row_count)` rather than a slice, since there is
+/// nothing to borrow; callers reconstruct `(x, y)` exactly as they do for the
+/// slice-backed helpers.
+pub fn map_row_ranges<R, F>(rows: usize, granularity: usize, f: F) -> Vec<R>
+where
+    R: Send,
+    F: Fn(usize, usize) -> R + Sync,
+{
+    if rows == 0 {
+        return Vec::new();
+    }
+    let per = rows_per_chunk(rows, granularity);
+    if per == 0 || per >= rows {
+        return vec![f(0, rows)];
+    }
+    let ranges: Vec<(usize, usize)> = (0..rows)
+        .step_by(per)
+        .map(|start| (start, per.min(rows - start)))
+        .collect();
+    let mut out: Vec<Option<R>> = (0..ranges.len()).map(|_| None).collect();
+    std::thread::scope(|s| {
+        for ((start, n), slot) in ranges.into_iter().zip(out.iter_mut()) {
+            let f = &f;
+            s.spawn(move || *slot = Some(f(start, n)));
+        }
+    });
+    out.into_iter().map(|o| o.expect("every chunk ran")).collect()
+}
+
 /// Split an *output* row range across workers, giving each `f(row)` for the
 /// rows it owns. Used where the output is smaller than the input (the
 /// subsampled gain plane) and the natural decomposition is over destination

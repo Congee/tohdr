@@ -264,21 +264,27 @@ pub fn derive_from_luma(
     base_luma: impl Fn(u32, u32) -> f32 + Sync,
     opts: &DeriveOptions,
 ) -> (GainPlane, GainMapMeta) {
-    let n = w as usize * h as usize;
-
-    let mut log2_gain = vec![0f32; n];
     let (alt_off, base_off) = (opts.alt_offset, opts.base_offset);
-    crate::par::for_each_row_chunk_mut(&mut log2_gain, w as usize, 1, |start_row, out| {
-        for (r, row) in out.chunks_mut(w as usize).enumerate() {
-            let y = (start_row + r) as u32;
-            for (x, cell) in row.iter_mut().enumerate() {
-                let x = x as u32;
-                let base = base_luma(x, y);
-                let alt = alt_luma(x, y);
-                *cell = ((alt + alt_off) / (base + base_off)).max(EPS).log2();
-            }
-        }
-    });
+
+    // One pixel's log2 gain. Both passes below evaluate this rather than the
+    // first storing its results for the second to read: at full resolution the
+    // intermediate is an f32 per pixel — 230 MiB on a 60 MP frame, allocated
+    // even when `subsample` means the output plane is a quarter that size — and
+    // it was the second-largest live allocation in a conversion after the HDR
+    // source itself. Peak RSS is what caps `tohdr batch --jobs` (~2.5 GB per
+    // job), so trading one extra evaluation per pixel for that buffer buys
+    // batch concurrency. `f32` arithmetic here is deterministic, so recomputing
+    // yields bit-identical values and the encoded plane does not change.
+    let log2_gain_at = |x: u32, y: u32| -> f32 {
+        let base = base_luma(x, y);
+        let alt = alt_luma(x, y);
+        let ratio = (alt + alt_off) / (base + base_off);
+        // `f32::max` treats NaN as *missing* and returns the other operand, so
+        // a bare `.max(EPS)` would turn a NaN ratio into a legitimate-looking
+        // -19.9 stops and defeat the finite-only fold below. `+inf` needs no
+        // such care: it survives both.
+        if ratio.is_nan() { f32::NAN } else { ratio.max(EPS).log2() }
+    };
 
     // Fold over the finite samples only. A single `+inf` — a dead sensor
     // pixel, an EXR artifact, an exposure-fusion overflow — used to make
@@ -286,13 +292,16 @@ pub fn derive_from_luma(
     // zero, discarding the legitimate range computed from every other pixel
     // in the frame. One bad sample turned the whole image back into its flat
     // SDR base.
-    let bounds = crate::par::map_row_chunks(&log2_gain, w as usize, 1, |_, chunk| {
+    let bounds = crate::par::map_row_ranges(h as usize, 1, |start_row, rows| {
         let mut lo = f32::INFINITY;
         let mut hi = f32::NEG_INFINITY;
-        for &v in chunk {
-            if v.is_finite() {
-                lo = lo.min(v);
-                hi = hi.max(v);
+        for y in start_row..start_row + rows {
+            for x in 0..w {
+                let v = log2_gain_at(x, y as u32);
+                if v.is_finite() {
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                }
             }
         }
         (lo, hi)
@@ -322,7 +331,6 @@ pub fn derive_from_luma(
     let mut data = vec![0u8; plane_len];
     let gamma = opts.gamma;
     let unit_gamma = (gamma - 1.0).abs() < 1e-6;
-    let src = &log2_gain;
     crate::par::for_each_out_row_chunk_mut(&mut data, gw as usize, |start_gy, out| {
         for (r, out_row) in out.chunks_mut(gw as usize).enumerate() {
             let gy = (start_gy + r) as u32;
@@ -334,9 +342,8 @@ pub fn derive_from_luma(
                 let mut sum = 0f32;
                 let mut count = 0u32;
                 for y in y0..y1 {
-                    let row = y as usize * w as usize;
                     for x in x0..x1 {
-                        let v = src[row + x as usize];
+                        let v = log2_gain_at(x, y);
                         // Fold non-finite samples onto the finite range rather
                         // than letting them through: `NaN` would survive
                         // `clamp` and poison the bucket average, while `+inf`
