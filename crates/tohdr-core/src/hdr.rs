@@ -19,9 +19,8 @@
 //! deriving the declared headroom from the plane itself, the invariant
 //! `IMG_4913.HEIC` holds and both washed-out exports break.
 
-use crate::derive::{
-    self, sample_gain_bilinear, srgb_to_linear, DeriveOptions, EPS, LUMA,
-};
+use crate::derive::{self, sample_gain_bilinear, DeriveOptions, EPS, LUMA};
+use crate::par;
 use crate::{GainMapMeta, GainPlane, Rgb};
 
 /// Interleaved linear-light RGB, `f32` per sample, `1.0` at SDR diffuse white.
@@ -81,13 +80,27 @@ impl HdrRgb {
         const BUCKETS: usize = 1024;
         const LO_STOPS: f32 = -8.0;
         const HI_STOPS: f32 = 8.0;
-        let mut hist = vec![0u32; BUCKETS];
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let l = self.luma(x, y).max(EPS);
+        // Per-chunk histograms merged afterwards: a histogram is a reduction
+        // with a tiny (4 KiB) accumulator, so each worker can own a private
+        // one and there is no contention at all.
+        let row_len = self.width as usize * 3;
+        let partials = par::map_row_chunks(&self.data, row_len, 1, |_, chunk| {
+            let mut hist = [0u32; BUCKETS];
+            for px in chunk.chunks_exact(3) {
+                let l = (LUMA[0] * px[0] + LUMA[1] * px[1] + LUMA[2] * px[2])
+                    .max(0.0)
+                    .max(EPS);
                 let stops = l.log2().clamp(LO_STOPS, HI_STOPS);
-                let b = ((stops - LO_STOPS) / (HI_STOPS - LO_STOPS) * (BUCKETS - 1) as f32) as usize;
+                let b = ((stops - LO_STOPS) / (HI_STOPS - LO_STOPS)
+                    * (BUCKETS - 1) as f32) as usize;
                 hist[b.min(BUCKETS - 1)] += 1;
+            }
+            hist
+        });
+        let mut hist = vec![0u32; BUCKETS];
+        for p in &partials {
+            for (h, v) in hist.iter_mut().zip(p.iter()) {
+                *h += *v;
             }
         }
         let budget = (n as f64 * outlier_fraction.clamp(0.0, 1.0)) as u64;
@@ -148,20 +161,25 @@ impl ToneMap {
     pub fn to_sdr(&self, hdr: &HdrRgb) -> Rgb {
         assert_eq!(hdr.data.len(), hdr.expected_len(), "HdrRgb length mismatch");
         let mut data = vec![0u16; hdr.expected_len()];
-        for y in 0..hdr.height {
-            for x in 0..hdr.width {
-                let [r, g, b] = hdr.pixel(x, y);
-                let l = hdr.luma(x, y);
+        let row_len = hdr.width as usize * 3;
+        // Output rows map one-to-one onto input rows, so both slices can be
+        // chunked the same way and each worker owns a disjoint span.
+        let src = &hdr.data;
+        let tone = *self;
+        par::for_each_row_chunk_mut(&mut data, row_len, 1, |start_row, out| {
+            let base = start_row * row_len;
+            for (i, o) in out.chunks_exact_mut(3).enumerate() {
+                let s = base + i * 3;
+                let (r, g, b) = (src[s], src[s + 1], src[s + 2]);
+                let l = (LUMA[0] * r + LUMA[1] * g + LUMA[2] * b).max(0.0);
                 // At l == 0 there is no chroma to preserve, so the ratio is
                 // irrelevant; 1.0 keeps the (already black) pixel black.
-                let scale = if l > EPS { self.map_luma(l) / l } else { 1.0 };
-                let i = (y as usize * hdr.width as usize + x as usize) * 3;
-                for (c, v) in [r, g, b].iter().enumerate() {
-                    let enc = derive::linear_to_srgb((v * scale).clamp(0.0, 1.0));
-                    data[i + c] = (enc * 255.0).round() as u16;
-                }
+                let scale = if l > EPS { tone.map_luma(l) / l } else { 1.0 };
+                o[0] = derive::linear_to_srgb8(r * scale) as u16;
+                o[1] = derive::linear_to_srgb8(g * scale) as u16;
+                o[2] = derive::linear_to_srgb8(b * scale) as u16;
             }
-        }
+        });
         Rgb {
             width: hdr.width,
             height: hdr.height,
@@ -192,10 +210,7 @@ pub fn derive_consistent(
         hdr.height,
         |x, y| hdr.luma(x, y),
         |x, y| {
-            let r = srgb_to_linear(derive::sample_encoded(sdr_base, x, y, 0));
-            let g = srgb_to_linear(derive::sample_encoded(sdr_base, x, y, 1));
-            let b = srgb_to_linear(derive::sample_encoded(sdr_base, x, y, 2));
-            LUMA[0] * r + LUMA[1] * g + LUMA[2] * b
+            derive::luma_linear(sdr_base, x, y)
         },
         opts,
     );
@@ -249,7 +264,7 @@ pub fn apply_hdr(base: &Rgb, gain: &GainPlane, meta: &GainMapMeta) -> HdrRgb {
             let scale = decoded_log2.exp2();
             let i = (y as usize * w as usize + x as usize) * 3;
             for c in 0..3 {
-                let base_lin = srgb_to_linear(derive::sample_encoded(base, x, y, c));
+                let base_lin = derive::sample_linear(base, x, y, c);
                 data[i + c] = ((base_lin + base_offset) * scale - alt_offset).max(0.0);
             }
         }

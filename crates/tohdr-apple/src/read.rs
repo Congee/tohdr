@@ -308,10 +308,17 @@ fn analyze(isrc: &CGImageSource) -> Result<ReadBack> {
 /// happened to use (subsampled chroma, planar, 10-bit packed), and drawing
 /// into a context we allocated is the supported way to get one known layout
 /// out of all of them.
-fn render(
-    path: &Path,
-    hdr: bool,
-) -> Result<(u32, u32, Vec<u8>, usize)> {
+struct Decoded {
+    image: CFRetained<CGImage>,
+    w: usize,
+    h: usize,
+}
+
+/// Open a file through ImageIO and take its primary image.
+///
+/// No pixels are produced here. `CGImage` is lazy: the decode happens on the
+/// first draw, which is why band count does not multiply it.
+fn open_image(path: &Path, hdr: bool) -> Result<Decoded> {
     let s = path.to_str().ok_or_else(|| {
         Error::Unreadable(format!("path is not valid UTF-8: {}", path.display()))
     })?;
@@ -352,6 +359,98 @@ fn render(
     if w == 0 || h == 0 {
         return Err(Error::Missing("nonzero image dimensions"));
     }
+    Ok(Decoded { image, w, h })
+}
+
+/// Total scratch for all in-flight bands. Bands are drawn concurrently, so this
+/// is a budget for the whole render rather than per thread.
+const BAND_BUDGET: usize = 256 << 20;
+
+/// A `CGImage` several threads draw from at once, with the colour space they
+/// share.
+///
+/// Both are immutable once created and CoreGraphics supports drawing one image
+/// into independent contexts concurrently; the generated bindings simply do not
+/// carry that in the type. `examples/probe_band_parallel.rs` measures it: 4.8x
+/// on the draw stage at ten threads, and the banded output is byte-identical to
+/// the single-threaded full-frame render.
+struct SharedImage<'a> {
+    image: &'a CGImage,
+    cs: &'a CGColorSpace,
+}
+
+// SAFETY: read-only use of two immutable Core Foundation objects. Nothing here
+// mutates either one, and each thread creates its own `CGContext`.
+unsafe impl Send for SharedImage<'_> {}
+unsafe impl Sync for SharedImage<'_> {}
+
+/// The parts of the render target's layout that every band shares.
+#[derive(Clone, Copy)]
+struct BandFmt {
+    w: usize,
+    h: usize,
+    bits: usize,
+    stride: usize,
+    bitmap: CGBitmapInfo,
+}
+
+/// Draw rows `[y0, y0 + rows)` of the image into `buf`.
+fn draw_band(sh: &SharedImage, f: BandFmt, buf: &mut [u8], y0: usize, rows: usize) -> Result<()> {
+    // `draw_image` composites rather than replaces, so a source pixel with
+    // alpha below one would otherwise show the previous band through it.
+    buf[..f.stride * rows].fill(0);
+    let ctx = unsafe {
+        CGBitmapContextCreate(
+            buf.as_mut_ptr() as *mut c_void,
+            f.w,
+            rows,
+            f.bits,
+            f.stride,
+            Some(sh.cs),
+            f.bitmap.0,
+        )
+    }
+    .ok_or(Error::NullFromFramework("CGBitmapContextCreate"))?;
+    // CoreGraphics' origin is bottom-left while the band's memory starts at its
+    // top row, so placing the whole image at this offset leaves exactly rows
+    // [y0, y0 + rows) inside the context.
+    CGContext::draw_image(
+        Some(&ctx),
+        CGRect {
+            origin: CGPoint { x: 0.0, y: (rows + y0) as f64 - f.h as f64 },
+            size: CGSize { width: f.w as f64, height: f.h as f64 },
+        },
+        Some(sh.image),
+    );
+    Ok(())
+}
+
+/// Render into `out` in horizontal bands, converting each with `convert`.
+///
+/// Two things fall out of banding. The full-frame target used to be the largest
+/// allocation in the program — 918 MiB of RGBA f32 at 60 Mpx, alive only long
+/// enough to be de-interleaved and dropped — and bands cap it at `BAND_BUDGET`.
+/// More importantly the bands are independent: the render splits into a ~1150 ms
+/// one-off decode charged to the first draw and ~2020 ms of area-proportional
+/// conversion, and only the second part is on the critical path once threads
+/// divide it. Measured on a 60 Mpx raw, total render 3165 ms serial against
+/// 1585 ms across ten threads.
+///
+/// `convert` receives one band's destination rows and the raw bytes behind
+/// them, and runs on the thread that drew the band, while other threads are
+/// still drawing theirs.
+fn render_banded_into<T, F>(
+    d: &Decoded,
+    hdr: bool,
+    out: &mut [T],
+    row_len: usize,
+    convert: F,
+) -> Result<()>
+where
+    T: Send,
+    F: Fn(&mut [T], &[u8], usize) + Sync,
+{
+    let (w, h) = (d.w, d.h);
 
     // 32-bit float RGBA in extended linear sRGB for HDR (so above-white
     // survives), 8-bit RGBA sRGB for SDR.
@@ -362,9 +461,6 @@ fn render(
     };
     let cs = CGColorSpace::with_name(Some(cs_name))
         .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
-    let stride = w * bytes_per_px;
-    let mut buf = vec![0u8; stride * h];
-
     let bitmap = if hdr {
         CGBitmapInfo(
             CGImageComponentInfo::Float.0
@@ -374,61 +470,88 @@ fn render(
     } else {
         CGBitmapInfo(CGImageAlphaInfo::PremultipliedLast.0)
     };
+    let stride = w * bytes_per_px;
+    let fmt = BandFmt { w, h, bits, stride, bitmap };
+    let sh = SharedImage { image: &d.image, cs: &cs };
 
-    let ctx = unsafe {
-        CGBitmapContextCreate(
-            buf.as_mut_ptr() as *mut c_void,
-            w,
-            h,
-            bits,
-            stride,
-            Some(&cs),
-            bitmap.0,
-        )
-    }
-    .ok_or(Error::NullFromFramework("CGBitmapContextCreate"))?;
-    {
-        CGContext::draw_image(
-            Some(&ctx),
-            CGRect {
-                origin: CGPoint { x: 0.0, y: 0.0 },
-                size: CGSize { width: w as f64, height: h as f64 },
-            },
-            Some(&image),
-        )
-    };
-    drop(ctx);
+    let threads = tohdr_core::par::threads().min(h);
+    let band_rows = (BAND_BUDGET / threads / stride.max(1)).clamp(1, h);
 
-    Ok((w as u32, h as u32, buf, bytes_per_px))
+    // The one-off decode belongs to whichever draw runs first; forcing it with
+    // a single row keeps every worker from arriving at it together.
+    draw_band(&sh, fmt, &mut vec![0u8; stride], 0, 1)?;
+
+    let mut bands: Vec<(usize, &mut [T])> = out
+        .chunks_mut(band_rows * row_len)
+        .enumerate()
+        .map(|(i, c)| (i * band_rows, c))
+        .collect();
+
+    // Bands are equal-cost, so a static split needs no work stealing. Each
+    // worker keeps one scratch buffer for its whole run of bands.
+    let per_worker = bands.len().div_ceil(threads);
+    let (sh, convert) = (&sh, &convert);
+    let mut failed = Ok(());
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(threads);
+        for group in bands.chunks_mut(per_worker) {
+            handles.push(s.spawn(move || -> Result<()> {
+                let mut buf = vec![0u8; stride * band_rows];
+                for (y0, dst) in group {
+                    let rows = dst.len() / row_len;
+                    draw_band(sh, fmt, &mut buf, *y0, rows)?;
+                    convert(dst, &buf[..stride * rows], bytes_per_px);
+                }
+                Ok(())
+            }));
+        }
+        for handle in handles {
+            match handle.join() {
+                Ok(r) => {
+                    if r.is_err() && failed.is_ok() {
+                        failed = r;
+                    }
+                }
+                Err(_) => failed = Err(Error::Missing("band worker panicked")),
+            }
+        }
+    });
+    failed
 }
 
 pub(crate) fn load_hdr(path: &Path) -> Result<HdrRgb> {
-    let (w, h, buf, bpp) = render(path, true)?;
-    let n = (w as usize) * (h as usize);
-    let mut data = Vec::with_capacity(n * 3);
-    for i in 0..n {
-        let o = i * bpp;
-        for c in 0..3 {
-            let b = &buf[o + c * 4..o + c * 4 + 4];
-            data.push(f32::from_ne_bytes([b[0], b[1], b[2], b[3]]).max(0.0));
+    let d = open_image(path, true)?;
+    let (w, h) = (d.w, d.h);
+    let row_len = w * 3;
+    let mut data = vec![0f32; row_len * h];
+    render_banded_into(&d, true, &mut data, row_len, |dst, band, bpp| {
+        let mut o = 0;
+        for px in dst.chunks_exact_mut(3) {
+            for (c, v) in px.iter_mut().enumerate() {
+                let b = &band[o + c * 4..o + c * 4 + 4];
+                *v = f32::from_ne_bytes([b[0], b[1], b[2], b[3]]).max(0.0);
+            }
+            o += bpp;
         }
-    }
-    Ok(HdrRgb { width: w, height: h, data })
+    })?;
+    Ok(HdrRgb { width: w as u32, height: h as u32, data })
 }
 
 pub(crate) fn load_sdr(path: &Path) -> Result<Rgb> {
-    let (w, h, buf, bpp) = render(path, false)?;
-    let n = (w as usize) * (h as usize);
-    let mut data = Vec::with_capacity(n * 3);
-    for i in 0..n {
-        let o = i * bpp;
-        data.extend_from_slice(&[
-            buf[o] as u16,
-            buf[o + 1] as u16,
-            buf[o + 2] as u16,
-        ]);
-    }
-    Ok(Rgb { width: w, height: h, bits: 8, data })
+    let d = open_image(path, false)?;
+    let (w, h) = (d.w, d.h);
+    let row_len = w * 3;
+    let mut data = vec![0u16; row_len * h];
+    render_banded_into(&d, false, &mut data, row_len, |dst, band, bpp| {
+        let mut o = 0;
+        for px in dst.chunks_exact_mut(3) {
+            px[0] = band[o] as u16;
+            px[1] = band[o + 1] as u16;
+            px[2] = band[o + 2] as u16;
+            o += bpp;
+        }
+    })?;
+    Ok(Rgb { width: w as u32, height: h as u32, bits: 8, data })
 }
 
 pub(crate) fn inspect_path(path: &Path) -> Result<ReadBack> {

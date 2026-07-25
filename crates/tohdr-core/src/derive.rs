@@ -51,6 +51,8 @@
 //! re-encoding. Representing true above-white HDR headroom would need a
 //! float or extended-range pixel format, which [`Rgb`] does not have.
 
+use std::sync::LazyLock;
+
 use crate::{GainMapMeta, GainPlane, Rgb};
 
 /// Options controlling [`derive`].
@@ -95,7 +97,7 @@ pub(crate) const EPS: f32 = 1e-6;
 // single-channel gain maps (`src/gainmap.c:700-704`, `avifColorPrimariesComputeYCoeffs`).
 pub(crate) const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
-pub(crate) fn srgb_to_linear(c: f32) -> f32 {
+pub fn srgb_to_linear(c: f32) -> f32 {
     let c = c.clamp(0.0, 1.0);
     if c <= 0.04045 {
         c / 12.92
@@ -104,7 +106,7 @@ pub(crate) fn srgb_to_linear(c: f32) -> f32 {
     }
 }
 
-pub(crate) fn linear_to_srgb(c: f32) -> f32 {
+pub fn linear_to_srgb(c: f32) -> f32 {
     let c = c.clamp(0.0, 1.0);
     if c <= 0.0031308 {
         c * 12.92
@@ -113,15 +115,81 @@ pub(crate) fn linear_to_srgb(c: f32) -> f32 {
     }
 }
 
+/// `srgb_to_linear` evaluated for every 8-bit code.
+///
+/// An 8-bit base has 256 possible values per channel, so this is not an
+/// approximation of the transfer function — it *is* the transfer function,
+/// tabulated exhaustively. It removes one `powf` per sample, and a 60 MP
+/// image has 180 million of them.
+///
+/// Built at first use with the exact curve rather than in a `const` block: a
+/// hand-rolled const series expansion was tried and was wrong by up to 12 code
+/// levels in the toe, which the tests caught. Paying 256 `powf` calls once is
+/// the better trade.
+static SRGB8_TO_LINEAR: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    let mut t = [0.0f32; 256];
+    for (i, v) in t.iter_mut().enumerate() {
+        *v = srgb_to_linear(i as f32 / 255.0);
+    }
+    t
+});
+
+/// Quantization of the linear domain for [`LINEAR_TO_SRGB8`]. 16384 steps put
+/// the worst-case error below a fifth of a code level even where the curve is
+/// steepest (the toe, slope 12.92), and the table is 16 KiB — L1-resident.
+const L2S_STEPS: usize = 16_384;
+
+/// Linear `0..=1`, quantized to [`L2S_STEPS`], to a final 8-bit sRGB code.
+///
+/// Indexed on the *linear* value and storing the integer code means encoding a
+/// sample costs one multiply, one cast and one load instead of a `powf`.
+static LINEAR_TO_SRGB8: LazyLock<Box<[u8]>> = LazyLock::new(|| {
+    (0..=L2S_STEPS)
+        .map(|i| {
+            let lin = i as f32 / L2S_STEPS as f32;
+            (linear_to_srgb(lin) * 255.0).round() as u8
+        })
+        .collect()
+});
+
+/// Encode a linear sample as an 8-bit sRGB code, via [`LINEAR_TO_SRGB8`].
+///
+/// NaN maps to 0: `clamp` propagates NaN, and `as usize` on NaN saturates to
+/// 0, so this is already safe — the test pins it so a future refactor cannot
+/// quietly turn it into an out-of-bounds index.
+#[inline]
+pub fn linear_to_srgb8(c: f32) -> u8 {
+    let c = if c.is_nan() { 0.0 } else { c.clamp(0.0, 1.0) };
+    LINEAR_TO_SRGB8[(c * L2S_STEPS as f32 + 0.5) as usize]
+}
+
+/// Decode an 8-bit sRGB code to linear, via [`SRGB8_TO_LINEAR`].
+#[inline]
+pub fn srgb8_to_linear(code: u8) -> f32 {
+    SRGB8_TO_LINEAR[code as usize]
+}
+
 pub(crate) fn sample_encoded(img: &Rgb, x: u32, y: u32, c: usize) -> f32 {
     let idx = (y as usize * img.width as usize + x as usize) * 3 + c;
     img.data[idx] as f32 / img.max_value() as f32
 }
 
-fn luma_linear(img: &Rgb, x: u32, y: u32) -> f32 {
-    let r = srgb_to_linear(sample_encoded(img, x, y, 0));
-    let g = srgb_to_linear(sample_encoded(img, x, y, 1));
-    let b = srgb_to_linear(sample_encoded(img, x, y, 2));
+/// Linear value of one channel, taking the exact 8-bit table when the image is
+/// 8-bit and falling back to the continuous curve otherwise.
+#[inline]
+pub(crate) fn sample_linear(img: &Rgb, x: u32, y: u32, c: usize) -> f32 {
+    let idx = (y as usize * img.width as usize + x as usize) * 3 + c;
+    if img.bits == 8 {
+        srgb8_to_linear(img.data[idx] as u8)
+    } else {
+        srgb_to_linear(img.data[idx] as f32 / img.max_value() as f32)
+    }
+}
+
+pub(crate) fn luma_linear(img: &Rgb, x: u32, y: u32) -> f32 {
+    let r = sample_linear(img, x, y, 0);
+    let g = sample_linear(img, x, y, 1);
+    let b = sample_linear(img, x, y, 2);
     LUMA[0] * r + LUMA[1] * g + LUMA[2] * b
 }
 
@@ -192,21 +260,25 @@ pub fn derive(hdr: &Rgb, sdr_base: &Rgb, opts: &DeriveOptions) -> (GainPlane, Ga
 pub fn derive_from_luma(
     w: u32,
     h: u32,
-    alt_luma: impl Fn(u32, u32) -> f32,
-    base_luma: impl Fn(u32, u32) -> f32,
+    alt_luma: impl Fn(u32, u32) -> f32 + Sync,
+    base_luma: impl Fn(u32, u32) -> f32 + Sync,
     opts: &DeriveOptions,
 ) -> (GainPlane, GainMapMeta) {
     let n = w as usize * h as usize;
 
     let mut log2_gain = vec![0f32; n];
-    for y in 0..h {
-        for x in 0..w {
-            let base = base_luma(x, y);
-            let alt = alt_luma(x, y);
-            let ratio = (alt + opts.alt_offset) / (base + opts.base_offset);
-            log2_gain[y as usize * w as usize + x as usize] = ratio.max(EPS).log2();
+    let (alt_off, base_off) = (opts.alt_offset, opts.base_offset);
+    crate::par::for_each_row_chunk_mut(&mut log2_gain, w as usize, 1, |start_row, out| {
+        for (r, row) in out.chunks_mut(w as usize).enumerate() {
+            let y = (start_row + r) as u32;
+            for (x, cell) in row.iter_mut().enumerate() {
+                let x = x as u32;
+                let base = base_luma(x, y);
+                let alt = alt_luma(x, y);
+                *cell = ((alt + alt_off) / (base + base_off)).max(EPS).log2();
+            }
         }
-    }
+    });
 
     // Fold over the finite samples only. A single `+inf` — a dead sensor
     // pixel, an EXR artifact, an exposure-fusion overflow — used to make
@@ -214,13 +286,22 @@ pub fn derive_from_luma(
     // zero, discarding the legitimate range computed from every other pixel
     // in the frame. One bad sample turned the whole image back into its flat
     // SDR base.
+    let bounds = crate::par::map_row_chunks(&log2_gain, w as usize, 1, |_, chunk| {
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        for &v in chunk {
+            if v.is_finite() {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+        (lo, hi)
+    });
     let mut min_log2 = f32::INFINITY;
     let mut max_log2 = f32::NEG_INFINITY;
-    for &v in &log2_gain {
-        if v.is_finite() {
-            min_log2 = min_log2.min(v);
-            max_log2 = max_log2.max(v);
-        }
+    for (lo, hi) in bounds {
+        min_log2 = min_log2.min(lo);
+        max_log2 = max_log2.max(hi);
     }
     // Only when there is no finite sample at all is there nothing to encode.
     if !min_log2.is_finite() || !max_log2.is_finite() {
@@ -233,35 +314,56 @@ pub fn derive_from_luma(
     let gw = w.div_ceil(subsample);
     let gh = h.div_ceil(subsample);
     let plane_len = gw as usize * gh as usize;
-    let mut sum = vec![0f32; plane_len];
-    let mut count = vec![0u32; plane_len];
-    for y in 0..h {
-        for x in 0..w {
-            let v = log2_gain[y as usize * w as usize + x as usize];
-            // Fold the non-finite samples onto the finite range rather than
-            // letting them through: `NaN` would survive `clamp` and poison the
-            // bucket average (and `as u8` would then silently store 0), while
-            // `+inf` is most honestly read as "at least the brightest thing we
-            // measured".
-            let v = if v.is_nan() { min_log2 } else { v.clamp(min_log2, max_log2) };
-            let norm = if range > 0.0 {
-                ((v - min_log2) / range).clamp(0.0, 1.0).powf(opts.gamma)
-            } else {
-                0.0
-            };
-            let gi = (y / subsample) as usize * gw as usize + (x / subsample) as usize;
-            sum[gi] += norm;
-            count[gi] += 1;
+    // Decomposed over *output* rows rather than input rows. Each gain-plane
+    // bucket is written by exactly one worker, so the scatter needs no
+    // synchronization — chunking the input instead would let two threads
+    // accumulate into the same bucket wherever a chunk boundary fell inside
+    // a subsample block.
+    let mut data = vec![0u8; plane_len];
+    let gamma = opts.gamma;
+    let unit_gamma = (gamma - 1.0).abs() < 1e-6;
+    let src = &log2_gain;
+    crate::par::for_each_out_row_chunk_mut(&mut data, gw as usize, |start_gy, out| {
+        for (r, out_row) in out.chunks_mut(gw as usize).enumerate() {
+            let gy = (start_gy + r) as u32;
+            let y0 = gy * subsample;
+            let y1 = (y0 + subsample).min(h);
+            for (gx, cell) in out_row.iter_mut().enumerate() {
+                let x0 = gx as u32 * subsample;
+                let x1 = (x0 + subsample).min(w);
+                let mut sum = 0f32;
+                let mut count = 0u32;
+                for y in y0..y1 {
+                    let row = y as usize * w as usize;
+                    for x in x0..x1 {
+                        let v = src[row + x as usize];
+                        // Fold non-finite samples onto the finite range rather
+                        // than letting them through: `NaN` would survive
+                        // `clamp` and poison the bucket average, while `+inf`
+                        // is most honestly read as "at least the brightest
+                        // thing we measured".
+                        let v = if v.is_nan() {
+                            min_log2
+                        } else {
+                            v.clamp(min_log2, max_log2)
+                        };
+                        let norm = if range > 0.0 {
+                            let t = ((v - min_log2) / range).clamp(0.0, 1.0);
+                            // gamma 1.0 is the overwhelmingly common case and
+                            // `powf(1.0)` is not free at 60 Mpx.
+                            if unit_gamma { t } else { t.powf(gamma) }
+                        } else {
+                            0.0
+                        };
+                        sum += norm;
+                        count += 1;
+                    }
+                }
+                let avg = if count > 0 { sum / count as f32 } else { 0.0 };
+                *cell = (avg.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
         }
-    }
-    let data: Vec<u8> = sum
-        .iter()
-        .zip(count.iter())
-        .map(|(&s, &c)| {
-            let avg = if c > 0 { s / c as f32 } else { 0.0 };
-            (avg.clamp(0.0, 1.0) * 255.0).round() as u8
-        })
-        .collect();
+    });
 
     let meta = GainMapMeta {
         min_log2: [min_log2; 3],
