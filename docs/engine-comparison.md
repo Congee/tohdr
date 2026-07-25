@@ -83,18 +83,37 @@ folded in.
 
 | Source | Shared load+derive | Engine A | Engine B |
 |---|---|---|---|
-| 1024×768 (0.79 MP), 10 iters | 46.7 ms | 80.6 ms mean, 9.8 MP/s | **69.0 ms mean, 11.4 MP/s** |
-| 3024×4032 (12.19 MP), 5 iters | 706.5 ms | **228.4 ms mean, 53.4 MP/s** | 595.1 ms mean, 20.5 MP/s |
+| 1024×768 (0.79 MP), 10 iters | 9.1 ms | 83.9 ms mean, 9.4 MP/s | **70.7 ms mean, 11.1 MP/s** |
+| 3024×4032 (12.19 MP), 5 iters | 118.1 ms | **228.5 ms mean, 53.4 MP/s** | 646.7 ms mean, 18.9 MP/s |
+| 9504×6336 (60.22 MP), 3 iters | 540.0 ms | **572.3 ms mean, 105.2 MP/s** | 9403.8 ms mean, 6.4 MP/s |
 
-**They cross over.** Engine B wins on the small image, where ImageIO's
-fixed framework overhead dominates. Engine A wins by 2.6x on the 12 MP image
-and *speeds up* with size (9.8 → 53.4 MP/s), which is what a hardware-assisted
-encoder looks like; Engine B stays roughly flat (11.4 → 20.5 MP/s). Anyone
-choosing an engine on speed should choose by image size, not in general.
+**They cross over, and then they diverge.** Engine B wins on the small image,
+where ImageIO's fixed framework overhead dominates. From there Engine A *speeds
+up* with size — 9.4 → 53.4 → 105.2 MP/s — which is what a hardware-assisted
+encoder looks like, while Engine B peaks at 12 MP and then falls off a cliff:
+18.9 → 6.4 MP/s, 16x slower than Engine A at 60 MP. Choose by image size, not
+in general, and do not extrapolate Engine B from a small test image.
 
-Note the shared load+derive at 12 MP (706 ms) exceeds either engine's encode
-time. The derivation, not the codec, is the bottleneck on large images — it is
-scalar Rust and has had no optimization attention.
+`bench` derives at `DeriveOptions::default()`, which is **subsample 1** — a
+full-resolution gain plane. `convert` defaults to `--gain-subsample 2`, a
+quarter of the gain pixels. The two engines here encode identical bytes so the
+comparison is sound, but these numbers are not comparable to a `convert` run of
+the same file.
+
+The 60 MP row is the interesting one for the sizes real cameras produce. It is a
+9504×6336 16-bit TIFF, the shape a Lightroom export has, and it needed a fix
+before Engine B would open it at all — `image`'s default 512 MiB allocation cap
+rejected 345 MiB of samples plus the decoder's working set.
+
+### What load+derive used to cost
+
+That column was 46.7 / 706.5 ms before the pipeline was profiled against a
+61 MP raw, and the conclusion drawn from it — that derivation, not the codec,
+was the bottleneck on large images — is no longer true. The shared stages are
+now roughly 6x faster and Engine A's *encoder* is the larger cost at every size
+above a megapixel. What changed, in descending order of effect: the transfer
+functions became exact lookup tables instead of a few hundred million `powf`
+calls, and every full-frame pass became row-parallel. See `crates/tohdr-core/src/par.rs`.
 
 ## Output size, and why the raw number misleads
 

@@ -26,6 +26,9 @@ python3 tools/make_hdr_source.py out/scene.tiff --width 3024 --height 4032
 ./target/release/tohdr inspect out/photo.heic
 ./target/release/tohdr verify  out/photo.heic
 ./target/release/tohdr bench   out/scene.tiff
+
+# a whole folder, several files at a time
+./target/release/tohdr batch ~/Pictures/shoot -o out/hdr --max-size 4MB
 ```
 
 `--flavor apple | iso | both` chooses the signaling (`ios` is accepted as an
@@ -38,12 +41,18 @@ alias for `iso`). `--engine apple | portable` chooses the backend.
 | Codec | Apple ImageIO | `hpvca` (BSD-3/Apache) |
 | Container | ImageIO | `tohdr-heif`, written here |
 | Apple frameworks | required | none |
-| 0.79 MP | 80.6 ms | **69.0 ms** |
-| 12.19 MP | **228.4 ms** | 595.1 ms |
+| 0.79 MP | 83.9 ms | **70.7 ms** |
+| 12.19 MP | **228.5 ms** | 646.7 ms |
+| 60.22 MP | **572.3 ms** | 9403.8 ms |
 
-They cross over — see [`docs/engine-comparison.md`](docs/engine-comparison.md)
-for the measurements, including a round-trip quality comparison that makes the
-file-size difference meaningful rather than misleading.
+They cross over and then diverge — see
+[`docs/engine-comparison.md`](docs/engine-comparison.md) for the measurements,
+including a round-trip quality comparison that makes the file-size difference
+meaningful rather than misleading.
+
+A 60 MP raw converts in 2.6 s and a folder of them at 48 files/min;
+[`docs/performance.md`](docs/performance.md) has the stage breakdown, the
+architecture behind it, and the optimisations that measured worse.
 
 ## Verifying
 
@@ -100,10 +109,11 @@ crates/tohdr-core      pixel types, derivation, ISO 21496-1, Apple tags, XMP
 crates/tohdr-heif      ISOBMFF reader and gain-map muxer  (no unsafe)
 crates/tohdr-apple     Engine A: ImageIO encode/decode/inspect  (the oracle)
 crates/tohdr-portable  Engine B: hpvca + our muxer
-crates/tohdr-cli       convert / inspect / verify / bench
+crates/tohdr-cli       convert / batch / inspect / verify / bench
 tools/                 independent verifier, HDR test-source generator
 lightroom/             Lightroom Classic export plugin and its tests
-docs/                  structure teardown, acceptance criteria, engine comparison
+docs/                  structure teardown, acceptance criteria, engine comparison,
+                       performance
 ```
 
 ## Known gaps
@@ -117,5 +127,13 @@ docs/                  structure teardown, acceptance criteria, engine compariso
   format; the likely cause is a content-headroom declaration that
   `objc2-core-graphics` 0.3.2 provides no way to set. It is why
   `AppleEngine::encode` uses our own derived plane instead.
-- The gain-map derivation is scalar and unoptimized; at 12 MP it costs more
-  than either encoder.
+- Engine B reads a 16-bit TIFF as PQ regardless of the profile the file
+  carries, so a gamma-encoded 16-bit export — what Lightroom produces — comes
+  out with invented headroom (5.6 stops against Engine A's 0.04 on the same
+  file). The assumption is documented in `tohdr_portable::input`, and Engine A
+  reads the embedded profile correctly; the two engines simply disagree about
+  what an unlabelled 16-bit TIFF means.
+- Raw files converted through the CLI ignore any Lightroom sidecar. ImageIO
+  does not read `.xmp`, verified by converting a raw with and without its
+  sidecar present and getting the same bytes. Use the Lightroom plugin, which
+  is handed an already-developed image, or export a TIFF first.
