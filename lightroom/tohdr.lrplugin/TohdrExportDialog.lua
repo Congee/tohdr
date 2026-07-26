@@ -68,11 +68,22 @@ function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
 					alignment = "right",
 					width = labelWidth,
 				},
+				-- Two engines, three values. Engine A is ImageIO. Engine B is our
+				-- muxer over a plane codec, and it has two codecs:
+				-- `portable` picks the fastest this machine has -- VideoToolbox,
+				-- the hardware media block, ~6x the software codec -- while
+				-- `hpvca` pins the pure-Rust one, which is the reference path.
+				--
+				-- "Portable (pure Rust)" used to be the label on `portable`,
+				-- which actually runs Apple's hardware encoder: it reports
+				-- itself as `hardware-videotoolbox`. That named the one option
+				-- the menu did not offer.
 				f:popup_menu {
 					value = bind 'tohdr_engine',
 					items = {
 						{ title = "Apple (ImageIO)", value = "apple" },
-						{ title = "Portable (pure Rust)", value = "portable" },
+						{ title = "Portable (hardware, fastest)", value = "portable" },
+						{ title = "Portable (pure Rust)", value = "hpvca" },
 					},
 				},
 			},

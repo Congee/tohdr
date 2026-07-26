@@ -9,6 +9,50 @@ use tohdr_core::hdr::{derive_consistent, ToneMap};
 use crate::cli::{ConvertArgs, ToneMapKind};
 use crate::engine::Engine;
 
+/// Byte count for a user-facing message, in the same decimal units
+/// `--max-size` accepts — `4MB` parses as 4,000,000 — so a size we print can
+/// be typed straight back into the flag or the export dialog's size box.
+fn human_bytes(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1} MB", n as f64 / 1e6)
+    } else if n >= 1_000 {
+        format!("{:.0} KB", n as f64 / 1e3)
+    } else {
+        format!("{n} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_bytes;
+
+    /// Decimal units, matching `--max-size`'s own parsing, so a printed size is
+    /// something the user can type back into the flag verbatim.
+    #[test]
+    fn human_bytes_uses_the_same_units_max_size_accepts() {
+        assert_eq!(human_bytes(4_000_000), "4.0 MB");
+        assert_eq!(human_bytes(1_049_779), "1.0 MB");
+        assert_eq!(human_bytes(900_000), "900 KB");
+        assert_eq!(human_bytes(1_000), "1 KB");
+        assert_eq!(human_bytes(999), "999 B");
+        assert_eq!(human_bytes(0), "0 B");
+    }
+
+    /// The budget message is read off a Lightroom dialog that elides the middle
+    /// of a long string, so the sizes have to stay short enough to survive at
+    /// the front of it.
+    #[test]
+    fn human_bytes_stays_short() {
+        for n in [0, 1, 999, 1_000, 999_999, 1_000_000, u64::from(u32::MAX)] {
+            assert!(
+                human_bytes(n).len() <= 10,
+                "{n} rendered as {:?}, too long for the message",
+                human_bytes(n)
+            );
+        }
+    }
+}
+
 /// Fraction of the brightest pixels ignored when picking the Reinhard white
 /// point / auto headroom, matching [`tohdr_core::hdr::HdrRgb::peak_luma`]'s
 /// own outlier-rejection intent. Small and fixed rather than user-facing: the
@@ -393,12 +437,17 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         )
         .context("encoding within budget")?;
         if !budgeted.within_budget {
+            // Both sizes go first, deliberately. Lightroom's Export Results
+            // dialog elides the *middle* of a long message, so anything past
+            // the opening clause may never reach the person who set the
+            // budget -- the old wording put every number exactly there and
+            // showed them "could not fit within..., raise --max-size".
             anyhow::bail!(
-                "could not fit within {max_bytes} bytes even at the quality floor (q{}): the \
-                 smallest attempt was {} bytes after {} tries. Lower --min-quality, raise \
-                 --max-size, or increase --gain-subsample.",
+                "could not fit: needs {}, limit {} (smallest at the q{} floor, {} tries). \
+                 Raise --max-size, lower --min-quality, or increase --gain-subsample.",
+                human_bytes(budgeted.bytes.len() as u64),
+                human_bytes(max_bytes),
                 args.min_quality,
-                budgeted.bytes.len(),
                 budgeted.attempts
             );
         }

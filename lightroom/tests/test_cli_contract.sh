@@ -48,7 +48,10 @@ try_value() {
 }
 
 for v in apple iso both; do try_value --flavor "$v" flavor; done
-for v in apple portable; do try_value --engine "$v" engine; done
+# All three engine values the dialog offers. Two engines: `apple` is Engine A,
+# and `portable`/`hpvca` are Engine B with the hardware and pure-Rust plane
+# codecs respectively.
+for v in apple portable hpvca; do try_value --engine "$v" engine; done
 for v in clip reinhard; do try_value --tone-map "$v" tone-map; done
 
 # The two size spellings the dialog can produce.
