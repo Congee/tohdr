@@ -150,6 +150,31 @@ end
 -- choice by the user rather than a guess by us; it is what to point at
 -- `target/release/tohdr` during development.
 
+--- Turn what `LrTasks.execute` returns into the exit code a person expects.
+---
+--- The SDK documents the return as "the exit status of the OS shell", and the
+--- call as "similar to Lua's built-in os.execute()". On macOS that is the raw
+--- wait(2) status from system(3), which packs a normal exit code into the high
+--- byte. So `tohdr` exiting 1 arrives here as 256 -- and the first real export
+--- inside Lightroom duly reported "tohdr failed (exit 256)" to the user, a
+--- number that appears nowhere in the CLI.
+---
+--- Only exact multiples of 256 are unpacked. Everything else passes through:
+--- Windows returns a plain exit code, and on POSIX a signal death shows up as
+--- 128+signal, which is already the familiar shell rendering. A small nonzero
+--- value is genuinely ambiguous between those two platforms and there is no
+--- information here to resolve it, so this does not pretend to.
+function M.decodeExitStatus(status)
+	local n = tonumber(status)
+	if n == nil then
+		return status
+	end
+	if n >= 256 and n % 256 == 0 then
+		return math.floor(n / 256)
+	end
+	return n
+end
+
 --- Turn a nonzero exit status plus captured output into one message worth
 --- showing a user.
 ---
@@ -158,6 +183,7 @@ end
 --- almost always the actionable part. Swallowing it and reporting only an exit
 --- code would throw away the useful half.
 function M.summarizeFailure(status, output)
+	status = M.decodeExitStatus(status)
 	local last
 	for line in tostring(output or ""):gmatch("[^\r\n]+") do
 		if line:match("%S") then

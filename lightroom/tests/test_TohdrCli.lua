@@ -235,6 +235,23 @@ end
 print("failure summaries")
 -- ===========================================================================
 
+-- LrTasks.execute returns the OS shell's wait status, not a bare exit code, so
+-- on macOS `tohdr` exiting 1 arrives as 256. The first real export reported
+-- "tohdr failed (exit 256)" -- a number that appears nowhere in the CLI.
+do
+	eq(Cli.decodeExitStatus(256), 1, "256 is exit 1")
+	eq(Cli.decodeExitStatus(512), 2, "512 is exit 2")
+	eq(Cli.decodeExitStatus(0), 0, "success is untouched")
+	eq(Cli.decodeExitStatus(1), 1, "a plain code (Windows) is untouched")
+	-- 128+signal is the familiar shell rendering; leave it legible.
+	eq(Cli.decodeExitStatus(139), 139, "signal death passes through")
+	eq(Cli.decodeExitStatus(nil), nil, "nil survives")
+
+	local msg = Cli.summarizeFailure(256, "tohdr: error: could not fit\n")
+	check(msg:match("exit 1"), "summary reports the real exit code")
+	check(not msg:match("256"), "and never shows the raw wait status")
+end
+
 do
 	local msg = Cli.summarizeFailure(1,
 		"tohdr: loading x\ntohdr: error: could not fit within 2000 bytes\n\n")
