@@ -104,7 +104,11 @@ function exportServiceProvider.updateExportSettings(exportSettings)
 end
 
 --- Locate the binary using the pure-Lua policy in TohdrCli, supplying it the
---- filesystem and environment access it deliberately does not take itself.
+--- filesystem access it deliberately does not take itself.
+---
+--- Only two candidates: an explicit path the user set, and the binary bundled
+--- inside this `.lrplugin`. No PATH search -- a `.lrplugin` is self-contained,
+--- and Lightroom's sandbox could not read PATH to search it anyway.
 local function findBinary(propertyTable)
 	local pluginDir = _PLUGIN and _PLUGIN.path or nil
 	local bundled = pluginDir and LrPathUtils.child(pluginDir, 'tohdr') or nil
@@ -112,18 +116,8 @@ local function findBinary(propertyTable)
 	return TohdrCli.locateBinary {
 		userBinaryPath = propertyTable.tohdr_binaryPath,
 		pluginBinaryPath = bundled,
-		-- Lightroom's Lua sandbox has no `os.getenv`, so the inherited PATH is
-		-- not observable from in here at all and there is no Lr API that
-		-- exposes it. Home *is* available through a documented call, and it is
-		-- the only part of the default PATH that varies per machine.
-		pathDirs = TohdrCli.splitPath(TohdrCli.defaultPathEnv {
-			home = LrPathUtils.getStandardFilePath('home'),
-		}),
 		fileExists = function(p)
 			return p ~= nil and p ~= '' and LrFileUtils.exists(p) ~= false
-		end,
-		joinPath = function(dir, name)
-			return LrPathUtils.child(dir, name)
 		end,
 	}
 end

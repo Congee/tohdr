@@ -32,20 +32,28 @@ install -m 755 target/release/tohdr "$DEST/tohdr"
 
 Either way:
 
-1. Point the plugin at the binary, by any one of:
-   - the `install -m 755` line above — a `tohdr` beside the `.lua` files is
-     checked before anything else,
-   - putting it on your `PATH`,
-   - setting **Custom tohdr path** in the export dialog.
+1. **The binary must be bundled.** A `.lrplugin` is self-contained: `tohdr`
+   sits beside the `.lua` files, which is what the `install -m 755` line does.
+   That is the only automatic lookup — there is no `PATH` search, and putting
+   `tohdr` on your `PATH` will not be noticed.
 
-   Prefer bundling. Lightroom launches from Finder, so it would inherit a
-   minimal `PATH` — and in fact its Lua sandbox has no `os.getenv` at all, so
-   the real `PATH` is not observable from inside the plugin. What
-   `TohdrCli.defaultPathEnv` searches is a *guess* at the usual install
-   prefixes, not your actual `PATH`; a bundled binary or an explicit path is the
-   only configuration that is certain, and the only one that guarantees you are
-   running the build you just made rather than an older `tohdr` sitting in one
-   of those prefixes.
+   Three reasons, each on its own sufficient. Lightroom's Lua sandbox has no
+   `os.getenv`, so a plugin cannot read `PATH` to search it — the code that
+   tried crashed the first real export. A bundled binary is checked first and
+   the install step always provides one, so any fallback would only run in an
+   already-broken configuration. And a stale `tohdr` found in a guessed prefix
+   would be used silently, converting with a build other than the one you just
+   made.
+
+   **Custom tohdr path** in the export dialog still overrides everything,
+   because that is your explicit choice rather than our guess. It is the
+   convenient thing to point at `target/release/tohdr` while developing, so a
+   rebuild takes effect without reinstalling.
+
+   The bundle is genuinely portable, not just tidy: `.cargo/config.toml` passes
+   `-Wl,-dead_strip_dylibs`, so the binary links nothing outside
+   `/System/Library` and `/usr/lib` — no nix store paths, nothing
+   machine-specific.
 
 2. **Restart Lightroom.** The `Modules` folder is scanned only at launch, and an
    already-running Lightroom holds the old copy of every `.lua` file — so a
@@ -107,13 +115,17 @@ Be clear about which half of this is proven.
 **Verified here, by running it:**
 
 - All four plugin files and the test file parse: `luajit -bl` on each, 5/5 OK.
-- `lua lightroom/tests/test_TohdrCli.lua` — **172 checks, 0 failures**. Covers
+- `lua lightroom/tests/test_TohdrCli.lua` — **56 checks, 0 failures**. Covers
   command-line construction and, most importantly, shell quoting: spaces,
   embedded single quotes, `$(...)`, backticks, semicolons, backslashes, double
   quotes and unicode all survive as literals. Also binary-location precedence,
-  PATH splitting (including that empty entries are dropped, so a `tohdr` in the
-  current directory is never executed silently), failure summarising, and that
-  `defaultPathEnv` survives a sandbox with `os.getenv` removed.
+  failure summarising, that the removed PATH-guessing helpers stay removed, and
+  that `locateBinary` is unaffected by a sandbox with `os.getenv` deleted.
+
+  The count is environment-independent by design — verified identical under
+  `PATH` empty, `PATH` long, and `HOME` unset. It used to be 172 only because a
+  loop asserted once per `PATH` entry, so it silently tracked the length of the
+  tester's own `PATH`; that number was never reproducible on another machine.
 - `sh lightroom/tests/test_cli_contract.sh` — **19 checks, 0 failures**. Runs
   the real binary and asserts every flag the plugin emits exists, and that every
   flavor/engine/tone-map/size string the dialog can produce is accepted. This is
@@ -131,12 +143,18 @@ Be clear about which half of this is proven.
 - **Lightroom's Lua sandbox has no `os.getenv`.** Calling it raises `attempt to
   call field 'getenv' (a nil value)` and Lightroom reports "Unable to Export: an
   internal error has occurred". So the inherited `PATH` is not merely minimal
-  from in here, it is unreadable, and no Lr API exposes it. `defaultPathEnv` now
-  takes `home` (via `LrPathUtils.getStandardFilePath('home')`) from its caller
-  and probes `os.getenv` defensively; a test removes `os.getenv` to reproduce the
-  sandbox. Nothing in the plugin touches `os` any more — `os.time()` in the
-  temp-log name became `LrDate.currentTime()`, since which other `os` members
-  survive the sandbox is undocumented.
+  from in here, it is unreadable, and no Lr API exposes it.
+
+  That killed the PATH fallback outright rather than prompting a repair: the
+  binary is bundled, so the fallback was unreachable in any working
+  configuration, and searching a hardcoded guess at `PATH` risked silently
+  running a stale `tohdr`. `defaultPathEnv` and `splitPath` are gone, and a test
+  asserts they stay gone.
+
+  Nothing in the plugin touches `os` any more — `os.time()` in the temp-log name
+  became `LrDate.currentTime()`, since which other `os` members survive the
+  sandbox is undocumented, and one demonstrated absence is enough to stop
+  guessing.
 
 **Still not verified:**
 

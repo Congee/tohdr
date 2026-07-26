@@ -125,67 +125,30 @@ end
 -- Binary location
 -- ===========================================================================
 
---- Read an environment variable without assuming `os.getenv` exists.
----
---- Lightroom Classic's Lua sandbox does not provide `os.getenv` at all. Calling
---- it raises `attempt to call field 'getenv' (a nil value)`, which is how this
---- was found: an "Unable to Export" dialog on the first real export inside
---- Lightroom. Stock Lua (the test harness) does have it, so probe rather than
---- pick one behaviour.
-local function env(name)
-	local getenv = type(os) == "table" and os.getenv or nil
-	if type(getenv) ~= "function" then
-		return nil
-	end
-	local ok, value = pcall(getenv, name)
-	if ok then
-		return value
-	end
-	return nil
-end
-
---- The PATH to search when neither an explicit path nor a bundled binary is
---- available.
----
---- Lightroom Classic launches from Finder, so even a process that *could* read
---- its environment would see a minimal PATH -- typically
---- `/usr/bin:/bin:/usr/sbin:/sbin`, without Homebrew, Cargo or Nix, which is
---- where a `tohdr` build actually lives. We therefore append the usual install
---- prefixes rather than trusting the inherited value alone.
----
---- Inside Lightroom the inherited PATH is not merely minimal, it is
---- unobservable: there is no `os.getenv` and no Lr API that exposes the
---- environment. The caller passes what it *can* discover:
----
----   opts.inheritedPath  a PATH-style string, or nil when unavailable
----   opts.home           the user's home directory, or nil
----
---- Both are optional; outside Lightroom they fall back to `env()` above, so a
---- zero-argument call still behaves as it always did under plain `lua`.
-function M.defaultPathEnv(opts)
-	opts = opts or {}
-	local inherited = opts.inheritedPath or env("PATH") or ""
-	local home = opts.home or env("HOME")
-
-	-- Order is lookup precedence, so keep it stable.
-	local extra = {
-		"/opt/homebrew/bin",       -- Homebrew, Apple silicon
-		"/usr/local/bin",          -- Homebrew, Intel; most `make install`s
-	}
-	-- Only when a home directory is actually known -- a bare "/.cargo/bin" is
-	-- a real directory someone could create, so never synthesise one.
-	if isNonEmpty(home) then
-		table.insert(extra, home .. "/.cargo/bin")
-		table.insert(extra, home .. "/.nix-profile/bin")
-	end
-	table.insert(extra, "/run/current-system/sw/bin")
-
-	local parts = { inherited }
-	for _, d in ipairs(extra) do
-		table.insert(parts, d)
-	end
-	return table.concat(parts, ":")
-end
+-- There is deliberately no PATH search here, and no `defaultPathEnv` /
+-- `splitPath` to support one. `.lrplugin` bundles are self-contained: the
+-- binary is installed beside these `.lua` files, and that is the only
+-- automatic lookup.
+--
+-- What was removed, and why it could not be repaired:
+--
+--   * There is no PATH to read. Lightroom's Lua sandbox has no `os.getenv` and
+--     no Lr API exposes the environment, so the old code was not searching
+--     `PATH` -- it was searching a hardcoded guess at it (/opt/homebrew/bin,
+--     /usr/local/bin, ~/.cargo/bin, ~/.nix-profile/bin,
+--     /run/current-system/sw/bin). That guess encodes package-manager
+--     assumptions with no way to check them.
+--   * It was unreachable anyway. A bundled binary is checked first and the
+--     install step always provides one, so the guess only ever ran in a
+--     configuration that was already broken.
+--   * It was actively dangerous. A stale `tohdr` in one of those prefixes
+--     would be found and used silently, converting with a build other than the
+--     one you just made -- exactly the class of quiet wrongness this project
+--     exists to prevent.
+--
+-- An explicit **Custom tohdr path** still works, because that is a deliberate
+-- choice by the user rather than a guess by us; it is what to point at
+-- `target/release/tohdr` during development.
 
 --- Turn a nonzero exit status plus captured output into one message worth
 --- showing a user.
@@ -207,25 +170,12 @@ function M.summarizeFailure(status, output)
 	return "tohdr failed (exit " .. tostring(status) .. ") with no output"
 end
 
---- Split a PATH-style string (colon-separated) into a list of directories.
---- Empty entries (leading/trailing/doubled colons, POSIX "current dir") are
---- dropped -- we never want to silently execute a `tohdr` from cwd.
-function M.splitPath(pathEnv)
-	local dirs = {}
-	if not isNonEmpty(pathEnv) then
-		return dirs
-	end
-	for dir in pathEnv:gmatch("[^:]+") do
-		table.insert(dirs, dir)
-	end
-	return dirs
-end
-
 --- Decide which `tohdr` binary to run, in priority order:
----   1. explicit user-configured path (settings dialog "Custom path")
----   2. bundled binary next to the plugin (pluginBinaryPath)
----   3. first match walking `pathDirs` (already-split PATH, each joined with
----      "/tohdr" by the caller-supplied `joinPath`)
+---   1. explicit user-configured path (settings dialog "Custom tohdr path")
+---   2. the bundled binary beside the plugin (pluginBinaryPath)
+---
+--- There is no third option -- see the note above `summarizeFailure`. Nothing
+--- is ever located by guessing.
 ---
 --- All existence checks go through the injected `fileExists(path) -> bool`
 --- so this function has no direct filesystem access and is fully testable
@@ -237,12 +187,7 @@ end
 function M.locateBinary(opts)
 	local userPath = opts.userBinaryPath
 	local pluginBinaryPath = opts.pluginBinaryPath
-	local pathDirs = opts.pathDirs or {}
 	local fileExists = assert(opts.fileExists, "locateBinary: fileExists is required")
-	local joinPath = opts.joinPath or function(dir, name)
-		return dir .. "/" .. name
-	end
-	local binaryName = opts.binaryName or "tohdr"
 
 	if isNonEmpty(userPath) then
 		if fileExists(userPath) then
@@ -255,15 +200,13 @@ function M.locateBinary(opts)
 		return pluginBinaryPath, nil
 	end
 
-	for _, dir in ipairs(pathDirs) do
-		local candidate = joinPath(dir, binaryName)
-		if fileExists(candidate) then
-			return candidate, nil
-		end
-	end
-
-	return nil, "Could not find the 'tohdr' binary. Bundle it next to the plugin, "
-		.. "put it on your PATH, or set a custom path in the export dialog."
+	-- Name the expected location, because it is now the only automatic one and
+	-- a user has no other way to guess where we looked.
+	return nil, "Could not find the 'tohdr' binary. It belongs beside the "
+		.. "plugin's .lua files"
+		.. (isNonEmpty(pluginBinaryPath) and (" (expected at " .. pluginBinaryPath .. ")") or "")
+		.. " -- build it with `cargo build --release -p tohdr-cli` and copy it "
+		.. "there, or set a custom path in the export dialog."
 end
 
 return M

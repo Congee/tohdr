@@ -147,20 +147,8 @@ do
 end
 
 -- ===========================================================================
-print("PATH splitting and binary location")
+print("binary location")
 -- ===========================================================================
-
-do
-	local d = Cli.splitPath("/usr/bin:/bin")
-	eq(#d, 2, "two entries")
-	eq(d[1], "/usr/bin", "first entry")
-	-- An empty PATH element means "current directory" in POSIX; executing a
-	-- `tohdr` out of the cwd is not something we ever want to do silently.
-	local e = Cli.splitPath("/usr/bin::/bin:")
-	eq(#e, 2, "empty entries dropped")
-	eq(#Cli.splitPath(""), 0, "empty PATH")
-	eq(#Cli.splitPath(nil), 0, "nil PATH")
-end
 
 do
 	local exists = function(p) return p == "/opt/tohdr" or p == "/plugin/tohdr" end
@@ -178,80 +166,68 @@ do
 	check(err and err:match("does not exist"), "bad user path explains itself")
 
 	p = Cli.locateBinary {
+		userBinaryPath = "/opt/tohdr",
 		pluginBinaryPath = "/plugin/tohdr",
-		pathDirs = { "/usr/bin" },
 		fileExists = exists,
 	}
-	eq(p, "/plugin/tohdr", "bundled binary beats PATH")
+	eq(p, "/opt/tohdr", "explicit path beats the bundled binary")
 
 	p = Cli.locateBinary {
-		pathDirs = { "/usr/bin", "/opt" },
-		fileExists = exists,
-		joinPath = function(d, n) return d .. "/" .. n end,
+		pluginBinaryPath = "/plugin/tohdr", fileExists = exists,
 	}
-	eq(p, "/opt/tohdr", "found on PATH")
+	eq(p, "/plugin/tohdr", "bundled binary is used when no explicit path is set")
 
 	p, err = Cli.locateBinary {
-		pathDirs = { "/usr/bin" },
+		pluginBinaryPath = "/plugin/tohdr",
 		fileExists = function() return false end,
 	}
 	eq(p, nil, "nothing found")
 	check(err and err:match("Could not find"), "not-found message is actionable")
+	check(err and err:match("/plugin/tohdr"),
+		"not-found message names where it looked")
+	check(err and err:match("cargo build"),
+		"not-found message says how to produce one")
+
+	-- fileExists is the only filesystem access, and it is required rather than
+	-- defaulted, so a caller cannot forget it and get silent nil results.
+	local ok = pcall(Cli.locateBinary, { pluginBinaryPath = "/x" })
+	check(not ok, "fileExists is mandatory")
 end
 
+-- A `.lrplugin` is self-contained: the binary sits beside the .lua files. There
+-- is no PATH search, and there must not be one again.
+--
+-- Three reasons it was removed, each independently sufficient. (1) Lightroom's
+-- Lua sandbox has no `os.getenv`, so nothing in here can read PATH -- the old
+-- code searched a hardcoded *guess* at it and crashed the first real export on
+-- `attempt to call field 'getenv' (a nil value)`. (2) A bundled binary is
+-- checked first and the install step always provides one, so the guess only ran
+-- when things were already broken. (3) A stale `tohdr` in one of those guessed
+-- prefixes would be found and used silently, converting with a build other than
+-- the one just made.
 do
-	local env = Cli.defaultPathEnv()
-	check(env:match("/usr/local/bin"), "default PATH includes /usr/local/bin")
-	check(env:match("/opt/homebrew/bin"), "default PATH includes Homebrew arm64")
-	for _, d in ipairs(Cli.splitPath(env)) do
-		check(d ~= "/.cargo/bin" and d ~= "/.nix-profile/bin",
-			"no HOME-less junk entry: " .. d)
-	end
-end
+	eq(Cli.defaultPathEnv, nil, "defaultPathEnv is gone")
+	eq(Cli.splitPath, nil, "splitPath is gone")
 
--- Lightroom Classic's Lua sandbox provides no `os.getenv`. Calling it there
--- raised `attempt to call field 'getenv' (a nil value)` and killed the export
--- with an "Unable to Export" dialog. Simulate that sandbox exactly: nothing in
--- TohdrCli may touch os.getenv without checking it exists first.
-do
+	-- Nothing in the module may reach for the environment at all, so removing
+	-- os.getenv entirely must not perturb any exported function.
 	local saved = os.getenv
 	os.getenv = nil
-
-	local ok, envOrErr = pcall(Cli.defaultPathEnv)
+	local ok, located = pcall(Cli.locateBinary, {
+		pluginBinaryPath = "/plugin/tohdr",
+		fileExists = function(p) return p == "/plugin/tohdr" end,
+	})
 	os.getenv = saved
 
-	check(ok, "defaultPathEnv survives a sandbox with no os.getenv: "
-		.. tostring(envOrErr))
-	if ok then
-		local dirs = Cli.splitPath(envOrErr)
-		check(#dirs > 0, "still yields candidate dirs without any environment")
-		for _, d in ipairs(dirs) do
-			check(d ~= "/.cargo/bin" and d ~= "/.nix-profile/bin",
-				"no HOME-less junk entry with getenv gone: " .. d)
+	check(ok, "locateBinary survives a sandbox with no os.getenv: " .. tostring(located))
+	eq(located, "/plugin/tohdr", "and still finds the bundled binary")
+
+	-- Guard the whole module, not just the function we happened to think of.
+	for name, value in pairs(Cli) do
+		if type(value) == "function" then
+			check(not tostring(name):lower():match("path env"),
+				"no PATH-guessing helper reintroduced: " .. name)
 		end
-		check(envOrErr:match("/opt/homebrew/bin"),
-			"fixed prefixes survive without an environment")
-	end
-end
-
--- What the plugin actually does inside Lightroom: pass `home` from
--- LrPathUtils.getStandardFilePath('home') and no inherited PATH at all.
-do
-	local env = Cli.defaultPathEnv { home = "/Users/someone" }
-	check(env:match("/Users/someone/%.cargo/bin"), "injected home builds cargo dir")
-	check(env:match("/Users/someone/%.nix%-profile/bin"), "injected home builds nix dir")
-
-	local dirs = Cli.splitPath(Cli.defaultPathEnv {
-		inheritedPath = "/first:/second", home = "/h",
-	})
-	eq(dirs[1], "/first", "inherited PATH keeps precedence")
-	eq(dirs[2], "/second", "inherited PATH order preserved")
-	check(dirs[3] == "/opt/homebrew/bin", "appended prefixes follow the inherited PATH")
-
-	-- An empty-string home must not synthesise "/.cargo/bin" either.
-	for _, d in ipairs(Cli.splitPath(Cli.defaultPathEnv { home = "" })) do
-		check(d ~= "/.cargo/bin" and d ~= "/.nix-profile/bin",
-			"empty home synthesises nothing: " .. d)
 	end
 end
 
