@@ -24,7 +24,18 @@ local TohdrExportDialog = require 'TohdrExportDialog'
 
 local exportServiceProvider = {}
 
-exportServiceProvider.supportsIncrementalPublish = 'only'
+-- Deliberately NOT setting `supportsIncrementalPublish`. Per the LrC 15.3 API
+-- reference (API Reference/modules/SDK - Export service provider.html): "If not
+-- present, this plug-in is available in Export only. When true, this plug-in can
+-- be used for both Export and Publish. When set to the string 'only', the
+-- plug-in is visible only in Publish."
+--
+-- This was `= 'only'`, copied from Adobe's own flickr.lrdevplugin sample, where
+-- it is correct because Flickr is a publish destination. Here it made the plugin
+-- invisible in File > Export -- the one place the README tells you to look --
+-- while the whole design is export-shaped: processRenderedPhotos writes beside
+-- rendition.destinationPath and there is not one publish callback in this file.
+-- Absent is the right value; do not "helpfully" reinstate it.
 exportServiceProvider.hideSections = { 'fileNaming', 'fileSettings', 'imageSettings' }
 exportServiceProvider.allowFileFormats = { 'TIFF' }
 exportServiceProvider.allowColorSpaces = nil
