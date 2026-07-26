@@ -115,12 +115,14 @@ Be clear about which half of this is proven.
 **Verified here, by running it:**
 
 - All four plugin files and the test file parse: `luajit -bl` on each, 5/5 OK.
-- `lua lightroom/tests/test_TohdrCli.lua` — **56 checks, 0 failures**. Covers
+- `lua lightroom/tests/test_TohdrCli.lua` — **65 checks, 0 failures**. Covers
   command-line construction and, most importantly, shell quoting: spaces,
   embedded single quotes, `$(...)`, backticks, semicolons, backslashes, double
   quotes and unicode all survive as literals. Also binary-location precedence,
-  failure summarising, that the removed PATH-guessing helpers stay removed, and
-  that `locateBinary` is unaffected by a sandbox with `os.getenv` deleted.
+  failure summarising, exit-status decoding (`LrTasks.execute` returns the
+  shell's wait status, so exit 1 arrives as 256), that the removed PATH-guessing
+  helpers stay removed, and that `locateBinary` is unaffected by a sandbox with
+  `os.getenv` deleted.
 
   The count is environment-independent by design — verified identical under
   `PATH` empty, `PATH` long, and `HOME` unset. It used to be 172 only because a
