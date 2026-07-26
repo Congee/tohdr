@@ -125,27 +125,64 @@ end
 -- Binary location
 -- ===========================================================================
 
---- The PATH to search when Lightroom does not give us one.
+--- Read an environment variable without assuming `os.getenv` exists.
 ---
---- Lightroom Classic launches from Finder, so it inherits a minimal
---- environment -- `os.getenv("PATH")` inside the plugin is typically just
---- `/usr/bin:/bin:/usr/sbin:/sbin` and will NOT contain Homebrew, Cargo, or
---- Nix locations where a `tohdr` build actually lives. We therefore append the
---- usual install prefixes rather than trusting the inherited value alone.
-function M.defaultPathEnv()
-	local inherited = os.getenv("PATH") or ""
+--- Lightroom Classic's Lua sandbox does not provide `os.getenv` at all. Calling
+--- it raises `attempt to call field 'getenv' (a nil value)`, which is how this
+--- was found: an "Unable to Export" dialog on the first real export inside
+--- Lightroom. Stock Lua (the test harness) does have it, so probe rather than
+--- pick one behaviour.
+local function env(name)
+	local getenv = type(os) == "table" and os.getenv or nil
+	if type(getenv) ~= "function" then
+		return nil
+	end
+	local ok, value = pcall(getenv, name)
+	if ok then
+		return value
+	end
+	return nil
+end
+
+--- The PATH to search when neither an explicit path nor a bundled binary is
+--- available.
+---
+--- Lightroom Classic launches from Finder, so even a process that *could* read
+--- its environment would see a minimal PATH -- typically
+--- `/usr/bin:/bin:/usr/sbin:/sbin`, without Homebrew, Cargo or Nix, which is
+--- where a `tohdr` build actually lives. We therefore append the usual install
+--- prefixes rather than trusting the inherited value alone.
+---
+--- Inside Lightroom the inherited PATH is not merely minimal, it is
+--- unobservable: there is no `os.getenv` and no Lr API that exposes the
+--- environment. The caller passes what it *can* discover:
+---
+---   opts.inheritedPath  a PATH-style string, or nil when unavailable
+---   opts.home           the user's home directory, or nil
+---
+--- Both are optional; outside Lightroom they fall back to `env()` above, so a
+--- zero-argument call still behaves as it always did under plain `lua`.
+function M.defaultPathEnv(opts)
+	opts = opts or {}
+	local inherited = opts.inheritedPath or env("PATH") or ""
+	local home = opts.home or env("HOME")
+
+	-- Order is lookup precedence, so keep it stable.
 	local extra = {
 		"/opt/homebrew/bin",       -- Homebrew, Apple silicon
 		"/usr/local/bin",          -- Homebrew, Intel; most `make install`s
-		(os.getenv("HOME") or "") .. "/.cargo/bin",
-		(os.getenv("HOME") or "") .. "/.nix-profile/bin",
-		"/run/current-system/sw/bin",
 	}
+	-- Only when a home directory is actually known -- a bare "/.cargo/bin" is
+	-- a real directory someone could create, so never synthesise one.
+	if isNonEmpty(home) then
+		table.insert(extra, home .. "/.cargo/bin")
+		table.insert(extra, home .. "/.nix-profile/bin")
+	end
+	table.insert(extra, "/run/current-system/sw/bin")
+
 	local parts = { inherited }
 	for _, d in ipairs(extra) do
-		if d ~= "/.cargo/bin" and d ~= "/.nix-profile/bin" then
-			table.insert(parts, d)
-		end
+		table.insert(parts, d)
 	end
 	return table.concat(parts, ":")
 end

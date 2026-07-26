@@ -209,6 +209,52 @@ do
 	end
 end
 
+-- Lightroom Classic's Lua sandbox provides no `os.getenv`. Calling it there
+-- raised `attempt to call field 'getenv' (a nil value)` and killed the export
+-- with an "Unable to Export" dialog. Simulate that sandbox exactly: nothing in
+-- TohdrCli may touch os.getenv without checking it exists first.
+do
+	local saved = os.getenv
+	os.getenv = nil
+
+	local ok, envOrErr = pcall(Cli.defaultPathEnv)
+	os.getenv = saved
+
+	check(ok, "defaultPathEnv survives a sandbox with no os.getenv: "
+		.. tostring(envOrErr))
+	if ok then
+		local dirs = Cli.splitPath(envOrErr)
+		check(#dirs > 0, "still yields candidate dirs without any environment")
+		for _, d in ipairs(dirs) do
+			check(d ~= "/.cargo/bin" and d ~= "/.nix-profile/bin",
+				"no HOME-less junk entry with getenv gone: " .. d)
+		end
+		check(envOrErr:match("/opt/homebrew/bin"),
+			"fixed prefixes survive without an environment")
+	end
+end
+
+-- What the plugin actually does inside Lightroom: pass `home` from
+-- LrPathUtils.getStandardFilePath('home') and no inherited PATH at all.
+do
+	local env = Cli.defaultPathEnv { home = "/Users/someone" }
+	check(env:match("/Users/someone/%.cargo/bin"), "injected home builds cargo dir")
+	check(env:match("/Users/someone/%.nix%-profile/bin"), "injected home builds nix dir")
+
+	local dirs = Cli.splitPath(Cli.defaultPathEnv {
+		inheritedPath = "/first:/second", home = "/h",
+	})
+	eq(dirs[1], "/first", "inherited PATH keeps precedence")
+	eq(dirs[2], "/second", "inherited PATH order preserved")
+	check(dirs[3] == "/opt/homebrew/bin", "appended prefixes follow the inherited PATH")
+
+	-- An empty-string home must not synthesise "/.cargo/bin" either.
+	for _, d in ipairs(Cli.splitPath(Cli.defaultPathEnv { home = "" })) do
+		check(d ~= "/.cargo/bin" and d ~= "/.nix-profile/bin",
+			"empty home synthesises nothing: " .. d)
+	end
+end
+
 -- ===========================================================================
 print("failure summaries")
 -- ===========================================================================

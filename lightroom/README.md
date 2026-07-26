@@ -13,17 +13,49 @@ Exports photos as gain-map HEICs by handing Lightroom's rendered pixels to the
 
 ## Installing
 
-1. `File > Plug-in Manager… > Add`, and pick `lightroom/tohdr.lrplugin`.
-2. Point the plugin at the binary, by any one of:
-   - copying `target/release/tohdr` into `tohdr.lrplugin/` (checked first),
+Two routes. The second is what has actually been exercised on this machine.
+
+**Plug-in Manager.** `File > Plug-in Manager… > Add`, and pick
+`lightroom/tohdr.lrplugin`. Loads it from wherever it sits, so the repo checkout
+stays the live copy.
+
+**Modules folder.** Copy the bundle in, and Lightroom loads it at launch with no
+GUI step:
+
+```sh
+cargo build --release -p tohdr-cli
+DEST="$HOME/Library/Application Support/Adobe/Lightroom/Modules/tohdr.lrplugin"
+mkdir -p "$DEST"
+install -m 644 lightroom/tohdr.lrplugin/*.lua "$DEST/"
+install -m 755 target/release/tohdr "$DEST/tohdr"
+```
+
+Either way:
+
+1. Point the plugin at the binary, by any one of:
+   - the `install -m 755` line above — a `tohdr` beside the `.lua` files is
+     checked before anything else,
    - putting it on your `PATH`,
    - setting **Custom tohdr path** in the export dialog.
 
-   Lightroom launches from Finder and so inherits a minimal `PATH` — usually
-   without Homebrew, Cargo or Nix. `TohdrCli.defaultPathEnv` appends the usual
-   prefixes, but bundling the binary or setting the explicit path is the
-   reliable option.
-3. `File > Export…`, choose **HDR Gain-Map HEIC** as the export-to target.
+   Prefer bundling. Lightroom launches from Finder, so it would inherit a
+   minimal `PATH` — and in fact its Lua sandbox has no `os.getenv` at all, so
+   the real `PATH` is not observable from inside the plugin. What
+   `TohdrCli.defaultPathEnv` searches is a *guess* at the usual install
+   prefixes, not your actual `PATH`; a bundled binary or an explicit path is the
+   only configuration that is certain, and the only one that guarantees you are
+   running the build you just made rather than an older `tohdr` sitting in one
+   of those prefixes.
+
+2. **Restart Lightroom.** The `Modules` folder is scanned only at launch, and an
+   already-running Lightroom holds the old copy of every `.lua` file — so a
+   reinstall over a running Lightroom changes nothing until it restarts.
+
+3. `File > Export…`. In the **Export To:** dropdown at the top of the dialog,
+   choose **HDR Gain-Map HEIC**; its settings appear in a panel titled
+   **HDR Gain-Map HEIC (tohdr)**. There is no menu item and no module panel —
+   this is an export service provider, so the Export dialog is the only place it
+   appears.
 
 ## Settings
 
@@ -75,12 +107,13 @@ Be clear about which half of this is proven.
 **Verified here, by running it:**
 
 - All four plugin files and the test file parse: `luajit -bl` on each, 5/5 OK.
-- `lua lightroom/tests/test_TohdrCli.lua` — **107 checks, 0 failures**. Covers
+- `lua lightroom/tests/test_TohdrCli.lua` — **172 checks, 0 failures**. Covers
   command-line construction and, most importantly, shell quoting: spaces,
   embedded single quotes, `$(...)`, backticks, semicolons, backslashes, double
   quotes and unicode all survive as literals. Also binary-location precedence,
   PATH splitting (including that empty entries are dropped, so a `tohdr` in the
-  current directory is never executed silently), and failure summarising.
+  current directory is never executed silently), failure summarising, and that
+  `defaultPathEnv` survives a sandbox with `os.getenv` removed.
 - `sh lightroom/tests/test_cli_contract.sh` — **19 checks, 0 failures**. Runs
   the real binary and asserts every flag the plugin emits exists, and that every
   flavor/engine/tone-map/size string the dialog can produce is accepted. This is
@@ -88,12 +121,28 @@ Be clear about which half of this is proven.
 - Lightroom Classic 15.4.1 is installed on this machine, so the declared
   `LrSdkVersion = 13.0` is satisfiable here.
 
-**Not verified — nobody has run this inside Lightroom:**
+**Established by running it inside Lightroom (15.4.1, Modules-folder install):**
 
-- That the plugin loads in the Plug-in Manager.
-- That the export dialog renders, and that the `LrView` layout is right.
-- That `processRenderedPhotos`, `waitForRender`, `uploadFailed` and
-  `configureProgress` behave as expected against a real export session.
+- The plugin loads, appears in the **Export To:** dropdown, and its dialog panel
+  renders. Getting there took a fix: `supportsIncrementalPublish = 'only'`,
+  copied from Adobe's flickr sample, made the service visible *only* under
+  Publish Services — so it loaded correctly and appeared nowhere a user looks.
+- An export reaches `processRenderedPhotos` and our own Lua runs.
+- **Lightroom's Lua sandbox has no `os.getenv`.** Calling it raises `attempt to
+  call field 'getenv' (a nil value)` and Lightroom reports "Unable to Export: an
+  internal error has occurred". So the inherited `PATH` is not merely minimal
+  from in here, it is unreadable, and no Lr API exposes it. `defaultPathEnv` now
+  takes `home` (via `LrPathUtils.getStandardFilePath('home')`) from its caller
+  and probes `os.getenv` defensively; a test removes `os.getenv` to reproduce the
+  sandbox. Nothing in the plugin touches `os` any more — `os.time()` in the
+  temp-log name became `LrDate.currentTime()`, since which other `os` members
+  survive the sandbox is undocumented.
+
+**Still not verified:**
+
+- Any end-to-end export of an actual photo through to a written HEIC.
+- That `waitForRender`, `uploadFailed` and `configureProgress` behave as expected
+  across a full export session.
 - That `LR_enableHDRDisplay` / `LR_export_colorSpaceNonJPEG = 'sRGB_hdr'` /
   `LR_export_bitDepthOthers` are accepted under those names by an export
   service. The names and values are confirmed to be what the *dialog* stores
@@ -103,8 +152,9 @@ Be clear about which half of this is proven.
   mapping is a convention read off the documented keys, not something Adobe
   states for these three. If Lightroom ignores them the plugin now fails the
   photo with an explanation instead of shipping an SDR file.
-- Any end-to-end export of an actual photo.
 
-Installing the plugin needs the Plug-in Manager GUI, and this work did not
-modify the Lightroom configuration on this machine. Treat everything in the
-second list as written-but-untested.
+The plugin is installed in the `Modules` folder on this machine, so the first
+two lists reflect a real Lightroom, not inference. Treat the third as
+written-but-untested — and note that every item in the second list was found by
+someone clicking Export, not by reading the code, which is a fair guide to how
+much confidence the third deserves.

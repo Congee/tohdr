@@ -15,6 +15,7 @@ exact failure docs/acceptance-criteria.md criterion 13 exists to catch.
 
 ------------------------------------------------------------------------]]
 
+local LrDate = import 'LrDate'
 local LrFileUtils = import 'LrFileUtils'
 local LrPathUtils = import 'LrPathUtils'
 local LrTasks = import 'LrTasks'
@@ -111,7 +112,13 @@ local function findBinary(propertyTable)
 	return TohdrCli.locateBinary {
 		userBinaryPath = propertyTable.tohdr_binaryPath,
 		pluginBinaryPath = bundled,
-		pathDirs = TohdrCli.splitPath(TohdrCli.defaultPathEnv()),
+		-- Lightroom's Lua sandbox has no `os.getenv`, so the inherited PATH is
+		-- not observable from in here at all and there is no Lr API that
+		-- exposes it. Home *is* available through a documented call, and it is
+		-- the only part of the default PATH that varies per machine.
+		pathDirs = TohdrCli.splitPath(TohdrCli.defaultPathEnv {
+			home = LrPathUtils.getStandardFilePath('home'),
+		}),
 		fileExists = function(p)
 			return p ~= nil and p ~= '' and LrFileUtils.exists(p) ~= false
 		end,
@@ -131,13 +138,20 @@ end
 --- shared temp directory would receive whatever `tohdr` printed. Mixing in a
 --- per-call counter and an address-derived value from a fresh table makes the
 --- name unguessable without needing a seed source Lua does not portably have.
+---
+--- The clock comes from `LrDate.currentTime()`, not `os.time()`. Lightroom's
+--- sandbox is demonstrably missing `os.getenv` (it crashed an export here), and
+--- nothing documents which other `os` members survive -- so this file no longer
+--- touches `os` at all. LrDate.currentTime returns seconds since 2001-01-01
+--- UTC and may be fractional, hence the floor.
 local logCounter = 0
 local function tempLogPath()
 	logCounter = logCounter + 1
 	local entropy = tostring({}):gsub('%W', '')
 	return LrPathUtils.child(
 		LrPathUtils.getStandardFilePath('temp'),
-		string.format('tohdr-%s-%d-%d.log', entropy, logCounter, os.time())
+		string.format('tohdr-%s-%d-%d.log',
+			entropy, logCounter, math.floor(LrDate.currentTime()))
 	)
 end
 
