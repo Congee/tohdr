@@ -1,0 +1,29 @@
+# Drop LC_LOAD_DYLIB entries for libraries the binary imports no symbols from.
+#
+# `libc` declares Apple's iconv functions in a single `extern` block carrying
+# `#[link(name = "iconv")]`. That attribute is crate-granular, not use-granular,
+# so rustc emits `-liconv` for any binary with `libc` anywhere in its dependency
+# graph -- here via tohdr-apple -> objc2-core-{foundation,graphics} -> libc.
+# Nothing calls them (`nm -u target/release/tohdr | grep -c iconv` is 0), but
+# Apple's ld records a load command for every dylib on the link line whether or
+# not a symbol is imported through it.
+#
+# rustc already passes `-Wl,-dead_strip`, which removes the unreachable *code*.
+# `-dead_strip_dylibs` is the separate flag that removes the leftover *load
+# command*, and rustc does not pass it.
+#
+# Why it matters here rather than being invisible: on a stock Xcode toolchain
+# `-liconv` resolves to /usr/lib/libiconv.2.dylib, which exists on every Mac.
+# The nix devshell resolves it to a /nix/store path instead, making the
+# dependency machine-specific -- and lightroom/tohdr.lrplugin bundles this
+# binary, so a copy of that plugin taken to another Mac would fail in dyld.
+#
+# libc upstream deprecated these functions for exactly this reason ("Will be
+# removed in 1.0 to avoid the `iconv` dependency"); the `-as-needed` link
+# modifier that would fix it at the source is still unstable
+# (rust-lang/rust#81490).
+#
+# Scoped to macOS because -dead_strip_dylibs is an Apple ld flag; GNU ld does
+# not accept it, and tohdr-portable is meant to build elsewhere.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-Wl,-dead_strip_dylibs"]
