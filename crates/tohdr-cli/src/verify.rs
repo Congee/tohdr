@@ -98,16 +98,29 @@ pub fn checks_for(rb: &ReadBack) -> Vec<Check> {
     // present. `docs/acceptance-criteria.md` §8 settles this: writing no tags
     // is the one option that never lies, so it is what we do both when the
     // source had no MakerNote to carry and when the headroom exceeds the 3.0
-    // stops Apple's formula can express. Nothing in a `ReadBack` tells those
-    // apart from a writer that simply forgot — the source's MakerNote is not
-    // in the output — so absence is no evidence of a defect and this check has
-    // nothing to say about it. `tools/verify_gainmap.py:587` skips the same
-    // case; failing it here made every TIFF and JPEG conversion exit non-zero
-    // for doing the right thing.
+    // stops Apple's formula can express. `tools/verify_gainmap.py:587` skips
+    // the same case; failing it here made every TIFF and JPEG conversion exit
+    // non-zero for doing the right thing.
+    //
+    // What this check *cannot* currently do is say which of those two happened,
+    // and the reason is a gap in `ReadBack` rather than a fact about the file.
+    // `read::maker_apple_tags` returns `(None, None)` both when the MakerApple
+    // dictionary is absent entirely and when it is present without keys 33/48,
+    // so the two collapse. They are distinguishable in the bytes: above the
+    // ceiling `align_apple_headroom` removes only the pair and leaves the
+    // note's other ~23 tags in place (`tohdr_portable::exif`,
+    // `an_inexpressible_headroom_removes_the_pair_and_keeps_the_rest`), so an
+    // output whose note survives minus the pair proves its source had one.
+    // With dict-presence in `ReadBack` this arm could fail the one case that
+    // is a genuine defect — note present, pair gone, declared headroom at or
+    // under 3.0 stops, meaning the tags were expressible and got dropped
+    // anyway. Until then it must stay silent, because failing on absence is
+    // what broke every TIFF conversion.
     //
     // A skip is modeled as pass-with-reason, matching `headroom_consistent`
-    // above, rather than adding a third state to `Check` and the JSON the
-    // plugin reads.
+    // above, rather than adding a third state to `Check`. Note that nothing
+    // consumes that JSON today — the Lightroom plugin shells out only to
+    // `tohdr convert` — so a third state is cheap if a consumer ever wants it.
     let (tags_ok, tags_detail) = match (rb.tag33, rb.tag48) {
         (Some(t33), Some(t48)) => (
             t33 >= 0.0 && t48 >= 0.0,
