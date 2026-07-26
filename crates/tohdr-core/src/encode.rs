@@ -63,8 +63,30 @@ pub struct EncodeOptions<'a> {
     /// what every caller did before this existed.
     ///
     /// An engine that cannot carry it must say so rather than drop it quietly;
-    /// see [`GainMapEncoder::carries_exif`].
+    /// see [`GainMapEncoder::metadata_support`].
     pub exif: Option<&'a [u8]>,
+    /// The source's own XMP packet: keywords, caption, rating, IPTC, rights —
+    /// everything a photographer typed rather than the camera recorded.
+    ///
+    /// An engine must *merge* rather than replace, since it also has a headroom
+    /// packet of its own to state; [`crate::xmp::merge_headroom_into`] is that
+    /// merge. `None` means the source had none, and the engine writes only its
+    /// own packet.
+    pub xmp: Option<&'a [u8]>,
+    /// The source's IPTC-IIM block, for a backend that needs it apart from the
+    /// Exif block it also lives in. See
+    /// [`crate::exif::wrap_in_jpeg_with_iptc`].
+    pub iptc: Option<&'a [u8]>,
+    /// Non-image metadata items to copy through untouched, e.g. Apple's
+    /// Photographic Styles plist. Empty is the norm for non-HEIF sources.
+    pub opaque_items: &'a [crate::OpaqueItem],
+    /// How the stored pixels have to be transformed for display, from the
+    /// source's Exif `Orientation`.
+    ///
+    /// No engine here rotates pixels, so a rotated source stays correct only if
+    /// the container says so — and it has to say the same thing the Exif tag in
+    /// the same file says. See [`crate::orient`].
+    pub orientation: crate::HeifTransform,
 }
 
 impl Default for EncodeOptions<'_> {
@@ -74,6 +96,10 @@ impl Default for EncodeOptions<'_> {
             base_quality: 85,
             gain_quality: 85,
             exif: None,
+            iptc: None,
+            xmp: None,
+            opaque_items: &[],
+            orientation: crate::HeifTransform::default(),
         }
     }
 }
@@ -89,14 +115,14 @@ pub trait GainMapEncoder {
     /// Label for logs and benchmark tables, e.g. `"apple-imageio"`.
     fn name(&self) -> &'static str;
 
-    /// Whether this backend writes [`EncodeOptions::exif`] into its output.
+    /// Which of [`EncodeOptions`]' metadata fields this backend actually writes.
     ///
-    /// Defaults to `false` so a backend has to claim the capability rather than
-    /// inherit it. The point is that a caller can tell the user their metadata
-    /// was dropped, instead of the block being silently ignored by an engine
-    /// that never looked at the field.
-    fn carries_exif(&self) -> bool {
-        false
+    /// Defaults to [`crate::MetadataSupport::NONE`] so a backend has to claim
+    /// each capability rather than inherit it. The point is that a caller can
+    /// tell the user what was dropped, instead of a field being silently ignored
+    /// by an engine that never looked at it.
+    fn metadata_support(&self) -> crate::MetadataSupport {
+        crate::MetadataSupport::NONE
     }
 
     fn encode(

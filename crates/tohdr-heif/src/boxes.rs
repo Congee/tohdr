@@ -130,6 +130,21 @@ impl<'a> Reader<'a> {
         Ok(self.take(4)?.try_into().unwrap())
     }
 
+    /// The null-terminated UTF-8 string ISOBMFF uses for names and MIME types.
+    ///
+    /// `None` rather than an error at end of input: these fields sit at the tail
+    /// of `infe`, where a writer may simply have stopped, and an absent optional
+    /// string is not a malformed file. Invalid UTF-8 is reported the same way,
+    /// since the alternative is inventing replacement characters into a value
+    /// that gets copied back out verbatim.
+    pub fn c_string(&mut self) -> Option<String> {
+        let rest = self.bytes.get(self.pos..)?;
+        let n = rest.iter().position(|&b| b == 0)?;
+        let s = core::str::from_utf8(&rest[..n]).ok()?.to_string();
+        self.pos += n + 1;
+        Some(s)
+    }
+
     /// Reads a big-endian unsigned integer of `n` bytes (0..=8), the variable
     /// field width `iloc` uses for offsets/lengths/indices.
     pub fn uint(&mut self, n: usize) -> Result<u64> {

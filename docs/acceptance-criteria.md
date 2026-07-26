@@ -16,10 +16,11 @@ our own reader, so a bug present in both our reader and our writer would sail
 through it; the Python checker exists to make that class of self-consistent error
 visible. Measured discrimination on the three reference files: IMG_4913 passes
 11/11 and exits 0; `DSC07752_iso` fails criteria 2, 5, 8, 10 and exits 1;
-`DSC07752` fails criterion 8 and exits 1. Engine B's own output
-(`--engine portable --flavor both`, synthetic 2.98-stop source) passes 9/9
-applicable and exits 0, skipping 8 and 9 — it writes no MakerApple tags and no
-XMP headroom, which is the remaining gap against IMG_4913's 11/11.
+`DSC07752` fails criterion 8 and exits 1. A conversion **of `IMG_4913.HEIC`** now
+passes 11/11 through either engine, because it carries the source's MakerNote and
+realigns its headroom tag (§8 below). Converting a source that has no MakerApple
+tags of its own — a TIFF or a JPEG — still passes 10/10 applicable and skips 8,
+which is the correct outcome rather than a gap: there is no tag to check.
 
 Reference values come from `docs/heic-gainmap-structure.md`, decoded byte by byte
 from the real files; the raw payloads are committed under `assets/fixtures/`.
@@ -96,8 +97,16 @@ This is where both broken exports actually fail, and the failure is shared:
    to 11.86x through Skia's parser, so it is a symptom of the same
    over-declaration as #5, **not** independently proven to cause the washout.
 
-   **Why our engines write no MakerApple tags at all, and why that is a
-   choice rather than a gap.** Apple's tag formula tops out at 3.0 stops: in
+   **When our engines write these tags.** Never from nothing — but a conversion
+   of a source that *has* an Apple MakerNote now carries it (see
+   `metadata-passthrough.md` §2), which means carrying its tags 33 and 48. That
+   is only legitimate if they state *this output's* headroom rather than the
+   source's, so `tohdr_portable::align_apple_headroom` rewrites tag 48 in place
+   to whatever this conversion derived, and removes both tags when the formula
+   cannot express it. The reasoning below is what decides which of those two
+   happens; it has not changed, it now has a caller.
+
+   Apple's tag formula tops out at 3.0 stops: in
    the `tag33 >= 1.0` regime it is `stops = -70 · tag48 + 3.0`, so a headroom
    above 8x can only be expressed by pushing tag48 *negative* — precisely how
    `DSC07752.heic` ended up at `-0.00812`.
@@ -114,15 +123,25 @@ This is where both broken exports actually fail, and the failure is shared:
      reads the wrong number;
    - write no tags → both criteria *skip*, and nothing can read a wrong value.
 
-   The third is the only one that never lies, so it is what we do. Note
-   `IMG_4913.HEIC` declares 2.287109 stops — comfortably under the ceiling —
-   which is why Apple could write all three copies in agreement. A future
-   engine may write the tags **when and only when** the headroom is at most 3.0
-   stops; above that, silence is correct.
+   The third is the only one that never lies, so it is what we do when there are
+   no tags to begin with — and it is also what `align_apple_headroom` falls back
+   to above the ceiling, removing tags 33 and 48 from the carried note in place
+   while keeping its other 23. Note `IMG_4913.HEIC` declares 2.287109 stops —
+   comfortably under the ceiling — which is why Apple could write all three copies
+   in agreement, and why a conversion of it can too. The rule is unchanged: write
+   the tags **when and only when** the headroom is at most 3.0 stops; above that,
+   silence is correct.
 9. **[verify]** Where more than one copy of the headroom is written (ISO
    payload, XMP `HDRGainMapHeadroom`, MakerApple tags), all copies agree within
    1e-3. Apple writes it three times and all three agree — a file whose copies
    disagree is one where some consumer will read the wrong one.
+
+   `verify_gainmap.py` originally compared only the ISO and XMP copies, which
+   made this criterion blind to the copy most likely to be stale: the MakerApple
+   pair a conversion inherits when it carries a source's MakerNote. It now
+   compares all three. The extended check passes on `IMG_4913.HEIC` itself (worst
+   delta 9.59e-05) and fails a verbatim carry, which is what forced the tag-48
+   rewrite in §8.
 
 ## C. Predicted render behavior
 

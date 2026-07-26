@@ -27,7 +27,11 @@ pub mod par;
 pub mod xmp;
 pub mod iso21496;
 pub mod meta;
+pub mod orient;
+pub mod sidecar;
 
 pub use encode::{EncodeOptions, Flavor, GainMapEncoder};
+pub use orient::{heif_transform, HeifTransform};
+pub use sidecar::{MetadataSupport, OpaqueItem};
 pub use hdr::HdrRgb;
 pub use meta::{GainMapMeta, GainPlane, Rgb};

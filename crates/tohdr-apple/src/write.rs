@@ -29,9 +29,12 @@ use objc2_image_io::{
     kCGImageAuxiliaryDataInfoMetadata, kCGImageAuxiliaryDataTypeHDRGainMap,
     kCGImageAuxiliaryDataTypeISOGainMap, kCGImageDestinationEncodeRequest,
     kCGImageDestinationEncodeToISOGainmap, kCGImageDestinationLossyCompressionQuality,
-    kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary, kCGImagePropertyTIFFDictionary,
+    kCGImagePropertyExifAuxDictionary, kCGImagePropertyExifDictionary,
+    kCGImagePropertyGPSDictionary, kCGImagePropertyIPTCDictionary,
+    kCGImagePropertyMakerAppleDictionary, kCGImagePropertyOrientation,
+    kCGImagePropertyTIFFDictionary,
     CGImageDestination, CGImageMetadataTag, CGImageMetadataType, CGImageSource,
-    CGMutableImageMetadata,
+    CGImageMetadata, CGMutableImageMetadata,
 };
 use tohdr_core::{EncodeOptions, GainMapMeta, GainPlane, HdrRgb, Rgb};
 
@@ -110,7 +113,7 @@ fn cg_image_from_hdr(hdr: &HdrRgb) -> Result<CFRetained<CGImage>> {
 }
 
 /// Wrap 8-bit sRGB RGB in a `CGImage`.
-fn cg_image_from_sdr(rgb: &Rgb) -> Result<CFRetained<CGImage>> {
+pub(crate) fn cg_image_from_sdr(rgb: &Rgb) -> Result<CFRetained<CGImage>> {
     if rgb.bits != 8 {
         return Err(Error::Unreadable(format!(
             "Engine A's SDR path takes 8-bit input, got {}-bit",
@@ -322,8 +325,23 @@ fn tone_map_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImageMeta
 ///
 /// `HDRGainMapHeadroom` is linear, not stops -- see `tohdr_core::xmp`, which
 /// owns that conversion and the reasoning behind it.
-fn gain_map_xmp_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImageMetadata>> {
-    let md = unsafe { CGMutableImageMetadata::new() };
+///
+/// When the source had XMP of its own, that packet is the *starting point* and
+/// the headroom is set on top of it, so the photographer's keywords, caption,
+/// rating and rights survive. Setting our two paths onto ImageIO's own parse of
+/// the source is what keeps this one code path rather than two: the alternative,
+/// building a packet textually and handing ImageIO the result, would mean Engine
+/// A writing XMP by a route Engine A never validates.
+fn gain_map_xmp_metadata(
+    meta: &GainMapMeta,
+    source_xmp: Option<&[u8]>,
+) -> Result<CFRetained<CGMutableImageMetadata>> {
+    // A source packet ImageIO declines to parse is not a reason to fail an
+    // encode, or to lose the headroom: fall back to a packet holding only ours.
+    let md = source_xmp
+        .and_then(parse_xmp)
+        .and_then(|src| unsafe { CGMutableImageMetadata::new_copy(&src) })
+        .unwrap_or_else(|| unsafe { CGMutableImageMetadata::new() });
     let ns = CFString::from_str(tohdr_core::xmp::HDR_GAIN_MAP_NS);
     let prefix = CFString::from_str("HDRGainMap");
     unsafe { md.register_namespace_for_prefix(&ns, &prefix, std::ptr::null_mut()) };
@@ -339,6 +357,44 @@ fn gain_map_xmp_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImage
     Ok(md)
 }
 
+/// Parse a source's XMP packet the way ImageIO will accept it.
+///
+/// Two routes, because the obvious one is not enough.
+/// `CGImageMetadataCreateFromXMPData` **rejects a packet whose XML attributes are
+/// single-quoted** — legal XML, and exiftool's default — returning NULL with no
+/// diagnostic. ImageIO's *file-level* reader accepts the identical bytes, so the
+/// fallback puts the packet inside a 1x1 JPEG's XMP `APP1` and reads it back out
+/// through `CGImageSource`, the same shape [`exif_property_pairs`] uses and for
+/// the same underlying reason.
+///
+/// Measured both ways by `examples/probe_xmp_metadata.rs`, including that the
+/// recovered tags survive all the way into a written HEIC. `None` only when
+/// neither route parses, which loses the source's XMP and is reported.
+fn parse_xmp(packet: &[u8]) -> Option<CFRetained<CGImageMetadata>> {
+    let data = CFData::from_bytes(packet);
+    if let Some(md) = unsafe { CGImageMetadata::from_xmp_data(&data) } {
+        return Some(md);
+    }
+    let carrier = tohdr_core::exif::wrap_xmp_in_jpeg(packet)?;
+    let cdata = CFData::from_bytes(&carrier);
+    let isrc = unsafe { CGImageSource::with_data(&cdata, None) }?;
+    unsafe { isrc.metadata_at_index(0, None) }
+}
+
+/// Back from a container transform to the Exif `Orientation` that produced it,
+/// which is the form `kCGImagePropertyOrientation` takes.
+///
+/// The round trip exists because the pipeline carries the transform, not the tag:
+/// Engine B writes boxes and only Engine A needs the number again. Any transform
+/// not in the table is upright — the same fallback
+/// [`tohdr_core::orient::heif_transform`] makes for a damaged tag, so the two
+/// directions agree on what "no rotation" means.
+fn exif_orientation(t: tohdr_core::HeifTransform) -> u8 {
+    (1u8..=8)
+        .find(|&o| tohdr_core::heif_transform(o) == t)
+        .unwrap_or(1)
+}
+
 /// Turn a raw Exif block into the property dictionaries ImageIO writes from.
 ///
 /// ImageIO's destination API takes no raw Exif: metadata goes in as
@@ -352,8 +408,11 @@ fn gain_map_xmp_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImage
 /// Returns the pairs to merge into the image's options dictionary, empty if the
 /// block yielded nothing. Never an error: losing metadata must not fail an
 /// encode that would otherwise succeed.
-fn exif_property_pairs(block: &[u8]) -> Vec<(&'static CFString, CFRetained<CFType>)> {
-    let Some(carrier) = tohdr_core::exif::wrap_in_jpeg(block) else {
+fn exif_property_pairs(
+    block: &[u8],
+    iptc: Option<&[u8]>,
+) -> Vec<(&'static CFString, CFRetained<CFType>)> {
+    let Some(carrier) = tohdr_core::exif::wrap_in_jpeg_with_iptc(block, iptc) else {
         return Vec::new();
     };
     let data = CFData::from_bytes(&carrier);
@@ -365,10 +424,18 @@ fn exif_property_pairs(block: &[u8]) -> Vec<(&'static CFString, CFRetained<CFTyp
     };
 
     let mut out = Vec::new();
+    // Every dictionary ImageIO recognizes in an Exif block, not just the three
+    // obvious ones: MakerApple is 25 tags on any iPhone capture and IPTC is where
+    // a Lightroom export puts creator, rights and keywords. A dictionary this
+    // list omits is metadata silently left behind, so the list is the whole set
+    // ImageIO will read back out of a block.
     for key in [
         unsafe { kCGImagePropertyExifDictionary },
         unsafe { kCGImagePropertyTIFFDictionary },
         unsafe { kCGImagePropertyGPSDictionary },
+        unsafe { kCGImagePropertyIPTCDictionary },
+        unsafe { kCGImagePropertyMakerAppleDictionary },
+        unsafe { kCGImagePropertyExifAuxDictionary },
     ] {
         let ptr = unsafe { props.value(key as *const CFString as *const c_void) };
         if ptr.is_null() {
@@ -407,11 +474,25 @@ pub fn encode_parts(
         q.as_ref(),
     )];
     // Held in a binding so the retained dictionaries outlive `add_image`.
-    let exif = opts.exif.map(exif_property_pairs).unwrap_or_default();
+    let exif = opts
+        .exif
+        .map(|b| exif_property_pairs(b, opts.iptc))
+        .unwrap_or_default();
     pairs.extend(exif.iter().map(|(k, v)| (*k, v.as_ref())));
+    // ImageIO owns the container, so it writes `irot`/`imir` — but only if it is
+    // told the orientation at the top level. The value inside the carried TIFF
+    // dictionary does not reach it: that dictionary is metadata to be written,
+    // not an instruction about the image being added.
+    let orientation = cf_num_f64(exif_orientation(opts.orientation) as f64);
+    if !opts.orientation.is_identity() {
+        pairs.push((
+            unsafe { kCGImagePropertyOrientation },
+            orientation.as_ref(),
+        ));
+    }
     let img_opts = cf_dict(&pairs);
     if opts.flavor.writes_apple() {
-        let xmp = gain_map_xmp_metadata(meta)?;
+        let xmp = gain_map_xmp_metadata(meta, opts.xmp)?;
         unsafe { dest.add_image_and_metadata(&image, Some(&xmp), Some(&img_opts)) };
     } else {
         unsafe { dest.add_image(&image, Some(&img_opts)) };

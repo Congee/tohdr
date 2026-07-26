@@ -47,6 +47,9 @@ const SMALLEST_JPEG: &[u8] = &[
 /// The six bytes that mark an `APP1` segment as Exif rather than XMP.
 const EXIF_ID: &[u8] = b"Exif\0\0";
 
+/// The identifier that marks an `APP1` segment as XMP.
+pub const XMP_ID: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
+
 /// Largest block that fits an `APP1` segment, whose length field counts itself
 /// and the identifier in 16 bits.
 pub const MAX_BLOCK: usize = u16::MAX as usize - 2 - EXIF_ID.len();
@@ -58,15 +61,81 @@ pub const MAX_BLOCK: usize = u16::MAX as usize - 2 - EXIF_ID.len();
 /// fall back on — and no real Exif block comes close: `IMG_4913.HEIC`'s is
 /// 3,074 bytes against this 65,527-byte ceiling.
 pub fn wrap_in_jpeg(block: &[u8]) -> Option<Vec<u8>> {
-    if block.is_empty() || block.len() > MAX_BLOCK {
+    wrap_app1(EXIF_ID, block)
+}
+
+/// [`wrap_in_jpeg`], plus an `APP13` segment carrying an IPTC-IIM block.
+///
+/// # Why IPTC needs a second segment
+///
+/// A TIFF keeps its IIM block in `IFD0` tag `33723`, so carrying that tag carries
+/// the metadata — for anything that reads TIFF. A JPEG does not: IPTC lives in
+/// `APP13`'s Photoshop image-resource block, and a JPEG reader looking for IPTC
+/// looks there and nowhere else. Measured: ImageIO reports 8 IPTC entries reading
+/// a TIFF that has tag `33723`, and none at all from a JPEG carrying the same tag
+/// inside its `APP1` — so the Exif carrier alone loses a Lightroom export's
+/// creator, rights, caption and keywords on Engine A.
+pub fn wrap_in_jpeg_with_iptc(block: &[u8], iptc: Option<&[u8]>) -> Option<Vec<u8>> {
+    let mut out = wrap_app1(EXIF_ID, block)?;
+    let Some(iim) = iptc.filter(|b| !b.is_empty()) else {
+        return Some(out);
+    };
+    let seg = app13_iptc(iim)?;
+    // After the Exif APP1, which is at a fixed position right after the SOI.
+    let at = 2 + 2 + 2 + EXIF_ID.len() + block.len();
+    out.splice(at..at, seg);
+    Some(out)
+}
+
+/// An `APP13` segment holding `iim` as Photoshop image resource `0x0404`.
+///
+/// The layout is Adobe's: the `Photoshop 3.0\0` identifier, then one `8BIM`
+/// resource — type, id, an empty Pascal name padded to even, the payload size,
+/// and the payload padded to even. `None` if it will not fit one segment;
+/// extended IPTC across segments is not a thing this needs.
+fn app13_iptc(iim: &[u8]) -> Option<Vec<u8>> {
+    const PS_ID: &[u8] = b"Photoshop 3.0\0";
+    let pad = iim.len() % 2;
+    let body_len = PS_ID.len() + 4 + 2 + 2 + 4 + iim.len() + pad;
+    if body_len + 2 > u16::MAX as usize {
+        return None;
+    }
+    let mut seg = Vec::with_capacity(body_len + 4);
+    seg.extend_from_slice(&[0xff, 0xed]);
+    seg.extend_from_slice(&((body_len + 2) as u16).to_be_bytes());
+    seg.extend_from_slice(PS_ID);
+    seg.extend_from_slice(b"8BIM");
+    seg.extend_from_slice(&0x0404u16.to_be_bytes());
+    seg.extend_from_slice(&[0, 0]); // empty Pascal name, padded to even
+    seg.extend_from_slice(&(iim.len() as u32).to_be_bytes());
+    seg.extend_from_slice(iim);
+    seg.extend(core::iter::repeat_n(0u8, pad));
+    Some(seg)
+}
+
+/// [`wrap_in_jpeg`] for an XMP packet rather than an Exif block.
+///
+/// Engine A needs this for the same reason it needs the Exif one, plus a measured
+/// surprise: `CGImageMetadataCreateFromXMPData` **rejects a packet whose XML
+/// attributes are single-quoted**, which is what exiftool writes by default.
+/// ImageIO's file-level reader accepts the identical bytes, so handing the packet
+/// to `CGImageSource` inside a carrier is not a workaround for a missing API — it
+/// is the route that parses. Measured by
+/// `crates/tohdr-apple/examples/probe_xmp_metadata.rs`.
+pub fn wrap_xmp_in_jpeg(packet: &[u8]) -> Option<Vec<u8>> {
+    wrap_app1(XMP_ID, packet)
+}
+
+fn wrap_app1(id: &[u8], block: &[u8]) -> Option<Vec<u8>> {
+    if block.is_empty() || block.len() > u16::MAX as usize - 2 - id.len() {
         return None;
     }
     let mut out = Vec::with_capacity(SMALLEST_JPEG.len() + block.len() + 10);
     // Straight after the SOI, which is where every reader expects it.
     out.extend_from_slice(&SMALLEST_JPEG[..2]);
     out.extend_from_slice(&[0xff, 0xe1]);
-    out.extend_from_slice(&((2 + EXIF_ID.len() + block.len()) as u16).to_be_bytes());
-    out.extend_from_slice(EXIF_ID);
+    out.extend_from_slice(&((2 + id.len() + block.len()) as u16).to_be_bytes());
+    out.extend_from_slice(id);
     out.extend_from_slice(block);
     out.extend_from_slice(&SMALLEST_JPEG[2..]);
     Some(out)
@@ -74,39 +143,166 @@ pub fn wrap_in_jpeg(block: &[u8]) -> Option<Vec<u8>> {
 
 /// The payload of the first `Exif\0\0`-tagged `APP1` segment in a JPEG.
 pub fn app1_payload(bytes: &[u8]) -> Option<&[u8]> {
-    if bytes.len() < 4 || bytes[0..2] != [0xff, 0xd8] {
-        return None;
+    app1_segments(bytes).find_map(|s| s.strip_prefix(EXIF_ID))
+}
+
+/// Every `APP1` segment body in a JPEG, in file order, identifier included.
+///
+/// `APP1` is shared: Exif takes the ones starting `Exif\0\0` and XMP the ones
+/// starting with Adobe's namespace URI, so a caller has to see the identifier to
+/// know which is which. Walking stops at the first thing that is not a marker
+/// segment — a truncated file yields what it had rather than nothing.
+pub fn app1_segments(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    segments(bytes).filter_map(|(m, b)| (m == 0xe1).then_some(b))
+}
+
+/// The IPTC-IIM payload of a JPEG's `APP13` Photoshop resource block.
+///
+/// A JPEG keeps IPTC here, not in its Exif IFD, so a source read for Exif alone
+/// loses a photographer's creator, rights and keywords entirely. The mirror of
+/// [`wrap_in_jpeg_with_iptc`], and the reason this module writes that segment at
+/// all: the same information has to travel in both directions.
+pub fn app13_iptc_payload(bytes: &[u8]) -> Option<&[u8]> {
+    const PS_ID: &[u8] = b"Photoshop 3.0\0";
+    for (marker, body) in segments(bytes) {
+        if marker != 0xed {
+            continue;
+        }
+        let mut at = body.strip_prefix(PS_ID)?;
+        // A run of `8BIM` resources: type, 16-bit id, a Pascal name padded to
+        // even, a 32-bit size, then the payload padded to even.
+        while at.len() >= 12 {
+            let (head, rest) = at.split_at(4);
+            if head != b"8BIM" {
+                break;
+            }
+            let id = u16::from_be_bytes([rest[0], rest[1]]);
+            let name_len = rest[2] as usize;
+            // The length byte is part of the Pascal string, so the pair is
+            // padded together.
+            let name_total = (1 + name_len) + (1 + name_len) % 2;
+            let rest = rest.get(2 + name_total..)?;
+            let size = u32::from_be_bytes([rest[0], rest[1], rest[2], rest[3]]) as usize;
+            let payload = rest.get(4..4 + size)?;
+            if id == 0x0404 && !payload.is_empty() {
+                return Some(payload);
+            }
+            at = rest.get(4 + size + size % 2..)?;
+        }
     }
-    let mut at = 2;
-    loop {
-        // Segments are `ff <marker> <u16 length, counting itself>`. Fill bytes of
-        // `ff` before a marker are legal and must be skipped.
-        while bytes.get(at) == Some(&0xff) && bytes.get(at + 1) == Some(&0xff) {
-            at += 1;
+    None
+}
+
+/// Every marker segment's `(marker, body)`, in file order.
+fn segments(bytes: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
+    let mut at = if bytes.len() >= 4 && bytes[0..2] == [0xff, 0xd8] {
+        Some(2usize)
+    } else {
+        None
+    };
+    core::iter::from_fn(move || {
+        loop {
+            let mut p = at?;
+            // Segments are `ff <marker> <u16 length, counting itself>`. Fill
+            // bytes of `ff` before a marker are legal and must be skipped.
+            while bytes.get(p) == Some(&0xff) && bytes.get(p + 1) == Some(&0xff) {
+                p += 1;
+            }
+            if bytes.get(p) != Some(&0xff) {
+                at = None;
+                return None;
+            }
+            let marker = *bytes.get(p + 1)?;
+            // Start of scan or end of image: no headers remain.
+            if marker == 0xda || marker == 0xd9 {
+                at = None;
+                return None;
+            }
+            let len = u16::from_be_bytes([*bytes.get(p + 2)?, *bytes.get(p + 3)?]) as usize;
+            if len < 2 {
+                at = None;
+                return None;
+            }
+            let body = bytes.get(p + 4..p + 2 + len);
+            at = Some(p + 2 + len);
+            match body {
+                None => {
+                    at = None;
+                    return None;
+                }
+                Some(b) => return Some((marker, b)),
+            }
         }
-        if bytes.get(at) != Some(&0xff) {
-            return None;
-        }
-        let marker = *bytes.get(at + 1)?;
-        // Start of scan or end of image: no headers remain.
-        if marker == 0xda || marker == 0xd9 {
-            return None;
-        }
-        let len = u16::from_be_bytes([*bytes.get(at + 2)?, *bytes.get(at + 3)?]) as usize;
-        if len < 2 {
-            return None;
-        }
-        let body = bytes.get(at + 4..at + 2 + len)?;
-        if marker == 0xe1 && body.starts_with(EXIF_ID) {
-            return Some(&body[EXIF_ID.len()..]);
-        }
-        at += 2 + len;
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `APP13` layout is Adobe's and a reader will reject a wrong length or a
+    /// missing pad, so the bytes are checked field by field rather than by
+    /// round-tripping through our own parser.
+    #[test]
+    fn the_iptc_segment_matches_adobes_layout() {
+        // Odd length on purpose: the payload must be padded to even and the
+        // segment length must count the pad.
+        let iim = b"\x1c\x02\x19\x00\x06sunset";
+        assert_eq!(iim.len() % 2, 1);
+        let jpeg = wrap_in_jpeg_with_iptc(b"MM\0\x2a\0\0\0\x08", Some(iim)).expect("fits");
+
+        let at = jpeg
+            .windows(2)
+            .position(|w| w == [0xff, 0xed])
+            .expect("an APP13 segment");
+        let len = u16::from_be_bytes([jpeg[at + 2], jpeg[at + 3]]) as usize;
+        let body = &jpeg[at + 4..at + 2 + len];
+        assert_eq!(len % 2, 0, "segment length must be even");
+        assert!(body.starts_with(b"Photoshop 3.0\0"));
+        let res = &body[14..];
+        assert_eq!(&res[0..4], b"8BIM");
+        assert_eq!(u16::from_be_bytes([res[4], res[5]]), 0x0404);
+        assert_eq!(&res[6..8], &[0, 0], "empty Pascal name, padded");
+        assert_eq!(
+            u32::from_be_bytes([res[8], res[9], res[10], res[11]]) as usize,
+            iim.len(),
+            "declared size is the unpadded length"
+        );
+        assert_eq!(&res[12..12 + iim.len()], iim);
+        assert_eq!(res.len(), 12 + iim.len() + 1, "one pad byte, counted");
+
+        // And the Exif block is still where it was, ahead of the new segment.
+        assert_eq!(app1_payload(&jpeg), Some(&b"MM\0\x2a\0\0\0\x08"[..]));
+    }
+
+    /// No IPTC must produce the same bytes as the plain wrapper, so adding the
+    /// parameter cannot have changed the Exif path.
+    #[test]
+    fn no_iptc_is_byte_identical_to_the_plain_wrapper() {
+        let block = b"MM\0\x2a\0\0\0\x08\0\0\0\0";
+        assert_eq!(
+            wrap_in_jpeg_with_iptc(block, None),
+            wrap_in_jpeg(block),
+            "the no-IPTC path must not differ"
+        );
+        assert_eq!(
+            wrap_in_jpeg_with_iptc(block, Some(&[])),
+            wrap_in_jpeg(block),
+            "an empty block is the same as none"
+        );
+    }
+
+    /// An XMP carrier is the same envelope with Adobe's identifier, and
+    /// `app1_segments` has to see both segments when both are present.
+    #[test]
+    fn an_xmp_carrier_is_tagged_with_adobes_namespace() {
+        let packet = b"<x:xmpmeta><rdf:RDF/></x:xmpmeta>";
+        let jpeg = wrap_xmp_in_jpeg(packet).expect("fits");
+        let seg = app1_segments(&jpeg).next().expect("one APP1");
+        assert_eq!(seg.strip_prefix(XMP_ID), Some(&packet[..]));
+        // Not mistakable for Exif, which shares the marker.
+        assert_eq!(app1_payload(&jpeg), None);
+    }
 
     #[test]
     fn wrap_then_read_returns_the_block() {

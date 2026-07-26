@@ -205,6 +205,7 @@ mod tests {
             tag33: Some(1.0),
             tag48: Some(0.05),
             apple_headroom: Some(4.0),
+            orientation: Some(1),
             iso_meta: Some(GainMapMeta::with_headroom_stops(2.287109)),
         }
     }

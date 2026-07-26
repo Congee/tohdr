@@ -18,9 +18,13 @@ mod codec;
 pub mod exif;
 pub mod gainmap_tiff;
 mod input;
+pub mod sidecar;
 
 pub use codec::{HpvcaCodec, YUV444_QUALITY_THRESHOLD};
-pub use exif::{read as read_source_exif, Origin as ExifOrigin, SourceExif};
+pub use exif::{
+    align_apple_headroom, read as read_source_exif, AppleHeadroom, Origin as ExifOrigin, SourceExif,
+};
+pub use sidecar::{read as read_sidecar, Sidecar};
 pub use gainmap_tiff::{read as read_gainmap_tiff, GainMapTiff};
 pub use input::{load_hdr_tiff_pq, DEFAULT_REFERENCE_WHITE_NITS};
 
@@ -88,8 +92,8 @@ impl GainMapEncoder for PortableEngine {
         "portable-hpvca"
     }
 
-    fn carries_exif(&self) -> bool {
-        tohdr_heif::MuxEngine::new(HpvcaCodec).carries_exif()
+    fn metadata_support(&self) -> tohdr_core::MetadataSupport {
+        tohdr_heif::MuxEngine::new(HpvcaCodec).metadata_support()
     }
 
     fn encode(

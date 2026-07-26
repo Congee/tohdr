@@ -20,8 +20,9 @@ use std::ffi::c_void;
 
 use objc2_core_foundation::{CFData, CFDictionary, CFRetained, CFString, CFType};
 use objc2_image_io::{
-    kCGImagePropertyExifDictionary, kCGImagePropertyGPSDictionary,
-    kCGImagePropertyTIFFDictionary, CGImageSource,
+    kCGImagePropertyExifAuxDictionary, kCGImagePropertyExifDictionary,
+    kCGImagePropertyGPSDictionary, kCGImagePropertyIPTCDictionary,
+    kCGImagePropertyMakerAppleDictionary, kCGImagePropertyTIFFDictionary, CGImageSource,
 };
 
 fn get<'a>(dict: &'a CFDictionary, key: &CFString) -> Option<&'a CFType> {
@@ -50,6 +51,12 @@ fn report(label: &str, props: &CFDictionary) {
         ("Exif", unsafe { kCGImagePropertyExifDictionary }),
         ("TIFF", unsafe { kCGImagePropertyTIFFDictionary }),
         ("GPS", unsafe { kCGImagePropertyGPSDictionary }),
+        // The three Engine A used to leave behind. Whether ImageIO surfaces them
+        // from a wrapped block is the question that decides if the loss is on the
+        // read side or the write side.
+        ("IPTC", unsafe { kCGImagePropertyIPTCDictionary }),
+        ("MakerApple", unsafe { kCGImagePropertyMakerAppleDictionary }),
+        ("ExifAux", unsafe { kCGImagePropertyExifAuxDictionary }),
     ] {
         match get(props, key).and_then(|v| v.downcast_ref::<CFDictionary>()) {
             Some(d) => {

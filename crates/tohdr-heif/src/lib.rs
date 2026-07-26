@@ -132,8 +132,18 @@ pub struct MuxRequest {
     pub exif: Option<Vec<u8>>,
     /// XMP packet for a `mime` item.
     pub xmp: Option<Vec<u8>>,
+    /// Non-image metadata items copied through from a source untouched, each
+    /// getting an `infe`, an `idat` extent and a `cdsc` reference to the base and
+    /// `tmap` — the same treatment as `Exif` and XMP, because it is the same
+    /// relationship: bytes that describe this photograph.
+    pub extra_items: Vec<tohdr_core::OpaqueItem>,
     /// `clli` content light level: (max content light level, max frame-average).
     pub clli: Option<(u16, u16)>,
+    /// How the stored pixels have to be transformed for display, from the
+    /// source's Exif `Orientation`. Applied to *every* image item: the base, the
+    /// gain map and the `tmap` are spatially aligned, and a transform on one but
+    /// not the others would misregister the map against the image it corrects.
+    pub orientation: tohdr_core::HeifTransform,
 }
 
 /// Assemble a gain-map HEIC.
@@ -174,6 +184,15 @@ pub struct Item {
     pub id: ItemId,
     /// Four-character item type, e.g. `hvc1`, `grid`, `tmap`, `Exif`, `mime`.
     pub item_type: [u8; 4],
+    /// `infe`'s `item_name`, empty for most items. Apple's Photographic Styles
+    /// plist is named `metadata`.
+    pub name: String,
+    /// `infe`'s `content_type`, present for `mime` items —
+    /// `application/rdf+xml` for an XMP packet.
+    pub content_type: Option<String>,
+    /// `infe`'s `item_uri_type`, present for `uri ` items and the only thing
+    /// that says what such an item holds.
+    pub uri_type: Option<String>,
     pub hidden: bool,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -183,6 +202,11 @@ pub struct Item {
     pub derives_from: Vec<ItemId>,
     /// Items this one is auxiliary to (`auxl`).
     pub auxiliary_to: Vec<ItemId>,
+    /// Items this one *describes* (`cdsc`). The link that separates metadata
+    /// belonging to the photograph from metadata belonging to some auxiliary
+    /// image: in `IMG_4913.HEIC` the Exif item and the Photographic Styles plist
+    /// both describe the primary, while four XMP items describe mattes.
+    pub describes: Vec<ItemId>,
 }
 
 impl Item {

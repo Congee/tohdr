@@ -40,6 +40,15 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
         next_id += 1;
         id
     });
+    let extra_ids: Vec<u32> = req
+        .extra_items
+        .iter()
+        .map(|_| {
+            let id = next_id;
+            next_id += 1;
+            id
+        })
+        .collect();
 
     // --- mdat: the two coded HEVC bitstreams, contiguous ---
     let mut mdat_body = Vec::new();
@@ -77,6 +86,12 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
         let len = idat_body.len() as u64 - off;
         idat_entries.push((id, off, len));
     }
+    for (id, item) in extra_ids.iter().zip(&req.extra_items) {
+        let off = idat_body.len() as u64;
+        idat_body.extend_from_slice(&item.data);
+        let len = idat_body.len() as u64 - off;
+        idat_entries.push((*id, off, len));
+    }
 
     // --- ftyp ---
     let mut brands = vec![*b"mif1", *b"heic", *b"miaf", *b"heix", *b"MiHA", *b"MiHB"];
@@ -99,8 +114,7 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
         props.push(colr_box(c));
         assocs.push((base_id, props.len() as u16, true));
     }
-    props.push(irot_box(0));
-    assocs.push((base_id, props.len() as u16, true));
+    push_transform(&mut props, &mut assocs, base_id, req.orientation);
 
     props.push(ispe_box(req.gain.width, req.gain.height));
     assocs.push((gain_id, props.len() as u16, false));
@@ -125,8 +139,7 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
         props.push(auxc_box(crate::APPLE_GAINMAP_URN));
         assocs.push((gain_id, props.len() as u16, true));
     }
-    props.push(irot_box(0));
-    assocs.push((gain_id, props.len() as u16, true));
+    push_transform(&mut props, &mut assocs, gain_id, req.orientation);
 
     if let Some(id) = tmap_id {
         // Every image item, derived ones included, is expected to carry an
@@ -149,8 +162,7 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
             props.push(colr_box(c));
             assocs.push((id, props.len() as u16, true));
         }
-        props.push(irot_box(0));
-        assocs.push((id, props.len() as u16, true));
+        push_transform(&mut props, &mut assocs, id, req.orientation);
     }
 
     if let Some((max_cll, max_pall)) = req.clli {
@@ -181,6 +193,9 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
     if let Some(id) = xmp_id {
         iref_entries.push((*b"cdsc", id, cdsc_targets.clone()));
     }
+    for id in &extra_ids {
+        iref_entries.push((*b"cdsc", *id, cdsc_targets.clone()));
+    }
 
     // --- assemble meta ---
     let mut meta = Vec::new();
@@ -190,7 +205,17 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
     // Pointing it at the `tmap` was tried and changes nothing about whether
     // ImageIO recognizes the gain map.
     write_pitm(&mut meta, base_id);
-    write_iinf(&mut meta, base_id, gain_id, tmap_id, exif_id, xmp_id);
+    let extra: Vec<(u32, &tohdr_core::OpaqueItem)> =
+        extra_ids.iter().copied().zip(&req.extra_items).collect();
+    write_iinf(
+        &mut meta,
+        base_id,
+        gain_id,
+        tmap_id,
+        exif_id,
+        xmp_id,
+        &extra,
+    );
     if !iref_entries.is_empty() {
         write_iref(&mut meta, &iref_entries);
     }
@@ -273,17 +298,36 @@ fn write_pitm(buf: &mut Vec<u8>, id: u32) {
     end_box(buf, p);
 }
 
-fn write_infe(buf: &mut Vec<u8>, id: u32, item_type: [u8; 4], hidden: bool, content_type: Option<&str>) {
+/// One `infe`. `name`, `content_type` and `uri_type` are the optional tail
+/// ISO/IEC 14496-12 8.11.6.2 defines, and which of them apply is decided by
+/// `item_type`, not by the caller — a `mime` item's `content_type` is mandatory
+/// and a `uri ` item is unreadable without its `item_uri_type`.
+fn write_infe(
+    buf: &mut Vec<u8>,
+    id: u32,
+    item_type: [u8; 4],
+    hidden: bool,
+    name: &str,
+    content_type: Option<&str>,
+    uri_type: Option<&str>,
+) {
     let flags = if hidden { 1u32 } else { 0 };
     let p = begin_fullbox(buf, b"infe", 2, flags);
     buf.extend_from_slice(&(id as u16).to_be_bytes());
     buf.extend_from_slice(&0u16.to_be_bytes()); // item_protection_index
     buf.extend_from_slice(&item_type);
-    buf.push(0); // empty item_name
-    if item_type == *b"mime" {
-        let ct = content_type.unwrap_or("application/octet-stream");
-        buf.extend_from_slice(ct.as_bytes());
-        buf.push(0);
+    buf.extend_from_slice(name.as_bytes());
+    buf.push(0);
+    match &item_type {
+        b"mime" => {
+            buf.extend_from_slice(content_type.unwrap_or("application/octet-stream").as_bytes());
+            buf.push(0);
+        }
+        b"uri " => {
+            buf.extend_from_slice(uri_type.unwrap_or("").as_bytes());
+            buf.push(0);
+        }
+        _ => {}
     }
     end_box(buf, p);
 }
@@ -295,24 +339,45 @@ fn write_iinf(
     tmap_id: Option<u32>,
     exif_id: Option<u32>,
     xmp_id: Option<u32>,
+    extra: &[(u32, &tohdr_core::OpaqueItem)],
 ) {
     let mut count = 2u16;
     count += tmap_id.is_some() as u16;
     count += exif_id.is_some() as u16;
     count += xmp_id.is_some() as u16;
+    count += extra.len() as u16;
 
     let p = begin_fullbox(buf, b"iinf", 0, 0);
     buf.extend_from_slice(&count.to_be_bytes());
-    write_infe(buf, base_id, *b"hvc1", false, None);
-    write_infe(buf, gain_id, *b"hvc1", true, None);
+    write_infe(buf, base_id, *b"hvc1", false, "", None, None);
+    write_infe(buf, gain_id, *b"hvc1", true, "", None, None);
     if let Some(id) = tmap_id {
-        write_infe(buf, id, *b"tmap", false, None);
+        write_infe(buf, id, *b"tmap", false, "", None, None);
     }
     if let Some(id) = exif_id {
-        write_infe(buf, id, *b"Exif", true, None);
+        write_infe(buf, id, *b"Exif", true, "", None, None);
     }
     if let Some(id) = xmp_id {
-        write_infe(buf, id, *b"mime", true, Some("application/rdf+xml"));
+        write_infe(
+            buf,
+            id,
+            *b"mime",
+            true,
+            "",
+            Some("application/rdf+xml"),
+            None,
+        );
+    }
+    for (id, item) in extra {
+        write_infe(
+            buf,
+            *id,
+            item.item_type,
+            item.hidden,
+            &item.name,
+            item.content_type.as_deref(),
+            item.uri_type.as_deref(),
+        );
     }
     end_box(buf, p);
 }
@@ -488,6 +553,37 @@ fn irot_box(angle: u8) -> Vec<u8> {
     buf.push(angle & 0x03);
     end_box(&mut buf, p);
     buf
+}
+
+/// `imir`, the mirror transform. `axis` is `0` for a vertical axis (left and
+/// right swap) or `1` for a horizontal one.
+fn imir_box(axis: u8) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let p = begin_box(&mut buf, b"imir");
+    buf.push(axis & 0x01);
+    end_box(&mut buf, p);
+    buf
+}
+
+/// Attach the display transform to one item.
+///
+/// `irot` goes on unconditionally, at zero degrees if that is what the source
+/// says, because that is what Apple writes on every item of an unrotated
+/// capture. `imir` only when the orientation actually reflects — the four Exif
+/// values that do — and after `irot`, which is the order the composition in
+/// [`tohdr_core::orient`] is derived for.
+fn push_transform(
+    props: &mut Vec<Vec<u8>>,
+    assocs: &mut Vec<(u32, u16, bool)>,
+    id: u32,
+    t: tohdr_core::HeifTransform,
+) {
+    props.push(irot_box(t.rotate_ccw_quarters));
+    assocs.push((id, props.len() as u16, true));
+    if let Some(axis) = t.mirror_axis {
+        props.push(imir_box(axis));
+        assocs.push((id, props.len() as u16, true));
+    }
 }
 
 fn clli_box(max_cll: u16, max_pall: u16) -> Vec<u8> {

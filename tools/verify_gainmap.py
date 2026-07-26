@@ -273,6 +273,23 @@ def decode_iso21496(payload):
     return out
 
 
+def headroom_from_tags(tag33, tag48):
+    """MakerApple tags 33/48 -> linear headroom.
+
+    Skia's get_maker_note_hdr_headroom, src/codec/SkExif.cpp:82-96, and a
+    deliberate second implementation of tohdr_core::apple::headroom_from_tags:
+    two ports of one spec disagreeing is a signal, one port checking itself is
+    not. Keep them in step.
+    """
+    if tag33 is None:
+        return None
+    if tag33 < 1.0:
+        stops = -20.0 * tag48 + 1.8 if tag48 <= 0.01 else -0.101 * tag48 + 1.601
+    else:
+        stops = -70.0 * tag48 + 3.0 if tag48 <= 0.01 else -0.303 * tag48 + 2.303
+    return 2.0 ** min(max(stops, 0.0), 16.0)
+
+
 def gain_weight(base_hr, alt_hr, display_stops):
     """libavif avifGetGainMapWeight, src/gainmap.c:52-63. Clamp, then flip."""
     if base_hr == alt_hr:
@@ -573,14 +590,26 @@ def check(info, expect_flavor):
         add(8, 'MakerApple tag48 non-negative', ok, f'tag33={t33} tag48={t48}')
 
     # 9. headroom copies agree
+    #
+    # All three copies, not just two. The MakerApple pair is the copy a file
+    # inherits when a conversion carries the source's MakerNote, and it is the
+    # one most likely to be stale -- it describes whatever the *source's*
+    # headroom was. Leaving it out of this check is how a 1.3% over-declaration
+    # rides along unnoticed.
     xmp = ex.get('HDRGainMapHeadroom')
-    if not iso or xmp is None:
-        skip(9, 'headroom copies agree', f'iso={bool(iso)} xmp={xmp}')
+    maker = headroom_from_tags(t33, t48) if t48 is not None else None
+    copies = [('xmp', xmp), ('maker', maker)]
+    present = [(n, v) for n, v in copies if v is not None]
+    if not iso or not present:
+        skip(9, 'headroom copies agree',
+             f'iso={bool(iso)} xmp={xmp} maker={maker}')
     else:
         iso_lin = 2.0 ** iso['alt_headroom']
-        d = abs(iso_lin - xmp)
-        add(9, 'headroom copies agree', d < 1e-3,
-            f'iso={iso_lin:.6f}x xmp={xmp:.6f}x delta={d:.2e}')
+        worst = max(abs(iso_lin - v) for _, v in present)
+        add(9, 'headroom copies agree', worst < 1e-3,
+            f'iso={iso_lin:.6f}x '
+            + ' '.join(f'{n}={v:.6f}x' for n, v in present)
+            + f' worst delta={worst:.2e}')
 
     # 10/11. predicted weights
     #

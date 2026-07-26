@@ -48,6 +48,56 @@ pub fn headroom_packet(alt_headroom_stops: f32) -> Vec<u8> {
     .into_bytes()
 }
 
+/// The `rdf:Description` [`headroom_packet`] wraps, on its own.
+fn headroom_description(alt_headroom_stops: f32) -> String {
+    let linear = alt_headroom_stops.exp2();
+    format!(
+        r#"  <rdf:Description rdf:about=""
+    xmlns:HDRGainMap="{HDR_GAIN_MAP_NS}"
+    HDRGainMap:HDRGainMapVersion="{HDR_GAIN_MAP_VERSION}"
+    HDRGainMap:HDRGainMapHeadroom="{linear:.6}"/>
+"#
+    )
+}
+
+/// Graft the headroom onto a source's own XMP packet, keeping everything the
+/// source said.
+///
+/// # Why this is textual and not a parse-and-reserialize
+///
+/// The source's packet is the *photographer's*: keywords, title, caption,
+/// rating, IPTC creator and rights, Lightroom's develop history. A round trip
+/// through any partial XMP model silently drops whatever the model does not
+/// cover, and no model here covers Adobe's schemas. Inserting one
+/// `rdf:Description` before the closing `</rdf:RDF>` leaves every other byte
+/// exactly where the source put it — a `rdf:RDF` element may hold any number of
+/// descriptions, so this is well-formed by construction rather than by luck.
+///
+/// A source that already states `HDRGainMapHeadroom` gets ours added after it.
+/// That is deliberate: the source's copy describes the source's headroom, and in
+/// RDF a later property of the same subject wins, so appending states the
+/// output's number without editing bytes we did not write. Callers that carry an
+/// Apple gain map should be realigning the *source's* copies anyway — see
+/// `tohdr_portable::align_apple_headroom` for the MakerNote half of the same
+/// problem.
+///
+/// `None` when `source` has no `</rdf:RDF>` to insert before, i.e. is not an XMP
+/// packet this function can extend; the caller should fall back to
+/// [`headroom_packet`] rather than ship something malformed.
+pub fn merge_headroom_into(source: &[u8], alt_headroom_stops: f32) -> Option<Vec<u8>> {
+    const CLOSE: &[u8] = b"</rdf:RDF>";
+    // The last one: a packet with nested RDF would otherwise get our description
+    // inserted into an inner element rather than the document's own.
+    let at = source
+        .windows(CLOSE.len())
+        .rposition(|w| w == CLOSE)?;
+    let mut out = Vec::with_capacity(source.len() + 256);
+    out.extend_from_slice(&source[..at]);
+    out.extend_from_slice(headroom_description(alt_headroom_stops).as_bytes());
+    out.extend_from_slice(&source[at..]);
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +147,76 @@ mod tests {
     fn version_matches_what_apple_writes() {
         assert_eq!(HDR_GAIN_MAP_VERSION, 0x0002_0000);
         assert!(packet_str(1.0).contains(r#"HDRGainMapVersion="131072""#));
+    }
+
+    /// A Lightroom-shaped packet: the properties a photographer typed, which are
+    /// the whole reason merging beats replacing.
+    const LIGHTROOM_XMP: &str = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 9.1">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmp:Rating="4">
+   <dc:subject><rdf:Bag><rdf:li>sunset</rdf:li></rdf:Bag></dc:subject>
+   <dc:creator><rdf:Seq><rdf:li>A Photographer</rdf:li></rdf:Seq></dc:creator>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#;
+
+    #[test]
+    fn merging_keeps_every_property_the_source_stated() {
+        let merged = merge_headroom_into(LIGHTROOM_XMP.as_bytes(), 2.287109).expect("mergeable");
+        let s = String::from_utf8(merged).unwrap();
+        for kept in [
+            "xmp:Rating=\"4\"",
+            "<rdf:li>sunset</rdf:li>",
+            "<rdf:li>A Photographer</rdf:li>",
+            "x:xmptk=\"Adobe XMP Core 9.1\"",
+        ] {
+            assert!(s.contains(kept), "lost {kept}");
+        }
+        assert!(s.contains("HDRGainMap:HDRGainMapHeadroom="));
+        // Still one document with one RDF element and our description inside it.
+        assert_eq!(s.matches("<rdf:RDF").count(), 1);
+        assert_eq!(s.matches("</rdf:RDF>").count(), 1);
+        assert!(
+            s.find("HDRGainMap:HDRGainMapHeadroom=").unwrap() < s.find("</rdf:RDF>").unwrap(),
+            "the headroom description must land inside rdf:RDF"
+        );
+        assert_eq!(s.matches("<rdf:Description").count(), 2);
+    }
+
+    /// The merged packet must still carry a readable headroom, in linear units —
+    /// the same property the standalone packet is tested for.
+    #[test]
+    fn the_merged_headroom_is_still_linear() {
+        let merged = merge_headroom_into(LIGHTROOM_XMP.as_bytes(), 3.0).unwrap();
+        let s = String::from_utf8(merged).unwrap();
+        let key = "HDRGainMap:HDRGainMapHeadroom=\"";
+        let start = s.find(key).unwrap() + key.len();
+        let v: f64 = s[start..][..s[start..].find('"').unwrap()].parse().unwrap();
+        assert!((v - 8.0).abs() < 1e-6, "3 stops must merge in as 8x, got {v}");
+    }
+
+    /// Not-XMP in must not produce almost-XMP out; the caller falls back.
+    #[test]
+    fn something_that_is_not_a_packet_is_refused() {
+        assert!(merge_headroom_into(b"", 1.0).is_none());
+        assert!(merge_headroom_into(b"\x89PNG\r\n\x1a\n", 1.0).is_none());
+        assert!(merge_headroom_into(b"<x:xmpmeta></x:xmpmeta>", 1.0).is_none());
+    }
+
+    /// Our own packet is mergeable too, so merging twice cannot corrupt it —
+    /// which is what a second conversion of an already-converted file does.
+    #[test]
+    fn merging_is_idempotent_in_shape() {
+        let once = merge_headroom_into(&headroom_packet(2.0), 2.0).unwrap();
+        let twice = merge_headroom_into(&once, 2.0).unwrap();
+        let s = String::from_utf8(twice).unwrap();
+        assert_eq!(s.matches("</rdf:RDF>").count(), 1);
+        assert_eq!(s.matches("<rdf:Description").count(), 3);
     }
 
     #[test]

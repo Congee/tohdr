@@ -35,6 +35,9 @@ struct InspectJson {
     maker_apple_tag33: Option<f64>,
     maker_apple_tag48: Option<f64>,
     apple_headroom_stops: Option<f32>,
+    /// The display transform ImageIO resolved from `irot`/`imir`, as an Exif
+    /// `Orientation`. Absent means upright, which is the same thing as `1`.
+    orientation: Option<u32>,
     iso_meta: Option<IsoMetaJson>,
 }
 
@@ -66,6 +69,7 @@ fn to_json(file: &str, rb: &ReadBack) -> InspectJson {
         maker_apple_tag33: rb.tag33,
         maker_apple_tag48: rb.tag48,
         apple_headroom_stops: rb.apple_headroom,
+        orientation: rb.orientation,
         iso_meta,
     }
 }
@@ -94,6 +98,13 @@ fn print_human(j: &InspectJson) {
         ),
         _ => println!("  MakerApple tags: absent"),
     }
+    println!(
+        "  orientation: {}",
+        match j.orientation {
+            None | Some(1) => "upright".to_string(),
+            Some(o) => format!("exif {o}, stated as irot/imir"),
+        }
+    );
     if let Some(m) = &j.iso_meta {
         println!(
             "  iso meta: min_log2={:.3} max_log2={:.3} alt_headroom={:.3} (consistent: {})",
@@ -136,6 +147,7 @@ mod tests {
             tag33: Some(1.0),
             tag48: Some(0.05),
             apple_headroom: Some(4.88),
+            orientation: Some(1),
             iso_meta: Some(GainMapMeta::with_headroom_stops(2.287109)),
         }
     }

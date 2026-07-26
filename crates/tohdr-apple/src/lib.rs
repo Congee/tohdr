@@ -19,6 +19,14 @@ mod write;
 
 pub use write::{encode_from_hdr, encode_parts, encode_plane_heic_gray, encode_plane_heic_rgb};
 
+/// An 8-bit sRGB `CGImage`, for probes that need a real image to hand a
+/// destination. Not part of the encoding surface — `examples/` only.
+pub fn cg_image_for_probe(
+    rgb: &Rgb,
+) -> Result<objc2_core_foundation::CFRetained<objc2_core_graphics::CGImage>> {
+    write::cg_image_from_sdr(rgb)
+}
+
 pub mod vtenc;
 pub use vtenc::CodedPlane;
 
@@ -68,12 +76,32 @@ impl GainMapEncoder for AppleEngine {
         "apple-imageio"
     }
 
-    /// Not by writing an `Exif` item directly — ImageIO owns the container here.
-    /// The block is re-parsed by ImageIO and handed back to it as property
-    /// dictionaries, so what lands in the file is ImageIO's re-serialization
-    /// rather than the source's bytes. See `write::exif_property_pairs`.
-    fn carries_exif(&self) -> bool {
-        true
+    /// Exif and XMP, but not opaque items.
+    ///
+    /// Not by writing the boxes directly — ImageIO owns the container here, and
+    /// takes metadata only as property dictionaries and a `CGImageMetadata`. The
+    /// Exif block is re-parsed by ImageIO and handed back to it, so what lands in
+    /// the file is ImageIO's re-serialization rather than the source's bytes; see
+    /// `write::exif_property_pairs`.
+    ///
+    /// `opaque_items` is `false` because there is no ImageIO call that adds an
+    /// arbitrary `infe`/`iloc` item to a HEIF file. Apple's Photographic Styles
+    /// plist can therefore only be carried by our own muxer, which is a real
+    /// difference between the engines and reported as one rather than silently
+    /// dropped.
+    ///
+    /// `iptc` is `false` on measurement, not on inspection of an API: ImageIO
+    /// *reads* the IIM block back out of the carrier — 8 entries, confirmed by
+    /// `examples/probe_exif_props.rs` — and its HEIC writer then emits no IPTC at
+    /// all. Handing it the dictionary is necessary and not sufficient, so the
+    /// claim is false and the CLI says so.
+    fn metadata_support(&self) -> tohdr_core::MetadataSupport {
+        tohdr_core::MetadataSupport {
+            exif: true,
+            xmp: true,
+            iptc: false,
+            opaque_items: false,
+        }
     }
 
     fn encode(
@@ -125,6 +153,14 @@ pub struct ReadBack {
     pub apple_headroom: Option<f32>,
     /// ISO 21496-1 metadata, when a `tmap` payload is present.
     pub iso_meta: Option<GainMapMeta>,
+    /// The display transform ImageIO resolved from the container's `irot`/`imir`,
+    /// expressed as an Exif `Orientation` (`1..=8`). `None` when the file states
+    /// none.
+    ///
+    /// The oracle for orientation passthrough: a source whose Exif said `6` must
+    /// read back as `6` here, or a rotated photo comes out sideways in every
+    /// Apple app.
+    pub orientation: Option<u32>,
 }
 
 impl ReadBack {

@@ -106,10 +106,10 @@ impl<C: PlaneCodec + Sync> GainMapEncoder for MuxEngine<C> {
         self.0.name()
     }
 
-    /// Our own muxer writes the `Exif` item, so this is unconditional — it does
-    /// not depend on which plane codec is installed.
-    fn carries_exif(&self) -> bool {
-        true
+    /// Our own muxer writes every metadata item, so this is unconditional — it
+    /// does not depend on which plane codec is installed.
+    fn metadata_support(&self) -> tohdr_core::MetadataSupport {
+        tohdr_core::MetadataSupport::ALL
     }
 
     fn encode(
@@ -164,15 +164,40 @@ impl<C: PlaneCodec + Sync> GainMapEncoder for MuxEngine<C> {
             exif: opts.exif.map(<[u8]>::to_vec),
             // Apple writes the headroom three times and all three agree; a
             // consumer reading the XMP copy rather than the tmap must not get
-            // a different number. Only emitted for flavors that claim Apple
-            // compatibility, since it is Apple's namespace.
-            xmp: opts
-                .flavor
-                .writes_apple()
-                .then(|| tohdr_core::xmp::headroom_packet(meta.alt_headroom)),
+            // a different number.
+            //
+            // Two things want the one XMP item, so they share it. Ours is only
+            // emitted for flavors that claim Apple compatibility, since it is
+            // Apple's namespace — but the source's packet is the photographer's
+            // keywords, caption, rating and rights, which no flavor choice makes
+            // irrelevant. So the source's is carried either way and ours is
+            // grafted on when it applies.
+            xmp: source_xmp(opts, meta),
+            extra_items: opts.opaque_items.to_vec(),
+            orientation: opts.orientation,
             clli: None,
         };
         Ok(crate::mux(&req)?)
+    }
+}
+
+/// The one XMP packet the output carries: the source's, with our headroom
+/// description grafted in when this flavor states one.
+///
+/// A source packet that cannot be extended falls back to our own rather than
+/// shipping something malformed — losing the source's XMP, which is why
+/// [`tohdr_core::xmp::merge_headroom_into`] is written to accept anything with an
+/// `rdf:RDF` element rather than to validate XMP.
+fn source_xmp(opts: &EncodeOptions, meta: &GainMapMeta) -> Option<Vec<u8>> {
+    let ours = opts.flavor.writes_apple();
+    match (opts.xmp, ours) {
+        (Some(src), true) => Some(
+            tohdr_core::xmp::merge_headroom_into(src, meta.alt_headroom)
+                .unwrap_or_else(|| tohdr_core::xmp::headroom_packet(meta.alt_headroom)),
+        ),
+        (Some(src), false) => Some(src.to_vec()),
+        (None, true) => Some(tohdr_core::xmp::headroom_packet(meta.alt_headroom)),
+        (None, false) => None,
     }
 }
 

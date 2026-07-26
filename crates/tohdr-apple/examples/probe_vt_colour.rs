@@ -134,6 +134,8 @@ fn sweep(
                 }),
                 exif: None,
                 xmp: None,
+                extra_items: Vec::new(),
+                orientation: Default::default(),
                 clli: None,
             };
             let bytes = tohdr_heif::mux(&req).expect("mux");

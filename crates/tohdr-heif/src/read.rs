@@ -77,15 +77,15 @@ impl<'a> HeifFile<'a> {
             }
         }
 
-        // Fold `iref` (dimg/auxl) into the items that model them. thmb/cdsc
-        // are parsed above (so a file that has them doesn't error) but
-        // `Item` has no field for them — nothing else in this crate needs
-        // to walk a thumbnail or content-description graph.
+        // Fold `iref` into the items that model it. `thmb` is parsed above (so a
+        // file that has one doesn't error) but `Item` has no field for it —
+        // nothing here needs to walk a thumbnail graph.
         for (ty, from, to_ids) in &iref_entries {
             if let Some(item) = items.iter_mut().find(|i| i.id == *from) {
                 match ty {
                     b"dimg" => item.derives_from = to_ids.clone(),
                     b"auxl" => item.auxiliary_to = to_ids.clone(),
+                    b"cdsc" => item.describes = to_ids.clone(),
                     _ => {}
                 }
             }
@@ -382,15 +382,32 @@ fn parse_infe(bytes: &[u8], b: &crate::boxes::BoxHeader) -> Result<Item> {
         v => return Err(Error::Unsupported(format!("infe version {v}"))),
     };
 
+    // ISO/IEC 14496-12 8.11.6.2: `item_name`, then `content_type` (+ optional
+    // `content_encoding`) for `mime`, or `item_uri_type` for `uri `. Read rather
+    // than skipped because copying such an item forward without its type leaves
+    // a reader unable to say what the bytes are. A truncated tail is not an
+    // error: the item's identity is already established, and the fields are
+    // absent on v0/v1 by definition.
+    let name = r.c_string().unwrap_or_default();
+    let (content_type, uri_type) = match &item_type {
+        b"mime" => (r.c_string(), None),
+        b"uri " => (None, r.c_string()),
+        _ => (None, None),
+    };
+
     Ok(Item {
         id,
         item_type,
+        name,
+        content_type,
+        uri_type,
         hidden,
         width: None,
         height: None,
         aux_urn: None,
         derives_from: Vec::new(),
         auxiliary_to: Vec::new(),
+        describes: Vec::new(),
     })
 }
 

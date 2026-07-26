@@ -34,7 +34,8 @@ use objc2_core_graphics::{
 use objc2_image_io::{
     kCGImageAuxiliaryDataInfoDataDescription, kCGImageAuxiliaryDataInfoMetadata,
     kCGImageAuxiliaryDataTypeHDRGainMap, kCGImageAuxiliaryDataTypeISOGainMap,
-    kCGImagePropertyDepth, kCGImagePropertyMakerAppleDictionary, kCGImagePropertyPixelHeight,
+    kCGImagePropertyDepth, kCGImagePropertyMakerAppleDictionary, kCGImagePropertyOrientation,
+    kCGImagePropertyPixelHeight,
     kCGImagePropertyPixelWidth, kCGImageSourceDecodeRequest, kCGImageSourceDecodeToHDR,
     CGImageMetadata, CGImageMetadataTag, CGImageSource,
 };
@@ -252,6 +253,11 @@ fn analyze(isrc: &CGImageSource) -> Result<ReadBack> {
     let width = get_u32(&props, unsafe { kCGImagePropertyPixelWidth }).unwrap_or(0);
     let height = get_u32(&props, unsafe { kCGImagePropertyPixelHeight }).unwrap_or(0);
     let depth = get_u32(&props, unsafe { kCGImagePropertyDepth }).unwrap_or(0);
+    // ImageIO resolves `irot`/`imir` back into one Exif orientation number, so
+    // this is the oracle for whether a container transform we wrote means what we
+    // meant — the one question `tohdr_core::orient`'s own tests cannot answer,
+    // since they assume the order the boxes compose in.
+    let orientation = get_u32(&props, unsafe { kCGImagePropertyOrientation });
     let (tag33, tag48) = maker_apple_tags(&props);
 
     let apple = aux_info(isrc, index, unsafe { kCGImageAuxiliaryDataTypeHDRGainMap });
@@ -297,6 +303,7 @@ fn analyze(isrc: &CGImageSource) -> Result<ReadBack> {
         tag48,
         apple_headroom,
         iso_meta,
+        orientation,
     })
 }
 

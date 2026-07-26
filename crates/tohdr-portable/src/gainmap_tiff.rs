@@ -361,16 +361,22 @@ pub(crate) struct Entry {
     pub(crate) value_off: usize,
 }
 
-pub(crate) struct Ifd(Vec<(u16, Entry)>);
+pub(crate) struct Ifd {
+    entries: Vec<(u16, Entry)>,
+    /// Offset of the next IFD on this chain, `0` at the end of it. Zero in both
+    /// real LrC exports — but a JPEG's `IFD1`, holding the Exif thumbnail, is
+    /// reached only this way, so `crate::exif` needs it.
+    pub(crate) next: usize,
+}
 
 impl Ifd {
     pub(crate) fn get(&self, tag: u16) -> Option<Entry> {
-        self.0.iter().find(|(t, _)| *t == tag).map(|(_, e)| *e)
+        self.entries.iter().find(|(t, _)| *t == tag).map(|(_, e)| *e)
     }
 
     /// Every entry, in the order the file lists them.
     pub(crate) fn entries(&self) -> &[(u16, Entry)] {
-        &self.0
+        &self.entries
     }
 }
 
@@ -453,7 +459,10 @@ impl<'a> Tiff<'a> {
             };
             out.push((tag, Entry { typ, count, value_off }));
         }
-        Ok(Ifd(out))
+        // A truncated chain pointer is not a reason to lose the entries that did
+        // parse: an IFD with no readable successor is simply the last one.
+        let next = self.u32(at + 2 + n * 12).unwrap_or(0) as usize;
+        Ok(Ifd { entries: out, next })
     }
 
     /// SHORT/LONG (and their signed twins) as `u32`, which is every numeric
@@ -481,6 +490,25 @@ impl<'a> Tiff<'a> {
     pub(crate) fn bytes_of(&self, e: &Entry) -> Result<&'a [u8]> {
         self.slice(e.value_off, e.count as usize * type_size(e.typ).max(1))
     }
+}
+
+/// A TIFF's XMP packet, `IFD0` tag `700`.
+///
+/// Where Lightroom Classic puts keywords, title, caption, rating, IPTC creator
+/// and rights — so for the plugin's own export path this is the only place that
+/// metadata exists. `None` for anything that is not a readable TIFF, since a
+/// caller asking for XMP has already been told the format.
+pub(crate) fn ifd0_xmp(bytes: &[u8]) -> Option<Vec<u8>> {
+    /// `0x02BC`.
+    const TAG_XMP: u16 = 700;
+    let tiff = Tiff::open(bytes).ok()??;
+    let ifd0 = tiff.read_ifd(tiff.first_ifd).ok()?;
+    let e = ifd0.get(TAG_XMP)?;
+    let raw = tiff.bytes_of(&e).ok()?;
+    // Written as BYTE or UNDEFINED; a trailing NUL is common and harmless to
+    // strip, where leaving it in would appear inside the copied packet.
+    let end = raw.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    Some(raw[..end].to_vec()).filter(|v: &Vec<u8>| !v.is_empty())
 }
 
 /// One uncompressed, chunky, strip-organized image inside the TIFF.

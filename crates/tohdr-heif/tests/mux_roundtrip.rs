@@ -64,6 +64,8 @@ fn request(flavor: Flavor) -> MuxRequest {
         }),
         exif: None,
         xmp: None,
+        extra_items: Vec::new(),
+        orientation: Default::default(),
         clli: None,
     }
 }
@@ -267,6 +269,74 @@ fn without_exif_no_item_is_written() {
     let bytes = tohdr_heif::mux(&request(Flavor::Both)).expect("mux");
     let file = HeifFile::parse(&bytes).expect("parse");
     assert!(!file.items().iter().any(|i| i.item_type == *b"Exif"));
+}
+
+/// An opaque item has to survive with its `infe` tail intact, not just its bytes.
+/// A `uri ` item without its `item_uri_type` is unreadable — nothing says what the
+/// payload is — so the fields are asserted individually rather than by comparing
+/// the item wholesale.
+#[test]
+fn an_opaque_item_keeps_its_name_and_uri_type() {
+    let item = tohdr_core::OpaqueItem {
+        item_type: *b"uri ",
+        name: "metadata".into(),
+        content_type: None,
+        uri_type: Some("tag:apple.com,2023:photo:metadata:styles".into()),
+        hidden: true,
+        data: b"bplist00 not really, but opaque either way".to_vec(),
+    };
+    let req = MuxRequest {
+        extra_items: vec![item.clone()],
+        ..request(Flavor::Both)
+    };
+    let bytes = tohdr_heif::mux(&req).expect("mux");
+
+    let file = HeifFile::parse(&bytes).expect("parse");
+    let got = file
+        .items()
+        .iter()
+        .find(|i| i.item_type == *b"uri ")
+        .expect("the item was written");
+    assert_eq!(got.name, item.name);
+    assert_eq!(got.uri_type, item.uri_type);
+    assert!(got.hidden);
+    assert_eq!(file.item_data(got.id).expect("payload"), &item.data[..]);
+
+    // And it has to describe the photograph, or a reader has an orphan blob.
+    let primary = file.primary_item().expect("a primary item");
+    assert!(
+        got.describes.contains(&primary),
+        "cdsc must name the primary, got {:?}",
+        got.describes
+    );
+}
+
+/// A mirroring orientation needs `imir` as well as `irot`, on **every** image
+/// item: the base, the gain map and the `tmap` are spatially aligned, and a
+/// transform on one but not the others would misregister the map against the
+/// image it corrects.
+#[test]
+fn a_mirrored_orientation_writes_imir_on_every_item() {
+    // Exif 5: a reflection about the main diagonal, so both boxes are needed.
+    let req = MuxRequest {
+        orientation: tohdr_core::heif_transform(5),
+        ..request(Flavor::Both)
+    };
+    let bytes = tohdr_heif::mux(&req).expect("mux");
+    assert!(contains_fourcc(&bytes, b"imir"), "imir must be written");
+
+    // Three items, each with one irot and one imir.
+    assert_eq!(
+        bytes.windows(4).filter(|w| *w == b"imir").count(),
+        3,
+        "one imir per image item"
+    );
+    assert_eq!(bytes.windows(4).filter(|w| *w == b"irot").count(), 3);
+
+    // An upright request must not gain an imir it did not ask for.
+    let plain = tohdr_heif::mux(&request(Flavor::Both)).expect("mux");
+    assert!(!contains_fourcc(&plain, b"imir"));
+    assert_eq!(plain.windows(4).filter(|w| *w == b"irot").count(), 3);
 }
 
 #[test]

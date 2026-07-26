@@ -34,6 +34,18 @@ pub struct ConvertReport {
     pub exif_source: String,
     /// Metadata tags carried into the output, excluding the sub-IFD pointers.
     pub exif_tags: usize,
+    /// What became of the source `MakerNote`'s own headroom claim: `"absent"`,
+    /// `"realigned"` to this output's headroom, or `"removed"` because Apple's
+    /// formula cannot express it. Reported because it is the one place a
+    /// conversion rewrites a vendor's bytes rather than copying them.
+    pub maker_apple_headroom: String,
+    /// Whether the source's XMP packet — keywords, caption, rating, rights —
+    /// reached the output.
+    pub xmp_carried: bool,
+    /// Opaque describing items carried, by label, e.g. `["uri:metadata"]`.
+    pub items_carried: Vec<String>,
+    /// Describing items the source had that this engine could not write.
+    pub items_dropped: Vec<String>,
     pub quality: u8,
     pub gain_quality: u8,
     pub gain_subsample: u32,
@@ -120,7 +132,7 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     // The source is read a second time for this, which is a few ms against a
     // decode, and buys a reader that does not have to thread through two loaders
     // and three image formats.
-    let source_exif = match tohdr_portable::read_source_exif(&args.input) {
+    let mut source_exif = match tohdr_portable::read_source_exif(&args.input) {
         Ok(found) => found,
         Err(e) => {
             eprintln!(
@@ -128,6 +140,21 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
                 args.input.display()
             );
             None
+        }
+    };
+
+    // The other half of the source's metadata: its XMP packet and any item that
+    // `cdsc`-describes the photograph, e.g. Apple's Photographic Styles plist.
+    // Non-fatal for the same reason Exif is.
+    let sidecar = match tohdr_portable::read_sidecar(&args.input) {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!(
+                "tohdr: warning: could not read XMP or metadata items from {}: {e}; \
+                 converting without them",
+                args.input.display()
+            );
+            tohdr_portable::Sidecar::default()
         }
     };
 
@@ -213,6 +240,31 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         meta.alt_headroom = stops;
     }
 
+    // The headroom is final here, and the source's MakerNote states a headroom
+    // of its own — the source's, not this output's. Reconcile them before the
+    // block goes anywhere, or the file ships two numbers for one quantity and
+    // fails `docs/acceptance-criteria.md` §9 by construction.
+    let apple_headroom_fix = match &mut source_exif {
+        Some(found) => tohdr_portable::align_apple_headroom(
+            &mut found.tiff,
+            2f32.powf(meta.alt_headroom),
+        ),
+        None => tohdr_portable::AppleHeadroom::Absent,
+    };
+    match apple_headroom_fix {
+        tohdr_portable::AppleHeadroom::Rewritten => step!(
+            "tohdr: realigned the carried MakerApple headroom tags to {:.4} stops",
+            meta.alt_headroom
+        ),
+        tohdr_portable::AppleHeadroom::Removed => eprintln!(
+            "tohdr: note: dropped the carried MakerApple headroom tags — Apple's tag formula \
+             cannot express {:.4} stops without understating it, and a copy that disagrees with \
+             the ISO payload is worse than no copy (see docs/acceptance-criteria.md §8)",
+            meta.alt_headroom
+        ),
+        tohdr_portable::AppleHeadroom::Absent => {}
+    }
+
     // Now the base is in hand, so Engine B can pick its plane codec. The
     // hardware path is the default for `--engine portable`; when it cannot serve
     // this particular job the software codec takes over and says so, because the
@@ -227,10 +279,11 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     step!("tohdr: encoder is {}", engine.name());
     drop(loader);
 
-    // Only hand the block to an engine that writes one. The distinction survives
+    // Only hand each block to an engine that writes it. The distinction survives
     // into the report because "the source had no Exif" and "this engine dropped
     // it" look identical in the output file and are not the same problem.
-    let carried_exif = source_exif.as_ref().filter(|_| engine.carries_exif());
+    let support = engine.metadata_support();
+    let carried_exif = source_exif.as_ref().filter(|_| support.exif);
     if let Some(found) = &source_exif {
         match carried_exif {
             Some(_) => step!(
@@ -253,11 +306,75 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         None => ("none".to_string(), 0),
     };
 
+    // XMP and the opaque items travel the same road as Exif and are reported the
+    // same way. The `cdsc` filter in `tohdr_portable::sidecar` has already
+    // discarded metadata belonging to auxiliary images this output does not
+    // contain, so whatever is here genuinely describes this photograph.
+    let carried_xmp = sidecar.xmp.as_deref().filter(|_| support.xmp);
+    let carried_items: &[tohdr_core::OpaqueItem] = if support.opaque_items {
+        &sidecar.items
+    } else {
+        &[]
+    };
+    if sidecar.xmp.is_some() && carried_xmp.is_none() {
+        eprintln!(
+            "tohdr: warning: {} carries an XMP packet but the {} engine writes none, so \
+             keywords, caption, rating and rights are dropped",
+            args.input.display(),
+            engine.name()
+        );
+    }
+    if !sidecar.items.is_empty() {
+        let labels = sidecar
+            .items
+            .iter()
+            .map(tohdr_core::OpaqueItem::label)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if carried_items.is_empty() {
+            eprintln!(
+                "tohdr: warning: {} carries {} describing item(s) ({labels}) that the {} engine \
+                 cannot write — ImageIO exposes no way to add one. `--engine portable` keeps them",
+                args.input.display(),
+                sidecar.items.len(),
+                engine.name()
+            );
+        } else {
+            step!(
+                "tohdr: carrying {} describing item(s) from the source ({labels})",
+                carried_items.len()
+            );
+        }
+    }
+    if carried_xmp.is_some() {
+        step!("tohdr: carrying the source's XMP packet, merged with our headroom");
+    }
+    // The Exif block always carries tag 33723, so this is only about the second
+    // copy a JPEG-carrier backend needs — and about telling the truth when that
+    // backend's own writer drops it anyway.
+    if !support.iptc && carried_exif.is_some_and(|e| e.iptc.is_some()) {
+        eprintln!(
+            "tohdr: warning: {} carries an IPTC-IIM block that the {} engine's writer emits no \
+             IPTC for, so creator, rights and keywords survive only where the source also put \
+             them in XMP. `--engine portable` keeps the block itself",
+            args.input.display(),
+            engine.name()
+        );
+    }
+
     let opts = EncodeOptions {
         flavor: args.flavor,
         base_quality: args.quality,
         gain_quality: args.quality,
         exif: carried_exif.map(|e| e.tiff.as_slice()),
+        iptc: carried_exif
+            .filter(|_| support.iptc)
+            .and_then(|e| e.iptc.as_deref()),
+        xmp: carried_xmp,
+        opaque_items: carried_items,
+        orientation: tohdr_core::heif_transform(
+            source_exif.as_ref().map_or(1, |e| e.orientation),
+        ),
     };
 
     let (bytes, quality_used, attempts, within_budget) = if let Some(max_bytes) = args.max_size {
@@ -311,6 +428,19 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         gain_map_source: gain_map_source.to_string(),
         exif_source,
         exif_tags,
+        maker_apple_headroom: match apple_headroom_fix {
+            tohdr_portable::AppleHeadroom::Absent => "absent",
+            tohdr_portable::AppleHeadroom::Rewritten => "realigned",
+            tohdr_portable::AppleHeadroom::Removed => "removed",
+        }
+        .to_string(),
+        xmp_carried: carried_xmp.is_some(),
+        items_carried: carried_items.iter().map(|i| i.label()).collect(),
+        items_dropped: if carried_items.is_empty() {
+            sidecar.items.iter().map(|i| i.label()).collect()
+        } else {
+            Vec::new()
+        },
         quality: quality_used,
         gain_quality: quality_used,
         gain_subsample: derive_opts.subsample,

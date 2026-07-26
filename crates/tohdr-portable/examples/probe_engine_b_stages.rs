@@ -166,6 +166,8 @@ fn main() {
         tmap_colour: None,
         exif: None,
         xmp: None,
+        extra_items: Vec::new(),
+        orientation: Default::default(),
         clli: None,
     };
     let t = Instant::now();
