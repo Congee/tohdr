@@ -224,8 +224,8 @@ u8  flags                  bit7=is_multichannel, bit6=use_base_colour_space,
                             optimization, unset in both real-world samples below),
                             bit2=backward_direction
 --- if multichannel bit clear (1 "channel" worth of fields): ---
-s32 base_hdr_headroom_num   / u32 base_hdr_headroom_den
-s32 alternate_hdr_headroom_num / u32 alternate_hdr_headroom_den
+u32 base_hdr_headroom_num   / u32 base_hdr_headroom_den
+u32 alternate_hdr_headroom_num / u32 alternate_hdr_headroom_den
 s32 gain_map_min_num        / u32 gain_map_min_den
 s32 gain_map_max_num        / u32 gain_map_max_den
 u32 gain_map_gamma_num      / u32 gain_map_gamma_den
@@ -236,6 +236,17 @@ s32 alternate_offset_num    / u32 alternate_offset_den
 ```
 
 All numeric fields are `numerator / denominator`; `min_content_boost = 2^(gain_map_min)`, `max_content_boost = 2^(gain_map_max)`, `hdr_capacity_min = 2^(base_hdr_headroom)`, `hdr_capacity_max = 2^(alternate_hdr_headroom)`.
+
+**The two headroom numerators are unsigned; the min/max and offset numerators
+are signed.** This listing said `s32` for the headroom pair until it was checked
+against libavif, which types them `avifUnsignedFraction`
+(`include/avif/avif.h:692-693`) beside `avifSignedFraction gainMapMin[3]` /
+`gainMapMax[3]` (`:655-657`) and the two offsets (`:669-671`). Both real-world
+samples below carry non-negative headroom, so the bytes alone could not tell the
+two readings apart — which is exactly why the wrong one survived here, and why
+`tohdr_core::hdr::derive_consistent` floors `alt_headroom` at zero rather than
+trusting a signed round trip. A capacity below 1.0 would mean a display dimmer
+than SDR reference, which is why the field has no need to go negative.
 
 ### IMG_4913 payload — field-by-field (62 bytes)
 

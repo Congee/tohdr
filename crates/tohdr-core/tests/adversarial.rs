@@ -84,14 +84,29 @@ fn one_nan_sample_does_not_wipe_the_whole_gain_map() {
     );
 }
 
-/// `derive_consistent` exists to guarantee `max_log2 == alt_headroom`. It
-/// clamped only `alt_headroom` to non-negative, so a base brighter than the
-/// source left `max_log2` negative and the two disagreeing — the very
-/// invariant violation the function is named for.
+/// `derive_consistent` exists to guarantee `max_log2 == alt_headroom` — as
+/// written to disk, which for a darkening map means the floored form
+/// `alt_headroom == max(0, max_log2)`.
 ///
-/// Worse, with `base_headroom == 0` the result was `base == alt == 0`, which
-/// makes `gain_weight` return 0 for *every* display: the map is switched off
-/// entirely rather than merely being small.
+/// This test previously asserted the *unfloored* equality plus
+/// `base_headroom != alt_headroom`, on the reasoning that `base == alt` makes
+/// `gain_weight` return 0 for every display and so disables the map. The first
+/// assertion was unsatisfiable on disk and the second was unachievable at all:
+///
+/// - The ISO headroom fields are unsigned (libavif
+///   `include/avif/avif.h:692-693`), so a negative `alt_headroom` serialized to
+///   0 while `max_log2` stayed negative. The test passed only because it never
+///   serialized — it checked the in-memory struct. `iso21496_round_trip_holds_
+///   criterion_5_for_a_darkening_map` below covers the gap it left.
+/// - Keeping `base != alt` would not have kept the map alive anyway. With
+///   `alt < base` libavif takes its sign-flip branch,
+///   `w = -clamp((H - base) / (alt - base), 0, 1)`, which is 0 for every
+///   display headroom `H >= 0`. And the encoding that *would* apply a darkening
+///   map — `base_headroom > alt_headroom`, per `avif.h:678-681` — makes the
+///   base the high-headroom rendition, contradicting criterion 6's
+///   `base_headroom == 0` for an SDR base. A darkening map with an SDR base is
+///   inexpressible in this model, so declaring zero gain is the honest encoding
+///   rather than a lossy one.
 #[test]
 fn invariant_holds_even_when_the_base_is_brighter_than_the_source() {
     // An independently graded SDR base with lifted shadows, brighter than the
@@ -109,19 +124,55 @@ fn invariant_holds_even_when_the_base_is_brighter_than_the_source() {
     let (_, meta) = derive_consistent(&hdr, &base, &DeriveOptions::default());
 
     assert!(
-        (meta.max_log2[0] - meta.alt_headroom).abs() < 1e-6,
-        "the whole point of derive_consistent: max_log2 ({}) must equal \
-         alt_headroom ({})",
-        meta.max_log2[0],
-        meta.alt_headroom
+        meta.max_log2[0] < 0.0,
+        "fixture is meant to be a darkening map; max_log2 = {} is not negative, \
+         so this test is no longer exercising the case it was written for",
+        meta.max_log2[0]
     );
     assert!(
-        meta.base_headroom != meta.alt_headroom,
-        "base == alt makes gain_weight return 0 for every display, silently \
-         disabling the map (base={}, alt={})",
-        meta.base_headroom,
-        meta.alt_headroom
+        (meta.max_log2[0].max(0.0) - meta.alt_headroom).abs() < 1e-6,
+        "the whole point of derive_consistent: alt_headroom ({}) must equal \
+         max(0, max_log2) ({})",
+        meta.alt_headroom,
+        meta.max_log2[0].max(0.0)
     );
+    assert_eq!(
+        meta.alt_headroom, 0.0,
+        "a darkening map can only declare zero headroom; anything else does not \
+         survive the unsigned ISO field"
+    );
+}
+
+/// The gap the test above left open for as long as it checked only the
+/// in-memory struct: does the criterion-5 invariant survive being *written*?
+///
+/// With `alt_headroom = max_log2 = -0.9` this failed by the full magnitude —
+/// `alt_headroom` came back 0 against a `max_log2` of -0.8999939, a delta of
+/// 0.9 against criterion 5's 1e-3 tolerance, and `gain_weight` returned 0 at
+/// every display headroom.
+#[test]
+fn iso21496_round_trip_holds_criterion_5_for_a_darkening_map() {
+    let hdr = hdr_from(4, 4, &[[0.5, 0.5, 0.5]]);
+    let bright = (0.6f32.powf(1.0 / 2.4) * 1.055 - 0.055).clamp(0.0, 1.0);
+    let code = (bright * 255.0).round() as u16;
+    let base = Rgb {
+        width: 4,
+        height: 4,
+        bits: 8,
+        data: vec![code; 4 * 4 * 3],
+    };
+    let (_, meta) = derive_consistent(&hdr, &base, &DeriveOptions::default());
+
+    let bytes = tohdr_core::iso21496::serialize(&meta);
+    let back = tohdr_core::iso21496::parse(&bytes).expect("our own payload must parse");
+
+    assert!(
+        (back.max_log2[0].max(0.0) - back.alt_headroom).abs() < 1e-3,
+        "criterion 5 must hold after a write: max(0, max_log2)={} alt_headroom={}",
+        back.max_log2[0].max(0.0),
+        back.alt_headroom
+    );
+    assert_eq!(back.base_headroom, 0.0, "criterion 6: an SDR base declares zero");
 }
 
 /// `headroom_from_tags` reads untrusted MakerNote values. A wildly negative

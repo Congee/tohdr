@@ -62,13 +62,28 @@ pub fn checks_for(rb: &ReadBack) -> Vec<Check> {
         detail: format!("apple={} iso={}", rb.apple_aux, rb.iso_aux),
     });
 
+    // The format must actually *be* `L008`, not merely be reported. Checking
+    // only `is_some()` passed `DSC07752_iso.heic` — whose plane is `420f`,
+    // 3-channel 4:2:0 float, the exact defect criterion 2 names for that file
+    // in `docs/acceptance-criteria.md`'s comparison table. It escaped notice
+    // because criteria 5 and 8 also fail on that file, so the exit code was
+    // right for unrelated reasons; a regression that broke only the channel
+    // count would have shipped a clean PASS.
+    const WANT_FMT: u32 = u32::from_be_bytes(*b"L008");
     checks.push(Check {
         name: "gain_plane_present".into(),
-        passed: rb.gain_size.is_some() && rb.gain_pixel_format.is_some(),
+        passed: rb.gain_size.is_some() && rb.gain_pixel_format == Some(WANT_FMT),
         detail: match (rb.gain_size, rb.gain_pixel_format) {
-            (Some((w, h)), Some(fmt)) => {
-                format!("{w}x{h}, format {}", String::from_utf8_lossy(&fmt.to_be_bytes()))
-            }
+            (Some((w, h)), Some(fmt)) => format!(
+                "{w}x{h}, format {}{}",
+                String::from_utf8_lossy(&fmt.to_be_bytes()),
+                if fmt == WANT_FMT {
+                    ""
+                } else {
+                    " -- want L008: single-channel 8-bit, not a multi-channel plane"
+                }
+            ),
+            (Some((w, h)), None) => format!("{w}x{h} but no pixel format reported"),
             _ => "no gain-map plane found".into(),
         },
     });
@@ -146,15 +161,59 @@ pub fn checks_for(rb: &ReadBack) -> Vec<Check> {
         detail: tags_detail,
     });
 
+    // Criterion 6. Absent from this checker until now, so a file declaring a
+    // non-zero base headroom — a mis-declared HDR base, or a future writer bug —
+    // passed every Rust check while `verify_gainmap.py` failed it twice over.
     if let Some(m) = &rb.iso_meta {
-        let phone_w = gain_weight(m, PHONE_HEADROOM_STOPS);
-        let xdr_w = gain_weight(m, MAC_XDR_HEADROOM_STOPS);
         checks.push(Check {
-            name: "gain_weight".into(),
-            passed: (-1.0..=1.0).contains(&phone_w) && (-1.0..=1.0).contains(&xdr_w),
+            name: "base_headroom_zero".into(),
+            passed: m.base_headroom.abs() < 1e-6,
             detail: format!(
-                "phone ({PHONE_HEADROOM_STOPS} stops): weight={phone_w:.4}; \
-                 mac xdr ({MAC_XDR_HEADROOM_STOPS} stops): weight={xdr_w:.4}"
+                "base_headroom={:.6}{}",
+                m.base_headroom,
+                if m.base_headroom.abs() < 1e-6 {
+                    ""
+                } else {
+                    " -- an SDR base declares zero; non-zero shifts where the map starts applying"
+                }
+            ),
+        });
+    }
+
+    // Criterion 10, the real invariant: every display receives all the gain it
+    // can show, `delivered == min(display, max_log2)`.
+    //
+    // This replaces a check that asserted `gain_weight`'s return was within
+    // `[-1, 1]`. That was a tautology — `gain_weight` clamps to `[0, 1]` before
+    // returning (`tohdr_core::hdr`), then optionally negates — so it could only
+    // ever fail on NaN, and it stayed green on a synthetic file whose real
+    // delivered gain was off by a full stop. `verify_gainmap.py` has checked the
+    // genuine invariant all along; this brings the two into line.
+    //
+    // `max_log2` is floored at zero for the same reason criterion 5 floors it:
+    // the headroom field is unsigned, so a darkening map can deliver no gain and
+    // must want none.
+    if let Some(m) = &rb.iso_meta {
+        let deliverable = m.max_log2[0].max(0.0);
+        let mut worst: Option<(f32, f32, f32, f32)> = None;
+        for display in [1.0f32, 1.5, 2.0, PHONE_HEADROOM_STOPS, MAC_XDR_HEADROOM_STOPS, 4.0] {
+            let delivered = deliverable * gain_weight(m, display);
+            let want = display.min(deliverable);
+            let err = (delivered - want).abs();
+            if worst.is_none_or(|(_, _, _, w)| err > w) {
+                worst = Some((display, delivered, want, err));
+            }
+        }
+        let (d, got, want, err) = worst.expect("the sweep is non-empty");
+        checks.push(Check {
+            name: "every_display_gets_its_stops".into(),
+            passed: err < 1e-3,
+            detail: format!(
+                "worst at {d:.2}-stop display: delivered {got:.3}, expected \
+                 min(display, max_log2)={want:.3} (err {err:.3}); \
+                 phone weight={:.4}, mac xdr weight={:.4}",
+                gain_weight(m, PHONE_HEADROOM_STOPS),
+                gain_weight(m, MAC_XDR_HEADROOM_STOPS)
             ),
         });
     }
@@ -169,13 +228,70 @@ fn print_human(label: &str, checks: &[Check]) {
     }
 }
 
+/// Criterion 11: no display in 1.0..=4.0 stops receives *less* gain from this
+/// file than from the reference, at the same declared headroom.
+///
+/// "At the same declared headroom" is the condition, not decoration. Comparing
+/// delivered gain between files that declare different headroom measures the two
+/// *scenes*, not the two encoders — a dimmer scene legitimately needs less gain —
+/// so the check applies only when the declarations match and skips otherwise.
+/// What survives is the thing worth catching: identical metadata that we
+/// nonetheless under-apply relative to Apple.
+///
+/// Pure, so it is testable without ImageIO; [`run`] folds it into the verdict.
+/// It previously was not folded in at all — `passed` was computed before the
+/// reference was even inspected, and the reference's checks were printed and
+/// discarded, so this criterion was enforced nowhere despite `--against`
+/// existing to serve it.
+pub fn reference_comparison(rb: &ReadBack, reference: &ReadBack) -> Check {
+    let name = "no_worse_than_reference".into();
+    let (Some(m), Some(r)) = (&rb.iso_meta, &reference.iso_meta) else {
+        return Check {
+            name,
+            passed: true,
+            detail: "skipped: one of the two files has no ISO metadata to compare".into(),
+        };
+    };
+    if (m.alt_headroom - r.alt_headroom).abs() >= 1e-3 {
+        return Check {
+            name,
+            passed: true,
+            detail: format!(
+                "skipped: declared headroom differs ({:.6} vs reference {:.6}) -- \
+                 that compares the scenes, not the encoders",
+                m.alt_headroom, r.alt_headroom
+            ),
+        };
+    }
+    let ours = m.max_log2[0].max(0.0);
+    let theirs = r.max_log2[0].max(0.0);
+    let mut worst: Option<(f32, f32, f32)> = None;
+    for display in [1.0f32, 1.5, 2.0, PHONE_HEADROOM_STOPS, MAC_XDR_HEADROOM_STOPS, 4.0] {
+        let got = ours * gain_weight(m, display);
+        let want = theirs * gain_weight(r, display);
+        let deficit = want - got;
+        if worst.is_none_or(|(_, _, w)| deficit > w) {
+            worst = Some((display, got, deficit));
+        }
+    }
+    let (d, got, deficit) = worst.expect("the sweep is non-empty");
+    Check {
+        name,
+        passed: deficit < 1e-3,
+        detail: format!(
+            "worst at {d:.2}-stop display: delivered {got:.3} vs reference \
+             {:.3} (deficit {deficit:.3})",
+            got + deficit
+        ),
+    }
+}
+
 pub fn run(args: VerifyArgs) -> anyhow::Result<i32> {
     let path = args.file.as_path();
     eprintln!("tohdr: verifying {} via apple-imageio", path.display());
     let rb = catch("apple-imageio", "inspect", || tohdr_apple::inspect(path))
         .with_context(|| format!("inspecting {}", path.display()))?;
-    let checks = checks_for(&rb);
-    let passed = checks.iter().all(|c| c.passed);
+    let mut checks = checks_for(&rb);
 
     let reference_path: Option<PathBuf> = match args.against {
         Some(p) => Some(p),
@@ -184,7 +300,12 @@ pub fn run(args: VerifyArgs) -> anyhow::Result<i32> {
     let reference = if let Some(ref_path) = &reference_path {
         eprintln!("tohdr: comparing against {}", ref_path.display());
         match catch("apple-imageio", "inspect", || tohdr_apple::inspect(ref_path)) {
-            Ok(ref_rb) => Some((ref_path.display().to_string(), checks_for(&ref_rb))),
+            Ok(ref_rb) => {
+                // Pushed onto the target's list, not the reference's, because it
+                // is a statement about this file and must reach the exit code.
+                checks.push(reference_comparison(&rb, &ref_rb));
+                Some((ref_path.display().to_string(), checks_for(&ref_rb)))
+            }
             Err(e) => {
                 eprintln!("tohdr: warning: could not inspect reference {}: {e:#}", ref_path.display());
                 None
@@ -193,6 +314,9 @@ pub fn run(args: VerifyArgs) -> anyhow::Result<i32> {
     } else {
         None
     };
+
+    // After the reference check is in, so criterion 11 counts.
+    let passed = checks.iter().all(|c| c.passed);
 
     let report = VerifyReport {
         file: path.display().to_string(),
@@ -242,7 +366,80 @@ mod tests {
     fn healthy_file_passes_all_checks() {
         let checks = checks_for(&base_readback());
         assert!(checks.iter().all(|c| c.passed), "{checks:?}");
-        assert!(checks.iter().any(|c| c.name == "gain_weight"));
+        for want in ["base_headroom_zero", "every_display_gets_its_stops"] {
+            assert!(checks.iter().any(|c| c.name == want), "missing {want}: {checks:?}");
+        }
+    }
+
+    /// Criterion 2. `gain_plane_present` used to test only that a format was
+    /// *reported*, so `DSC07752_iso.heic`'s 3-channel `420f` plane — the defect
+    /// the acceptance doc names for that file — read as `ok`.
+    #[test]
+    fn multi_channel_gain_plane_fails() {
+        let mut rb = base_readback();
+        rb.gain_pixel_format = Some(u32::from_be_bytes(*b"420f"));
+        let checks = checks_for(&rb);
+        let c = checks.iter().find(|c| c.name == "gain_plane_present").unwrap();
+        assert!(!c.passed, "a 420f plane is not single-channel 8-bit");
+        assert!(c.detail.contains("want L008"), "{}", c.detail);
+    }
+
+    /// Criterion 6, which this checker did not implement at all.
+    #[test]
+    fn non_zero_base_headroom_fails() {
+        let mut rb = base_readback();
+        let mut m = rb.iso_meta.unwrap();
+        m.base_headroom = 1.0;
+        rb.iso_meta = Some(m);
+        let checks = checks_for(&rb);
+        let c = checks.iter().find(|c| c.name == "base_headroom_zero").unwrap();
+        assert!(!c.passed);
+    }
+
+    /// Criterion 10. The check this replaces asserted `gain_weight`'s output was
+    /// within `[-1, 1]`, which `gain_weight` guarantees by construction, so it
+    /// could not fail on a file whose delivered gain was wrong. Here
+    /// `base_headroom = 1.0` costs a 1.0-stop display every stop it should get.
+    #[test]
+    fn under_delivering_file_fails_the_display_sweep() {
+        let mut rb = base_readback();
+        let mut m = rb.iso_meta.unwrap();
+        m.base_headroom = 1.0;
+        rb.iso_meta = Some(m);
+        let checks = checks_for(&rb);
+        let c = checks
+            .iter()
+            .find(|c| c.name == "every_display_gets_its_stops")
+            .unwrap();
+        assert!(!c.passed, "a 1.0-stop display gets nothing here: {}", c.detail);
+    }
+
+    /// Criterion 11 applies only when both files declare the same headroom;
+    /// otherwise it would be comparing the two scenes.
+    #[test]
+    fn reference_comparison_skips_on_mismatched_headroom() {
+        let rb = base_readback();
+        let mut other = base_readback();
+        other.iso_meta = Some(GainMapMeta::with_headroom_stops(1.0));
+        let c = reference_comparison(&rb, &other);
+        assert!(c.passed);
+        assert!(c.detail.contains("skipped"), "{}", c.detail);
+    }
+
+    /// ...and catches the case it exists for: identical declared headroom, but
+    /// we hand a display less than the reference does.
+    #[test]
+    fn reference_comparison_catches_a_deficit() {
+        let reference = base_readback();
+        let mut rb = base_readback();
+        let mut m = rb.iso_meta.unwrap();
+        // Same declaration, but the map starts applying a stop later, so every
+        // display below alt_headroom receives less than the reference gives.
+        m.base_headroom = 1.0;
+        rb.iso_meta = Some(m);
+        let c = reference_comparison(&rb, &reference);
+        assert!(!c.passed, "{}", c.detail);
+        assert!(c.detail.contains("deficit"), "{}", c.detail);
     }
 
     #[test]

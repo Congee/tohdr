@@ -215,21 +215,31 @@ pub fn derive_consistent(
         opts,
     );
     // The plane can deliver at most max_log2 stops, so that is the honest
-    // declaration — unconditionally, including when it is negative.
+    // declaration — floored at zero, because the ISO field is unsigned.
     //
-    // Clamping this to `max(0.0)` looked harmless but broke the one invariant
-    // this function exists to hold. A base brighter than the source (an
-    // independently graded SDR trim with lifted shadows, say) yields a
-    // negative max_log2; clamping left `alt_headroom = 0` while `max_log2`
-    // stayed negative, so the two disagreed. Worse, with `base_headroom` also
-    // 0 that made `base == alt`, and `gain_weight` returns 0 for *every*
-    // display in that case — silently switching the map off rather than
-    // applying a small one.
+    // An earlier revision of this line set `alt_headroom = max_log2[0]`
+    // unconditionally, on the belief that "the ISO field is signed". It is not:
+    // libavif declares `avifUnsignedFraction baseHdrHeadroom` /
+    // `alternateHdrHeadroom` (`include/avif/avif.h:692-693`) against
+    // `avifSignedFraction gainMapMin[3]` / `gainMapMax[3]` (`:655-657`), and
+    // ISO 21496-1 C.2.2 agrees — only min/max_log2 and the offsets are signed.
+    // So a negative `alt_headroom` cannot survive being written: it round-tripped
+    // through `iso21496::serialize` as 0 while `max_log2` stayed negative,
+    // breaking criterion 5 by the full magnitude (measured: -0.9 in, delta
+    // 0.8999939 out) and switching the map off on every display.
     //
-    // A negative `alt_headroom` is representable (the ISO field is signed) and
-    // well defined: `gain_weight` takes libavif's `alt < base` branch, which
-    // correctly gives a positive-headroom display no gain from a darkening map.
-    meta.alt_headroom = meta.max_log2[0];
+    // Flooring costs nothing, which is the part that makes this the right fix
+    // rather than a lossy compromise. A darkening map delivers no gain under
+    // libavif's rules either way: with `alt < base` it takes the sign-flip
+    // branch, `w = -clamp((H - 0) / (alt - 0), 0, 1)`, and for every display
+    // headroom `H >= 0` that ratio is non-positive and clamps to 0. Declaring
+    // 0 loses no achievable gain and keeps `max_log2 == alt_headroom` true
+    // after a write, which the signed version did not.
+    //
+    // `min_log2` is left alone — it is signed, and a map that darkens some
+    // pixels is legal and meaningful; it is only the *headroom* that cannot go
+    // below zero.
+    meta.alt_headroom = meta.max_log2[0].max(0.0);
     (plane, meta)
 }
 

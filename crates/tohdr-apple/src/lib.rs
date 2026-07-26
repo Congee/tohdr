@@ -168,9 +168,16 @@ impl ReadBack {
     /// washed-out exports: declared headroom equal to what the plane encodes?
     ///
     /// `None` when there is no ISO metadata to check.
+    ///
+    /// `max_log2` is floored at zero before the comparison because the ISO
+    /// headroom fields are *unsigned* (libavif `include/avif/avif.h:692-693`),
+    /// so a plane that only darkens — `max_log2 < 0` — can only ever declare
+    /// `alt_headroom = 0`. Comparing the raw values would fail such a file for
+    /// being encoded the only way it can be. See
+    /// `tohdr_core::hdr::derive_consistent`, which produces the floored pair.
     pub fn headroom_consistent(&self) -> Option<bool> {
         let m = self.iso_meta.as_ref()?;
-        Some((m.max_log2[0] - m.alt_headroom).abs() < 1e-3)
+        Some((m.max_log2[0].max(0.0) - m.alt_headroom).abs() < 1e-3)
     }
 }
 

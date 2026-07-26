@@ -78,8 +78,25 @@ fn f32_to_signed_fraction(v: f32) -> (i32, u32) {
     (n, RATIONAL_DENOM)
 }
 
+/// Serialize a field ISO 21496-1 C.2.2 declares unsigned: the two headroom
+/// fields and gamma. libavif types these `avifUnsignedFraction`
+/// (`include/avif/avif.h:660,692-693`) against the `avifSignedFraction` used
+/// for min/max_log2 and the offsets (`:655-657,669-671`).
+///
+/// The negative clamp here is a floor of last resort, not a policy. It used to
+/// be reached: `derive_consistent` set `alt_headroom = max_log2` unconditionally
+/// on the belief the field was signed, so a darkening map wrote `alt_headroom`
+/// as 0 while `max_log2` stayed negative and criterion 5 failed on round trip
+/// by the full magnitude. The producer now floors, so a negative arriving here
+/// means a *new* caller believes something false about the wire format — hence
+/// the assertion rather than a silent fix-up.
 fn f32_to_unsigned_fraction(v: f32) -> (u32, u32) {
-    // Headroom/gamma are never negative in practice; clamp defensively.
+    debug_assert!(
+        v >= 0.0,
+        "ISO 21496-1 C.2.2 types this field unsigned; a negative value ({v}) \
+         cannot be written and would be silently read back as 0. Floor it at \
+         the producer, as hdr::derive_consistent does."
+    );
     let scaled = (v.max(0.0) as f64) * RATIONAL_DENOM as f64;
     let n = scaled.round().clamp(0.0, u32::MAX as f64) as u32;
     (n, RATIONAL_DENOM)

@@ -555,12 +555,19 @@ def check(info, expect_flavor):
         skip(4, 'ISO tmap signaling', 'flavor does not include ISO')
 
     # 5. THE invariant.
+    #
+    # max_log2 is floored at 0 before comparing, because the two headroom fields
+    # are unsigned (libavif include/avif/avif.h:692-693) while gain_map_max is
+    # signed. A plane that only darkens has max_log2 < 0 and can declare nothing
+    # but alt_headroom = 0, so the raw comparison would fail it for being encoded
+    # the one way it can be. Matches ReadBack::headroom_consistent.
     if not iso:
         skip(5, 'max_log2 == alt_headroom', 'no ISO metadata in file')
     else:
-        d = abs(iso['max_log2'][0] - iso['alt_headroom'])
+        floored = max(0.0, iso['max_log2'][0])
+        d = abs(floored - iso['alt_headroom'])
         add(5, 'max_log2 == alt_headroom', d < 1e-3,
-            f"max_log2={iso['max_log2'][0]:.6f} alt_headroom={iso['alt_headroom']:.6f} "
+            f"max(0,max_log2)={floored:.6f} alt_headroom={iso['alt_headroom']:.6f} "
             f"delta={d:+.6f} stops")
 
     # 6. base_headroom zero
@@ -586,7 +593,15 @@ def check(info, expect_flavor):
     if t48 is None and t33 is None:
         skip(8, 'MakerApple tag48 non-negative', 'no MakerApple headroom tags present')
     else:
-        ok = (t48 is None or t48 >= 0) and (t48 is None or t33 is not None)
+        # tag33 must be non-negative too, matching verify.rs. It is a regime
+        # selector for Apple's headroom formula (the >= 1.0 branch vs the < 1.0
+        # one), so a negative value selects nothing. No writer here can emit one
+        # -- tags_from_headroom hardcodes 1.0, align_apple_headroom raises
+        # anything below 1.0 to 1.0 -- which is why this went unnoticed as a
+        # divergence: it is a guard against third-party and hand-corrupted files,
+        # not against our own output.
+        ok = (t48 is None or (t48 >= 0 and t33 is not None)) \
+            and (t33 is None or t33 >= 0)
         add(8, 'MakerApple tag48 non-negative', ok, f'tag33={t33} tag48={t48}')
 
     # 9. headroom copies agree
@@ -625,10 +640,14 @@ def check(info, expect_flavor):
         skip(10, 'display receives every stop it can show', 'no ISO metadata')
     else:
         worst = None
+        # Floored for the same reason criterion 5 floors it: the headroom field
+        # is unsigned, so a darkening map delivers no gain and must want none.
+        # Matches verify.rs's every_display_gets_its_stops.
+        deliverable = max(0.0, iso['max_log2'][0])
         for display in (1.0, 1.5, 2.0, 2.3, 2.98, 4.0):
             w = gain_weight(iso['base_headroom'], iso['alt_headroom'], display)
-            delivered = iso['max_log2'][0] * w
-            want = min(display, iso['max_log2'][0])
+            delivered = deliverable * w
+            want = min(display, deliverable)
             err = abs(delivered - want)
             if worst is None or err > worst[3]:
                 worst = (display, delivered, want, err)

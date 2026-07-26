@@ -6,8 +6,26 @@ been tried, including the iOS WeChat app. `DSC07752.heic` and
 effect" into checks a machine can run, so the claim is never a matter of
 squinting at two phones.
 
-Every criterion below is either **[verify]** — checked by `tohdr verify`, exit
-non-zero on failure — or **[manual]**, with the reason it cannot be automated.
+Every criterion below is either **[verify]** — checked by at least one automated
+checker, exit non-zero on failure — or **[manual]**, with the reason it cannot be
+automated.
+
+**`[verify]` does not mean `tohdr verify` alone covers it.** The tag was read
+that way for a while and it hid real holes: three criteria were unimplemented in
+Rust, one was a tautology that could not fail, and one was enforced by neither
+checker while a CLI flag implied otherwise. Which tool owns what:
+
+| Criteria | Covered by |
+|---|---|
+| 1, 4, 7, 9 | `verify_gainmap.py` only — they need raw box walking, which `ReadBack` has no vocabulary for |
+| 2, 3, 5, 6, 8, 10 | both, and they must agree; a disagreement is a bug in one of them |
+| 11 | `tohdr verify` only — needs a reference file, which the Python checker has no mechanism for |
+| 12, 13 | `cargo test` (`tohdr-core/tests/hdr.rs`); the PSNR half is only ever *measured* by `cargo run --example roundtrip`, never asserted |
+| 14 | `tohdr verify` only — it *is* the ImageIO oracle, which the Python checker deliberately avoids being |
+| 16 | enforced at write time in `convert.rs`, re-verified by neither |
+
+So a full gate is `tohdr verify` **and** `verify_gainmap.py` **and** `cargo test`.
+Any one alone leaves criteria unchecked.
 
 `tools/verify_gainmap.py` checks the container criteria **independently**, sharing
 no code with the Rust crates: it walks the boxes from raw bytes with stdlib
@@ -71,6 +89,13 @@ is a defect even when one implementation's algebra survives it.
 2. **[verify]** The gain map is a separate image item, single-channel 8-bit
    (`L008`), not a 3-channel RGB image. `DSC07752_iso` ships full-res 3-channel,
    which costs bytes for no fidelity gain on a luma-derived map.
+
+   `tohdr verify`'s `gain_plane_present` used to test only that ImageIO
+   *reported* a format, never that it equalled `L008`, so it read `[ok]` on
+   `DSC07752_iso`'s `420f` plane — the very file this criterion names. The exit
+   code was still 1 because criteria 5 and 8 fail there too, which is why the
+   hole went unnoticed: a regression breaking only the channel count would have
+   passed. Both checkers now fail it.
 3. **[verify]** With a flavor including Apple: the gain-map item carries an
    `auxC` with URN `urn:com:apple:photo:2020:aux:hdrgainmap`, **and** an `auxl`
    `iref` from the gain map to the base. The URN alone is not enough — a
@@ -92,6 +117,22 @@ This is where both broken exports actually fail, and the failure is shared:
    `(display - base) / (alt - base)` (libavif `src/gainmap.c:52-63`), so
    over-declaring makes it *under-apply* the map and the flat SDR base shows
    through. Enforced in code by `tohdr_core::hdr::derive_consistent`.
+
+   Stated precisely, the invariant is `alt_headroom == max(0, max_log2)`. The
+   floor is not slack — it is forced by the wire format. The two headroom fields
+   are **unsigned** (libavif `include/avif/avif.h:692-693`) while `gain_map_max`
+   is signed (`:655-657`), so a plane that only darkens, `max_log2 < 0`, can
+   declare nothing but zero. `derive_consistent` briefly set
+   `alt_headroom = max_log2` unclamped on the belief the field was signed; that
+   wrote 0 while `max_log2` stayed negative and broke this criterion by the full
+   magnitude on round trip. Flooring costs no achievable gain: under libavif's
+   `alt < base` branch the weight is `-clamp((H - base)/(alt - base), 0, 1)`,
+   which is 0 for every display headroom `H >= 0`, so a darkening map delivers
+   nothing either way. The encoding that *would* apply one —
+   `base_headroom > alt_headroom`, `avif.h:678-681` — makes the base the
+   high-headroom rendition, contradicting criterion 6. A darkening map with an
+   SDR base is inexpressible here, and declaring zero is the honest encoding.
+   Pinned by `iso21496_round_trip_holds_criterion_5_for_a_darkening_map`.
 6. **[verify]** `base_headroom == 0` for an SDR base.
 7. **[verify]** Passes libavif's own validation (`avifGainMapValidateMetadata`,
    `src/gainmap.c:431-448`): all denominators nonzero, `max >= min`, gamma
@@ -99,7 +140,14 @@ This is where both broken exports actually fail, and the failure is shared:
    — which is why `DSC07752_iso`'s redundant `is_multichannel=1` is survivable
    and not on this list as a defect.
 8. **[verify]** MakerApple tag 48 (`HDRGain`) is **non-negative**, and tag 33
-   (`HDRHeadroom`) is present when tag 48 is. `DSC07752` carries
+   (`HDRHeadroom`) is present when tag 48 is — and is itself non-negative, since
+   it selects which branch of Apple's headroom formula applies (`>= 1.0` vs
+   `< 1.0`), so a negative value selects nothing. That last clause went
+   unwritten for a while and only `tohdr verify` enforced it, making the two
+   checkers silently disagree on a file neither had. It is unreachable through
+   our own writers — `tags_from_headroom` hardcodes tag33 to `1.0` and
+   `align_apple_headroom` raises anything below `1.0` to `1.0` — so it guards
+   third-party and hand-corrupted input, not our output. `DSC07752` carries
    `-0.008120966145`, which `chemharuka/toGainMapHDR`'s unclamped
    `(3.0 - stops) / 70` branch produces for any headroom above 8x — reproduced
    to ~2e-10. `tohdr_core::apple::tags_from_headroom` clamps instead.
@@ -159,8 +207,17 @@ Computed from metadata via `tohdr_core::hdr::gain_weight`, not measured on a
 display:
 
 10. **[verify]** Every display receives all the gain it can show:
-    `delivered == min(display_headroom, alt_headroom)`, checked across
-    1.0–4.0 stops.
+    `delivered == min(display_headroom, max(0, max_log2))`, checked across
+    1.0–4.0 stops (at 1.0, 1.5, 2.0, 2.3, 2.98, 4.0 in both checkers).
+
+    `tohdr verify` did not check this until recently. It had a `gain_weight`
+    check asserting the weight fell within `[-1, 1]` — which `gain_weight`
+    guarantees by construction, since it clamps to `[0, 1]` before an optional
+    sign flip, so the check could only fail on NaN and stayed green on a file
+    whose delivered gain was off by a full stop. It is now
+    `every_display_gets_its_stops` and reports identically to the Python
+    checker: on `DSC07752_iso` both say *worst at 2.00-stop display: delivered
+    1.099, expected 1.960 (err 0.861)*.
 
     *This criterion was originally written as "a ~2.3-stop display applies
     weight 1.0", which was wrong.* That only holds when the scene needs
@@ -176,6 +233,20 @@ display:
     fails.
 11. **[verify]** No display in `1.0..=4.0` stops receives *less* gain from our
     output than from IMG_4913 at the same declared headroom.
+
+    "At the same declared headroom" is a condition, not decoration: comparing
+    delivered gain between files that declare different headroom measures the
+    two *scenes* rather than the two encoders, so the check skips unless the
+    declarations match within 1e-3. `tohdr verify`'s `no_worse_than_reference`
+    implements it against `--against` (default `IMG_4913.HEIC`, overridable via
+    `TOHDR_REFERENCE`).
+
+    *This was enforced nowhere until it was checked.* `verify.rs` computed the
+    verdict before the reference was inspected and then printed the reference's
+    checks without folding them in, so `--against` looked like it served this
+    criterion while contributing nothing to the exit code; `verify_gainmap.py`
+    does not implement it at all, and still doesn't — it has no reference-file
+    mechanism. Rust-only coverage is therefore expected here, not a divergence.
 
 ## D. Reconstruction fidelity
 
