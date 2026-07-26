@@ -25,27 +25,48 @@
 //! # Measured
 //!
 //! ```text
-//!                             outside    dE>=1     dE>=3    worst
-//!                             Rec.709   of image  of image     dE
-//!   IMG_4913.HEIC (P3)          0.18%     0.01%     0.00%    2.63
-//!   DSC07746.ARW (60 MP)       39.41%     1.79%     0.18%    5.48
+//!                                  outside    dE>=1     dE>=3    worst
+//!                                  Rec.709   of image  of image     dE
+//!   IMG_4913.HEIC (P3 capture)       0.18%     0.01%     0.00%    2.63
+//!   DSC07746.ARW, ImageIO develop   39.41%     1.79%     0.18%    5.48
+//!   DSC07746, LrC HDR sRGB           0.88%     0.00%     0.00%    0.00
+//!   DSC07746, LrC HDR Display P3    12.33%     5.10%     1.37%    5.35
+//!   DSC07746, LrC HDR Rec.2020      12.42%     5.12%     1.38%    9.94
 //! ```
 //!
-//! Both cross-checks agreed to <2e-4, so CoreGraphics does preserve
+//! Every cross-check agreed to <2e-4, so CoreGraphics does preserve
 //! out-of-gamut colour through an extended-linear conversion; the clamp in
 //! `load_hdr`, not the colour space, is what discards it.
 //!
-//! The two columns say different things and both matter. 39% of the raw is
-//! *technically* outside Rec.709 but only just — the deepest excursion is 8.3%
-//! of its own pixel's peak — so the perceptual cost lands on 1.79% of the frame
-//! and is obvious on 0.18%. A large out-of-gamut fraction is not by itself
-//! evidence of a large loss, which is why this reports CIEDE2000 rather than
-//! stopping at the count.
+//! **The count and the cost are different questions.** 39% of the ImageIO
+//! develop is *technically* outside Rec.709 but only just — deepest excursion
+//! 8.3% of its own pixel's peak — so the perceptual cost is obvious on 0.18% of
+//! the frame. The Lightroom P3 export is out of gamut on a third as many pixels
+//! and costs 7.6x more, because its excursions run to 21.6%. Reporting the
+//! out-of-gamut count alone would have ranked these two backwards.
 //!
-//! `DSC07746.ARW` is developed here by *ImageIO*, not Lightroom, and its
-//! sidecar is ignored — so that row is a floor for a near-neutral develop
-//! (`crs:Saturation="0"`, all HSL zero, `crs:Vibrance="+15"`), not a
-//! measurement of a Lightroom ProPhoto export.
+//! **ImageIO's own raw development is a bad proxy for Lightroom's**, which is
+//! worth recording because it was used as one: it understated the real develop
+//! by 3x on visibly-affected area and 7.6x on obviously-affected area, despite
+//! that develop being near-neutral in colour (`crs:Saturation="0"`, all HSL
+//! zero, only `crs:Vibrance="+15"`).
+//!
+//! The `sRGB` row is the control and behaves exactly as it must: Lightroom
+//! already clipped to Rec.709, so 0.88% of pixels sit *on* the gamut boundary
+//! and the clamp costs them dE 0.00. Nothing to lose means nothing lost.
+//!
+//! Two further findings. The obvious-hit pixels are **entirely yellow and
+//! yellow-green** (83%/17%) — a coherent region of the photograph rather than
+//! scattered outliers, which is what makes 1.37% of a frame worth caring about.
+//! And 1.94% of the Rec.2020 export falls outside P3 as well, with worst dE
+//! rising 5.35 -> 9.94, so P3 is not a complete answer either — though the
+//! sRGB -> P3 step recovers far more than P3 -> Rec.2020 does.
+//!
+//! One caveat on all three Lightroom rows: `above diffuse white` is 0.00%, so
+//! ImageIO read only `IFD0` and did **not** apply the gain map in the SubIFD.
+//! These measure the SDR base — which is the plane whose primaries our `colr`
+//! declares and whose pixels we ship, so it is the right plane for this
+//! question, but the HDR highlights' gamut is unmeasured.
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -255,7 +276,18 @@ struct Counts {
     /// Largest disagreement between the two renders after converting P3 -> 709
     /// by matrix. Small = the two agree = neither render was clipped.
     max_render_disagreement: f64,
+    /// Pixels taking an obvious (dE >= 3) hit, bucketed by Lab hue into the
+    /// twelve 30-degree sectors. Whether the damage is one saturated object or
+    /// spread across the frame decides whether a 1% figure matters, and a
+    /// single percentage cannot say which.
+    obvious_by_hue: [u64; 12],
 }
+
+/// Name for a 30-degree Lab hue sector, starting at 0 degrees (magenta-red).
+const HUE_NAMES: [&str; 12] = [
+    "red", "orange", "yellow-orange", "yellow", "yellow-green", "green", "green-cyan", "cyan",
+    "cyan-blue", "blue", "violet", "magenta",
+];
 
 fn open_image(path: &Path) -> Option<(CFRetained<CGImage>, usize, usize)> {
     let cfpath = CFString::from_str(path.to_str()?);
@@ -344,8 +376,15 @@ fn px(buf: &[u8], i: usize) -> [f64; 3] {
 }
 
 fn run(path: &Path) {
+    // Distinguished, because "could not open" for both a missing file and an
+    // unreadable one sends you looking for a decoder bug when the real problem
+    // is the working directory.
+    if !path.exists() {
+        println!("{}: no such file\n", path.display());
+        return;
+    }
     let Some((image, w, h)) = open_image(path) else {
-        println!("{}: ImageIO could not open it\n", path.display());
+        println!("{}: ImageIO could not decode it\n", path.display());
         return;
     };
     let cs709 = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceExtendedLinearSRGB })).unwrap();
@@ -410,8 +449,13 @@ fn run(path: &Path) {
             // authoritative without being meaningful.
             if out709 && xyz[1] <= 1.0 {
                 let clamped = [true709[0].max(0.0), true709[1].max(0.0), true709[2].max(0.0)];
-                let d = delta_e00(lab(xyz), lab(apply(RGB709_TO_XYZ, clamped)));
+                let true_lab = lab(xyz);
+                let d = delta_e00(true_lab, lab(apply(RGB709_TO_XYZ, clamped)));
                 hist.push(d);
+                if d >= 3.0 {
+                    let hue = true_lab[2].atan2(true_lab[1]).to_degrees().rem_euclid(360.0);
+                    c.obvious_by_hue[((hue / 30.0) as usize).min(11)] += 1;
+                }
             }
         }
         y0 += rows;
@@ -473,10 +517,34 @@ fn run(path: &Path) {
         pct((hist.fraction_above(1.0) * hist.n as f64) as u64)
     );
     println!(
-        "    obvious (dE >= 3.0): {:.1}% of them = {:.2}% of the image\n",
+        "    obvious (dE >= 3.0): {:.1}% of them = {:.2}% of the image",
         100.0 * hist.fraction_above(3.0),
         pct((hist.fraction_above(3.0) * hist.n as f64) as u64)
     );
+    let obvious: u64 = c.obvious_by_hue.iter().sum();
+    if obvious > 0 {
+        let mut by_hue: Vec<(usize, u64)> = c
+            .obvious_by_hue
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(|(_, n)| *n > 0)
+            .collect();
+        by_hue.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let top: Vec<String> = by_hue
+            .iter()
+            .take(4)
+            .map(|(i, n)| {
+                format!("{} {:.0}%", HUE_NAMES[*i], 100.0 * *n as f64 / obvious as f64)
+            })
+            .collect();
+        println!(
+            "    those obvious pixels by hue: {}  (spread over {} of 12 sectors)",
+            top.join(", "),
+            by_hue.len()
+        );
+    }
+    println!();
 }
 
 fn main() {
