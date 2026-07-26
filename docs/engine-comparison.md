@@ -182,6 +182,52 @@ the encode *is* the work.
 Reuse is on regardless, because it costs nothing. `--no-session-reuse` on `batch`
 and `bench` exists so the claim can be re-measured rather than believed.
 
+### The media block's own ceiling, which reuse walked straight into
+
+Sessions are cheap to keep but not free to *exist*, and the pool above was bounded
+in sessions rather than in pixels. A Lightroom export of a 60 MP Sony ARW through
+`--engine portable --max-size 4MB` failed with
+
+```text
+tohdr: error: encoding within budget: hardware-videotoolbox:
+VideoToolbox encode callback reported -17691
+```
+
+which arrives **asynchronously**: `EncodeFrame` and `CompleteFrames` both returned
+0, and the negative status came back through the output callback, so nothing at the
+call site had the chance to refuse the frame. The status codes are undocumented.
+
+It is not about the frame. A single 103.8 MP frame encodes fine; so does the ARW's
+full 61.2 MP sensor readout. What runs out is the number of sessions alive at once,
+and pooled-idle sessions count exactly as much as in-flight ones
+(`tohdr-apple/examples/probe_vt_limits.rs`):
+
+| geometry | live sessions | concurrent encodes, empty pool |
+|---|---|---|
+| 9504×6336 (60.2 MP) | 3 ok, 4th fails | 4 jobs: 1 of 4 failed |
+| 8064×6048 (48.8 MP) | 5 ok, 6th fails | 6 jobs: 3 of 6 failed |
+| 4032×3024 (12.2 MP) | 15 ok (probe's cap) | — |
+
+`--max-size` reached it because **every quality the search tries is a distinct
+session key**, so a seven-attempt search leaves seven base sessions behind: at 60 MP
+it died on the fourth. That the concurrency column fails at the same point is why
+the fix is a gate on live sessions (`MAX_LIVE_PIXELS`, 160 MP) rather than a smaller
+pool — bounding only the pool would have left `batch --jobs 4` broken at 60 MP with
+nothing pooled at all.
+
+**The ceiling is soft, which is the argument for the margin.** The same binary with
+the gate removed failed at 376 MP live in the export above, yet completed four
+concurrent 60 MP conversions (300 MP) in a batch, and the probe failed at 240.9 MP
+in a process already holding several hundred MiB of pixel buffers. It behaves like
+memory pressure, not a documented limit, so the budget sits at 88% of the largest
+total verified good on the worst geometry rather than at the observed edge.
+
+What it costs: nothing measurable. Best of three on 8 × 60.2 MP ARW at `--jobs 4`,
+**9.32 s gated against 9.46 s ungated**, and all eight outputs are byte-identical
+across the two — the gate decides *when* a session exists, never how it is
+configured. The `--max-size` search on the user's own file went from that error to
+3,790,256 bytes at q61 inside a 4 MB budget, `tohdr verify` **PASS**.
+
 ### What made Engine B 2.1x faster, and where its ceiling is
 
 Engine B used to be **16x** Engine A at 60 MP. Two changes closed half of that,
@@ -598,3 +644,8 @@ table above exists at all.
   engines, so the comparison holds, but the absolute sizes differ from the CLI's.
 - Neither engine has been tested on the iOS WeChat app, the symptom that
   started this project. That remains a device test nobody has run.
+- `MAX_LIVE_PIXELS` is one machine's number. The failure it avoids looks like
+  memory pressure rather than a fixed limit — the same workload failed at 240.9 MP
+  live in one process and 376 MP in another — so a machine with a different media
+  block or less free memory could still reach it. The error now reports the live
+  total, which is the number to compare against the constant when it does.

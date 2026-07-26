@@ -44,7 +44,7 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 
 use objc2_core_foundation::{
     CFDictionary, CFNumber, CFNumberType, CFRetained, CFString, CFType, CFBoolean, CFData,
@@ -500,6 +500,11 @@ impl SessionKey {
             realtime,
         }
     }
+
+    /// What this session costs against [`MAX_LIVE_PIXELS`].
+    fn pixels(&self) -> u64 {
+        self.width as u64 * self.height as u64
+    }
 }
 
 /// A live `VTCompressionSession` and the sink its callback writes into.
@@ -653,9 +658,19 @@ impl Session {
 
         let sink = unsafe { &mut *self.sink };
         if sink.status != 0 {
+            // The live total goes in the message because this status arrives
+            // *asynchronously* — `EncodeFrame` and `CompleteFrames` both
+            // returned 0, so nothing at the call site refused the frame, and the
+            // codes are undocumented. On this machine -17691 is what the media
+            // block running out of resources looks like (see
+            // `examples/probe_vt_limits.rs`), and the number that predicts it is
+            // this one, not anything about the frame.
             return Err(Error::Unreadable(format!(
-                "VideoToolbox encode callback reported {}",
-                sink.status
+                "VideoToolbox encode callback reported {} with {:.0} MP of encoder sessions live \
+                 (this frame {:.0} MP); --engine hpvca has no such limit",
+                sink.status,
+                live_session_pixels() as f64 / 1e6,
+                self.key.pixels() as f64 / 1e6,
             )));
         }
         let data = sink
@@ -685,25 +700,75 @@ impl Drop for Session {
     }
 }
 
-/// Idle sessions, waiting for a matching [`SessionKey`].
+/// Idle sessions plus what every live session costs.
 ///
-/// A `Vec` rather than a map because it holds single digits of entries and the
-/// key is five scalars: the linear scan is cheaper than hashing, and it keeps
-/// the "several sessions with the same key, one per concurrent job" case free —
-/// a map would need a bucket per key.
-static POOL: Mutex<Vec<Session>> = Mutex::new(Vec::new());
+/// One lock over both, not two, because the accounting has to be atomic with the
+/// eviction it drives: [`admit`] frees budget *by* ending idle sessions, so a
+/// separate counter could be read after a session left the pool and before its
+/// pixels were given back.
+struct Pool {
+    /// Sessions waiting for a matching [`SessionKey`].
+    ///
+    /// A `Vec` rather than a map because it holds single digits of entries and
+    /// the key is five scalars: the linear scan is cheaper than hashing, and it
+    /// keeps the "several sessions with the same key, one per concurrent job"
+    /// case free — a map would need a bucket per key.
+    idle: Vec<Session>,
+    /// Pixels across every session that exists — idle *and* checked out.
+    live_pixels: u64,
+}
+
+static POOL: Mutex<Pool> = Mutex::new(Pool { idle: Vec::new(), live_pixels: 0 });
+
+/// Signalled whenever [`release`] or an eviction gives budget back.
+static POOL_FREED: Condvar = Condvar::new();
 
 /// Upper bound on *idle* sessions kept.
 ///
-/// This is a leak guard, not a memory budget, and the difference matters. How
-/// many sessions actually exist is set by concurrency and geometry, not by this:
-/// sessions are only ever created on demand, so `--jobs 2` on one geometry
-/// creates four and never approaches the cap. What the cap stops is a long batch
-/// over many distinct sizes accumulating a session for every one of them. 16
-/// covers the realistic worst case — two orientations × two planes × four
-/// concurrent jobs — and beyond it the oldest idle session is dropped, which
-/// degrades to today's create-per-call rather than failing.
+/// This is a leak guard, not a memory budget — [`MAX_LIVE_PIXELS`] is the memory
+/// budget. What the count stops is a long batch over many distinct *small* sizes
+/// accumulating a session for every one of them, which no pixel budget would
+/// notice. 16 covers the realistic worst case — two orientations × two planes ×
+/// four concurrent jobs — and beyond it the oldest idle session is dropped, which
+/// degrades to create-per-call rather than failing.
 const MAX_IDLE_SESSIONS: usize = 16;
+
+/// Pixels' worth of live `VTCompressionSession`s to permit at once.
+///
+/// # Why there has to be a limit at all
+///
+/// Because the media block runs out, and says so only *after* the frame is
+/// submitted: `EncodeFrame` and `CompleteFrames` both return 0 and the output
+/// callback then reports a negative status (-17691 here), so there is nothing to
+/// check up front the way [`VideoToolboxCodec::supports`] checks bit depth.
+/// Measured with `examples/probe_vt_limits.rs`, and the limit is emphatically not
+/// about one frame's size — a single 103.8 MP frame encodes fine:
+///
+/// ```text
+///   9504x6336 (60.2 MP)    3 live sessions ok, the 4th fails
+///   8064x6048 (48.8 MP)    5 live sessions ok, the 6th fails
+///   4032x3024 (12.2 MP)   15 live sessions ok (the probe's cap, no failure)
+/// ```
+///
+/// Idle and in-flight sessions are interchangeable here: 4 *concurrent* 60 MP
+/// encodes against an empty pool fail at exactly the same point as 4 pooled ones.
+/// So this is a gate on sessions that exist, not a cap on the pool — bounding
+/// only the pool would have left `tohdr batch --jobs 4` broken at 60 MP.
+///
+/// # Why 160 MP
+///
+/// It is 88% of the largest total verified good on the worst geometry (3 × 60.2 =
+/// 180.7 MP), and the failure boundary is not exactly proportional to pixels —
+/// 48.8 MP reached 243.9 MP live while 60.2 MP failed at 240.9 — so the margin is
+/// against a model that is only approximately right. What it costs is nothing on
+/// the case pooling exists for: one 60 MP file's base and gain plane are 75 MP
+/// together, so two concurrent conversions still fit, and a `--max-size` search
+/// keeps two sessions rather than fourteen.
+///
+/// A frame larger than the whole budget is admitted anyway when nothing else is
+/// live — a limit that refused to encode at all would be worse than one the
+/// hardware might refuse.
+const MAX_LIVE_PIXELS: u64 = 160_000_000;
 
 /// Whether to pool at all. On by default; `false` restores create-per-call, so
 /// the two can be measured against each other in one process.
@@ -727,8 +792,30 @@ pub fn set_session_reuse(on: bool) {
 
 /// Drop every idle session, releasing its media-block resources.
 pub fn drain_session_pool() {
-    let drained: Vec<Session> = std::mem::take(&mut *lock_pool());
+    let mut pool = lock_pool();
+    let drained: Vec<Session> = std::mem::take(&mut pool.idle);
+    let freed: u64 = drained.iter().map(|s| s.key.pixels()).sum();
+    pool.live_pixels = pool.live_pixels.saturating_sub(freed);
+    // Still holding the lock: see `evict_oldest`.
     drop(drained);
+    drop(pool);
+    POOL_FREED.notify_all();
+}
+
+/// Pixels across every session that currently exists, idle or in flight.
+///
+/// Only for reporting — a decision made on this would be stale the moment the
+/// lock is dropped, which is why [`admit`] does its arithmetic under the lock
+/// instead of reading this.
+pub fn live_session_pixels() -> u64 {
+    lock_pool().live_pixels
+}
+
+/// How many sessions are idle. For tests: the pool's size is otherwise only
+/// observable through timings.
+#[cfg(test)]
+fn idle_count() -> usize {
+    lock_pool().idle.len()
 }
 
 /// `(hits, misses)` — sessions served from the pool, and sessions created.
@@ -741,31 +828,90 @@ pub fn session_pool_stats() -> (u64, u64) {
 
 /// A poisoned pool is not a reason to fail an encode: the only thing a panicking
 /// holder can have left behind is a `Vec` of sessions that are individually
-/// fine.
-fn lock_pool() -> std::sync::MutexGuard<'static, Vec<Session>> {
+/// fine, and a `live_pixels` that is correct — every path that changes it holds
+/// the lock across both the change and the session's fate.
+fn lock_pool() -> std::sync::MutexGuard<'static, Pool> {
     POOL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// End the oldest idle session, giving its pixels back. Caller holds the lock.
+///
+/// The `Drop` runs here, under the lock, rather than being deferred to the
+/// caller: `Invalidate` is what actually returns the resource to the media
+/// block, so releasing the budget without it would let the next [`admit`]
+/// proceed against hardware that is still full. It is a few milliseconds.
+fn evict_oldest(pool: &mut Pool) -> bool {
+    if pool.idle.is_empty() {
+        return false;
+    }
+    let victim = pool.idle.remove(0);
+    pool.live_pixels = pool.live_pixels.saturating_sub(victim.key.pixels());
+    drop(victim);
+    true
+}
+
+/// Reserve budget for a session of `pixels`, first by ending idle sessions and
+/// then by waiting for a live one to finish.
+///
+/// Every successful call must be paired with [`release`], or with a
+/// [`checkin`] that keeps the session alive and accounted for.
+fn admit(pixels: u64) {
+    let mut pool = lock_pool();
+    loop {
+        // `live_pixels == 0` admits a frame bigger than the whole budget rather
+        // than deadlocking on one nothing can make room for.
+        if pool.live_pixels == 0 || pool.live_pixels + pixels <= MAX_LIVE_PIXELS {
+            pool.live_pixels += pixels;
+            return;
+        }
+        if evict_oldest(&mut pool) {
+            continue;
+        }
+        // Nothing idle left to end: every session in the budget is in flight on
+        // another thread, so wait for one of them.
+        pool = POOL_FREED
+            .wait(pool)
+            .unwrap_or_else(|e| e.into_inner());
+    }
+}
+
+/// Give `pixels` back after a session has been dropped.
+fn release(pixels: u64) {
+    let mut pool = lock_pool();
+    pool.live_pixels = pool.live_pixels.saturating_sub(pixels);
+    drop(pool);
+    POOL_FREED.notify_all();
+}
+
 /// Take an idle session matching `key`, if there is one.
+///
+/// A reused session keeps the reservation it was created with — it never left
+/// the live set — so this deliberately does not touch `live_pixels`.
 fn checkout(key: SessionKey) -> Option<Session> {
     if !SESSION_REUSE.load(Ordering::Relaxed) {
         return None;
     }
     let mut pool = lock_pool();
-    let i = pool.iter().position(|s| s.key == key)?;
-    Some(pool.swap_remove(i))
+    let i = pool.idle.iter().position(|s| s.key == key)?;
+    Some(pool.idle.swap_remove(i))
 }
 
-/// Return a session for the next caller, or drop it if the pool is full.
+/// Return a session for the next caller, or end it if the pool is full.
 fn checkin(session: Session) {
     if !SESSION_REUSE.load(Ordering::Relaxed) {
+        let pixels = session.key.pixels();
+        drop(session);
+        release(pixels);
         return;
     }
     let mut pool = lock_pool();
-    if pool.len() >= MAX_IDLE_SESSIONS {
-        pool.remove(0);
+    if pool.idle.len() >= MAX_IDLE_SESSIONS {
+        evict_oldest(&mut pool);
     }
-    pool.push(session);
+    pool.idle.push(session);
+    drop(pool);
+    // An eviction above freed budget, and a waiter cannot see that on its own.
+    POOL_FREED.notify_all();
 }
 
 /// Encode one plane on the media block.
@@ -819,7 +965,16 @@ fn encode_plane(
         }
         None => {
             POOL_MISSES.fetch_add(1, Ordering::Relaxed);
-            (Session::create(key)?, false)
+            // Reserve before creating, and hand the reservation back if the
+            // create fails — a session that never existed must not hold budget.
+            admit(key.pixels());
+            match Session::create(key) {
+                Ok(s) => (s, false),
+                Err(e) => {
+                    release(key.pixels());
+                    return Err(e);
+                }
+            }
         }
     };
     let session_ms = t_sess.elapsed().as_secs_f64() * 1000.0;
@@ -831,7 +986,17 @@ fn encode_plane(
     let coded = session.encode_frame(pb);
     let encode_ms = t_enc.elapsed().as_secs_f64() * 1000.0;
     drop(guard);
-    let (data, hvcc) = coded?;
+    let (data, hvcc) = match coded {
+        Ok(v) => v,
+        Err(e) => {
+            // Dropping the session is what returns its resources to the media
+            // block, so the budget must not be given back before that — a
+            // waiter admitted in between would find the hardware still full.
+            drop(session);
+            release(key.pixels());
+            return Err(e);
+        }
+    };
     checkin(session);
 
     Ok(CodedPlane {
@@ -1068,6 +1233,25 @@ mod tests {
         vec![0x28, 0x01, 0xaf, 0x06, 0x1f, 0x00]
     }
 
+    /// The pool and the budget are process-global, and cargo runs tests in
+    /// parallel, so any test that observes either has to hold this. Without it
+    /// they pass alone and fail together — the worst kind of test.
+    static POOL_TESTS: Mutex<()> = Mutex::new(());
+
+    fn pool_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        POOL_TESTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 64x64 keeps a real hardware encode to a few milliseconds. Not flat: a
+    /// constant plane could compress to the same bytes for uninteresting reasons.
+    fn tiny_gain() -> GainPlane {
+        GainPlane {
+            width: 64,
+            height: 64,
+            data: (0..64 * 64).map(|i| (i % 251) as u8).collect(),
+        }
+    }
+
     #[test]
     fn recognises_the_real_videotoolbox_sei() {
         assert!(is_unregistered_user_data_sei(&real_vt_sei()));
@@ -1200,13 +1384,8 @@ mod tests {
     /// monochrome keeps it to a few milliseconds.
     #[test]
     fn a_pooled_session_encodes_identically_to_a_fresh_one() {
-        let gain = GainPlane {
-            width: 64,
-            height: 64,
-            // Not flat: a constant plane could compress to the same bytes for
-            // uninteresting reasons.
-            data: (0..64 * 64).map(|i| (i % 251) as u8).collect(),
-        };
+        let _serial = pool_test_lock();
+        let gain = tiny_gain();
 
         // Two cold encodes, which is what the recorded output hashes were taken
         // under.
@@ -1233,5 +1412,89 @@ mod tests {
         assert_ne!(other.data, cold.data, "q40 encoded the same as q85");
 
         drain_session_pool();
+    }
+
+    /// The budget only means anything if it is given back. Every path that ends a
+    /// session releases by hand — there is no `Drop` doing it, because eviction
+    /// runs while the pool lock is held and a reentrant release would deadlock —
+    /// so an unbalanced pair is a real possibility and a leak here would
+    /// eventually wedge [`admit`] on a budget nothing can free.
+    #[test]
+    fn a_completed_encode_leaves_no_budget_reserved() {
+        let _serial = pool_test_lock();
+        drain_session_pool();
+        assert_eq!(live_session_pixels(), 0, "drain must release everything");
+
+        let gain = tiny_gain();
+        encode_gain(&gain, 85).expect("encode");
+        assert_eq!(
+            live_session_pixels(),
+            64 * 64,
+            "the pooled session still holds its reservation"
+        );
+        drain_session_pool();
+        assert_eq!(live_session_pixels(), 0);
+
+        // A failing encode must release too. 8-bit is the only base depth the
+        // hardware path takes, so a 16-bit one is rejected before any session
+        // exists -- which is exactly the path that could leak a reservation.
+        let deep = Rgb { width: 64, height: 64, bits: 16, data: vec![0; 64 * 64 * 3] };
+        assert!(encode_base(&deep, 85).is_err());
+        assert_eq!(live_session_pixels(), 0, "a failed encode leaked budget");
+    }
+
+    /// Idle sessions hold the media block's resources exactly as in-flight ones
+    /// do, so making room means *ending* them, not merely not adding more.
+    #[test]
+    fn admitting_a_large_frame_ends_idle_sessions_to_make_room() {
+        let _serial = pool_test_lock();
+        set_session_reuse(true);
+        drain_session_pool();
+
+        let gain = tiny_gain();
+        encode_gain(&gain, 85).expect("encode");
+        encode_gain(&gain, 40).expect("encode at another quality");
+        assert_eq!(idle_count(), 2, "two distinct qualities, two idle sessions");
+
+        // Ask for the whole budget: the only way to grant it is to end both.
+        admit(MAX_LIVE_PIXELS);
+        assert_eq!(idle_count(), 0, "idle sessions were kept while a frame waited");
+        assert_eq!(live_session_pixels(), MAX_LIVE_PIXELS);
+        release(MAX_LIVE_PIXELS);
+        assert_eq!(live_session_pixels(), 0);
+    }
+
+    /// A frame larger than the entire budget must still encode when nothing else
+    /// is live. The alternative is a limit that refuses work the hardware would
+    /// have accepted — a single 103.8 MP frame encodes fine (`probe_vt_limits`).
+    #[test]
+    fn a_frame_bigger_than_the_budget_is_admitted_when_alone() {
+        let _serial = pool_test_lock();
+        drain_session_pool();
+        admit(MAX_LIVE_PIXELS * 2);
+        assert_eq!(live_session_pixels(), MAX_LIVE_PIXELS * 2);
+        release(MAX_LIVE_PIXELS * 2);
+        assert_eq!(live_session_pixels(), 0);
+    }
+
+    /// With the budget full and nothing idle to end, a waiter has to be woken by
+    /// the release rather than spin or fail. If the notify were missing this test
+    /// would hang instead of failing, which is the honest signal: the bug it
+    /// guards against is a lost wakeup.
+    #[test]
+    fn a_waiter_is_admitted_once_a_live_session_finishes() {
+        let _serial = pool_test_lock();
+        drain_session_pool();
+        admit(MAX_LIVE_PIXELS);
+
+        let waiter = std::thread::spawn(|| {
+            admit(MAX_LIVE_PIXELS);
+            release(MAX_LIVE_PIXELS);
+        });
+        // The thread cannot get past `admit` until this runs: the budget is full
+        // and the pool is empty, so there is nothing for it to evict.
+        release(MAX_LIVE_PIXELS);
+        waiter.join().expect("waiter thread");
+        assert_eq!(live_session_pixels(), 0);
     }
 }
