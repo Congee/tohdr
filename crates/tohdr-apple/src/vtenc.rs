@@ -1167,9 +1167,11 @@ impl tohdr_heif::PlaneCodec for VideoToolboxCodec {
     /// (`examples/probe_vt_colour.rs`). Declaring the wrong one cost 21 dB while
     /// making the file *smaller*, so it looked like a compression win rather than
     /// a colour bug — the reason `PlaneCodec::base_colour` has no default.
-    fn base_colour(&self) -> tohdr_heif::ColourInfo {
+    fn base_colour(&self, primaries: tohdr_core::Primaries) -> tohdr_heif::ColourInfo {
         tohdr_heif::ColourInfo::Nclx {
-            primaries: 1, // BT.709 / sRGB
+            // The loader's decision, not VideoToolbox's: it converts whatever RGB
+            // it is handed and never learns which primaries those were.
+            primaries: primaries.nclx(),
             transfer: 13, // sRGB
             matrix: 1,    // BT.709
             full_range: true,
@@ -1325,18 +1327,23 @@ mod tests {
     /// review.
     #[test]
     fn declares_the_bt709_matrix_videotoolbox_actually_writes() {
-        match tohdr_heif::PlaneCodec::base_colour(&VideoToolboxCodec) {
-            tohdr_heif::ColourInfo::Nclx {
-                matrix,
-                primaries,
-                transfer,
-                ..
-            } => {
-                assert_eq!(matrix, 1, "VideoToolbox writes BT.709; see probe_vt_colour.rs");
-                assert_eq!(primaries, 1);
-                assert_eq!(transfer, 13);
+        for p in tohdr_core::Primaries::ALL {
+            match tohdr_heif::PlaneCodec::base_colour(&VideoToolboxCodec, p) {
+                tohdr_heif::ColourInfo::Nclx {
+                    matrix,
+                    primaries,
+                    transfer,
+                    ..
+                } => {
+                    assert_eq!(matrix, 1, "VideoToolbox writes BT.709; see probe_vt_colour.rs");
+                    assert_eq!(transfer, 13);
+                    // The BT.709 above is the *matrix* -- how VideoToolbox turned
+                    // RGB into YCbCr -- and it must not move when the primaries do.
+                    // Confusing the two is how a P3 file ends up declared 709.
+                    assert_eq!(primaries, p.nclx(), "{p:?} was not passed through");
+                }
+                other => panic!("expected an nclx declaration, got {other:?}"),
             }
-            other => panic!("expected an nclx declaration, got {other:?}"),
         }
     }
 

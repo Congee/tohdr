@@ -76,9 +76,10 @@ exportServiceProvider.sectionsForTopOfDialog = TohdrExportDialog.sectionsForTopO
 ---   * `LR_export_useHDR` was invented. No such key exists in LrC 15.4.1's
 ---     export module or in any documentation. It was silently ignored, so
 ---     every intermediate this plugin ever rendered was SDR.
----   * `ProPhotoRGB` is a wide-gamut *SDR* space, and `tohdr` reads no ICC
----     profile on this path -- it assumed sRGB primaries and a PQ transfer for
----     any 16-bit TIFF, so the pixels were misread twice over.
+---   * `ProPhotoRGB` is a wide-gamut *SDR* space, and `tohdr` read no ICC
+---     profile on this path at the time -- it assumed sRGB primaries and a PQ
+---     transfer for any 16-bit TIFF, so the pixels were misread twice over. It
+---     reads the profile now, which is what allows the P3 request below.
 ---   * TIFF takes the bit depth from `bitDepthOthers`, not `bitDepth`; the
 ---     latter is the JPEG-era key. Both are set, since setting the wrong one
 ---     is silent.
@@ -90,11 +91,29 @@ function exportServiceProvider.updateExportSettings(exportSettings)
 	-- SubIFD carrying ISO 21496-1 metadata. `tohdr` transcodes that pair
 	-- directly rather than deriving anything.
 	exportSettings.LR_enableHDRDisplay = true
-	-- "HDR sRGB (Rec. 709)". Not P3 or Rec. 2020, both of which the dialog also
-	-- offers: `tohdr` is BT.709 end to end and reads no ICC profile here, so
-	-- wider primaries would be silently mislabelled rather than converted.
-	exportSettings.LR_export_colorSpace = 'sRGB_hdr'
-	exportSettings.LR_export_colorSpaceNonJPEG = 'sRGB_hdr'
+	-- "HDR Display P3", not "HDR sRGB (Rec. 709)".
+	--
+	-- This was sRGB, for a reason that no longer holds: `tohdr` was BT.709 end to
+	-- end and read no ICC profile on this path, so wider primaries would have been
+	-- silently mislabelled rather than carried. It now reads IFD0's embedded
+	-- profile and declares what it finds, so the wider export is the one to ask
+	-- for -- and asking for the narrow one is not neutral. Measured on a real
+	-- export of DSC07746 (`tohdr-apple/examples/probe_gamut.rs`), rendering into
+	-- Rec.709 puts 12.33% of the frame outside the gamut it is being squeezed
+	-- into, worst error dE 5.35, concentrated in a coherent yellow/yellow-green
+	-- region rather than scattered. The sRGB export's own row is dE 0.00 for the
+	-- least reassuring reason available: Lightroom had already clipped it, so
+	-- there was nothing left to lose.
+	--
+	-- `p3_hdr` is LrC's own token, not a guess: it is the value LrC writes into
+	-- `EditInPs_hdr_colorSpace` for its Edit-in-Photoshop HDR path, and the export
+	-- keys take the same `<space>_hdr` spellings (this machine's prefs held
+	-- `Rec2020_hdr`). None of it is documented. If a future LrC ignores the value,
+	-- the intermediate arrives in some other space and `tohdr` reports the
+	-- mismatch from the embedded profile instead of mislabelling the output --
+	-- which is what makes asking for this safe rather than hopeful.
+	exportSettings.LR_export_colorSpace = 'p3_hdr'
+	exportSettings.LR_export_colorSpaceNonJPEG = 'p3_hdr'
 	exportSettings.LR_export_bitDepth = 16
 	exportSettings.LR_export_bitDepthOthers = 16
 	-- Not 32: the float variant carries the identical gain map with the roles

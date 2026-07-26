@@ -111,6 +111,17 @@ function M.buildConvertArgs(settings, inputPath, outputPath)
 		table.insert(args, tostring(settings.tohdr_gainSubsample))
 	end
 
+	-- Stated rather than left to the CLI's default, so the plugin's two halves
+	-- cannot drift: ExportServiceProvider asks Lightroom for a `p3_hdr`
+	-- intermediate, and this is the same decision spelled to the other side. A
+	-- future change to the CLI's default must not silently retag these exports.
+	--
+	-- On the normal path `tohdr` reads the intermediate's own ICC profile and this
+	-- flag is redundant; it decides the SDR-fallback case, where there is no
+	-- embedded gain map and nothing to read a profile from.
+	table.insert(args, "--colour-space")
+	table.insert(args, "p3")
+
 	if settings.tohdr_headroom then
 		table.insert(args, "--headroom")
 		table.insert(args, tostring(settings.tohdr_headroom))

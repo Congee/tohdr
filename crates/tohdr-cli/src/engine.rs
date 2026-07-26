@@ -26,7 +26,7 @@ use std::path::Path;
 
 use tohdr_apple::vtenc::VideoToolboxCodec;
 use tohdr_apple::AppleEngine;
-use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, Rgb};
+use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, Primaries, Rgb};
 use tohdr_heif::MuxEngine;
 use tohdr_portable::PortableEngine;
 
@@ -147,18 +147,34 @@ impl Engine {
     /// Only [`tohdr_portable::Error::UnsupportedInput`] falls through. A TIFF
     /// that is corrupt, or too large, must still fail as itself rather than be
     /// quietly re-decoded by a different library with different behaviour.
-    pub fn load_hdr(&self, path: &Path) -> anyhow::Result<HdrRgb> {
+    /// `primaries` is the space to render *into*, and it is a lossy choice made
+    /// here: ImageIO carries out-of-gamut colour as negative components and the
+    /// loader clamps them, so asking for the narrow space is what discards wide
+    /// colour. See [`tohdr_core::colour`].
+    ///
+    /// The pure-Rust decoders do not take a space — they decode a TIFF or PNG at
+    /// face value — so this converts their output instead, which is exact in the
+    /// widening direction and needs no clamp.
+    pub fn load_hdr(&self, path: &Path, primaries: Primaries) -> anyhow::Result<HdrRgb> {
         let name = self.name();
+        let portable = |path: &Path| -> Result<HdrRgb, tohdr_portable::Error> {
+            let mut hdr = tohdr_portable::load_hdr(path)?;
+            // The pure-Rust loaders produce Rec.709; nothing in that set carries a
+            // profile this crate reads yet, so the conversion is stated rather
+            // than detected.
+            tohdr_core::colour::convert_linear_rgb(&mut hdr.data, Primaries::Bt709, primaries);
+            Ok(hdr)
+        };
         match self {
-            Engine::Apple(_) => catch(name, "load_hdr", || tohdr_apple::load_hdr(path)),
-            Engine::Hardware(_) => catch(name, "load_hdr", || {
-                match tohdr_portable::load_hdr(path) {
-                    Err(tohdr_portable::Error::UnsupportedInput(_)) => tohdr_apple::load_hdr(path)
-                        .map_err(|e| tohdr_portable::Error::Decode(e.to_string())),
-                    other => other,
+            Engine::Apple(_) => catch(name, "load_hdr", || tohdr_apple::load_hdr_in(path, primaries)),
+            Engine::Hardware(_) => catch(name, "load_hdr", || match portable(path) {
+                Err(tohdr_portable::Error::UnsupportedInput(_)) => {
+                    tohdr_apple::load_hdr_in(path, primaries)
+                        .map_err(|e| tohdr_portable::Error::Decode(e.to_string()))
                 }
+                other => other,
             }),
-            Engine::Portable(_) => catch(name, "load_hdr", || tohdr_portable::load_hdr(path)),
+            Engine::Portable(_) => catch(name, "load_hdr", || portable(path)),
         }
     }
 

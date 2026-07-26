@@ -145,9 +145,11 @@ impl PlaneCodec for HpvcaCodec {
     /// header: declaring BT.601 reconstructs at 69.31 dB and declaring BT.709 at
     /// 51.81 dB on the same coded bytes (`probe_vt_colour.rs`). The media block
     /// picks the other one, which is why this lives on the codec.
-    fn base_colour(&self) -> tohdr_heif::ColourInfo {
+    fn base_colour(&self, primaries: tohdr_core::Primaries) -> tohdr_heif::ColourInfo {
         tohdr_heif::ColourInfo::Nclx {
-            primaries: 1, // BT.709 / sRGB
+            // The loader's decision, not this codec's: hpvca codes whatever RGB
+            // it is handed and cannot tell one set of primaries from another.
+            primaries: primaries.nclx(),
             transfer: 13, // sRGB
             matrix: 6,    // BT.601 / SMPTE 170M
             // ImageIO's reconstruction is indifferent to this flag on both
@@ -218,13 +220,17 @@ mod tests {
     /// these two agree by accident is the day one of them is wrong.
     #[test]
     fn declares_the_bt601_matrix_it_actually_writes() {
-        match PlaneCodec::base_colour(&HpvcaCodec) {
-            tohdr_heif::ColourInfo::Nclx { matrix, primaries, transfer, .. } => {
-                assert_eq!(matrix, 6, "hpvca writes BT.601; see probe_vt_colour.rs");
-                assert_eq!(primaries, 1);
-                assert_eq!(transfer, 13);
+        for p in tohdr_core::Primaries::ALL {
+            match PlaneCodec::base_colour(&HpvcaCodec, p) {
+                tohdr_heif::ColourInfo::Nclx { matrix, primaries, transfer, .. } => {
+                    assert_eq!(matrix, 6, "hpvca writes BT.601; see probe_vt_colour.rs");
+                    assert_eq!(transfer, 13);
+                    // The matrix is the codec's fact and must not move with the
+                    // primaries; the primaries are the caller's and must.
+                    assert_eq!(primaries, p.nclx(), "{p:?} was not passed through");
+                }
+                other => panic!("expected an nclx declaration, got {other:?}"),
             }
-            other => panic!("expected an nclx declaration, got {other:?}"),
         }
     }
 

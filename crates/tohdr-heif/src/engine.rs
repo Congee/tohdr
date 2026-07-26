@@ -9,7 +9,7 @@
 //! pure-Rust fallback are interchangeable behind it, and [`MuxEngine`] is the
 //! container half that neither of them has to reimplement.
 
-use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, Rgb};
+use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, Primaries, Rgb};
 
 use crate::{Chroma, CodedImage, ColourInfo, MuxRequest};
 
@@ -52,7 +52,15 @@ pub trait PlaneCodec {
     /// 21 dB, and it hid behind a *smaller* file — which reads like a win until
     /// the reconstruction is measured. Hence no default implementation: a new
     /// backend must state its matrix rather than inherit someone else's.
-    fn base_colour(&self) -> ColourInfo;
+    ///
+    /// # Why the primaries come from outside
+    ///
+    /// The matrix and the transfer are facts about the encoder — it applied them,
+    /// so only it knows. The *primaries* are a fact about the pixels it was handed,
+    /// which the loader decided and the codec never sees: an encoder given RGB
+    /// cannot tell Rec.709 red from Display P3 red, and would be guessing. So the
+    /// caller states them and the codec composes the two halves of the answer.
+    fn base_colour(&self, primaries: Primaries) -> ColourInfo;
 
     /// Encode the SDR base.
     fn encode_base(&self, base: &Rgb, quality: u8) -> Result<CodedImage, Self::Error>;
@@ -150,7 +158,7 @@ impl<C: PlaneCodec + Sync> GainMapEncoder for MuxEngine<C> {
             gain: gain_coded,
             meta: *meta,
             flavor: opts.flavor,
-            base_colour: Some(self.0.base_colour()),
+            base_colour: Some(self.0.base_colour(opts.base_primaries)),
             // The `tmap` describes the reconstructed HDR image, not the SDR
             // base: Display P3 primaries with the PQ transfer, which is what
             // `IMG_4913.HEIC` puts here (as an ICC profile rather than
@@ -243,9 +251,9 @@ mod tests {
             "failing-test-codec"
         }
 
-        fn base_colour(&self) -> ColourInfo {
+        fn base_colour(&self, primaries: Primaries) -> ColourInfo {
             ColourInfo::Nclx {
-                primaries: 1,
+                primaries: primaries.nclx(),
                 transfer: 13,
                 matrix: 6,
                 full_range: true,

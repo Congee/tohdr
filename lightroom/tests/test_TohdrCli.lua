@@ -94,6 +94,9 @@ do
 	eq(argAfter(args, "--quality"), "85", "quality stringified")
 	eq(argAfter(args, "--tone-map"), "reinhard", "tone map")
 	check(hasArg(args, "--json"), "--json requested so failures are parseable")
+	-- ExportServiceProvider asks Lightroom for a `p3_hdr` intermediate; this is
+	-- the same decision spelled to the CLI, and the two must not drift.
+	eq(argAfter(args, "--colour-space"), "p3", "colour space stated explicitly")
 	check(not hasArg(args, "--max-size"), "no --max-size when disabled")
 	check(not hasArg(args, "--headroom"), "no --headroom unless set")
 end

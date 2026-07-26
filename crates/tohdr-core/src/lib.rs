@@ -19,6 +19,7 @@
 //! map exists to carry.
 
 pub mod apple;
+pub mod colour;
 pub mod derive;
 pub mod encode;
 pub mod exif;
@@ -30,6 +31,7 @@ pub mod meta;
 pub mod orient;
 pub mod sidecar;
 
+pub use colour::Primaries;
 pub use encode::{EncodeOptions, Flavor, GainMapEncoder};
 pub use orient::{heif_transform, HeifTransform};
 pub use sidecar::{MetadataSupport, OpaqueItem};

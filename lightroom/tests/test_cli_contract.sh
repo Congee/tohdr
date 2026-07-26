@@ -30,7 +30,7 @@ want_flag() {
 
 # Every flag TohdrCli.buildConvertArgs can emit.
 for f in --output --flavor --engine --max-size --quality --min-quality \
-         --tone-map --gain-subsample --headroom --json; do
+         --tone-map --gain-subsample --headroom --json --colour-space; do
     want_flag "$f"
 done
 
@@ -53,6 +53,9 @@ for v in apple iso both; do try_value --flavor "$v" flavor; done
 # codecs respectively.
 for v in apple portable hpvca; do try_value --engine "$v" engine; done
 for v in clip reinhard; do try_value --tone-map "$v" tone-map; done
+# The plugin emits `p3` to match the `p3_hdr` intermediate it asks Lightroom for;
+# the others exist so a Rec.2020 or sRGB export can be handled deliberately.
+for v in p3 srgb rec2020; do try_value --colour-space "$v" "colour space"; done
 
 # The two size spellings the dialog can produce.
 for v in 4MB 4MiB; do

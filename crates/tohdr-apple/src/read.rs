@@ -28,8 +28,9 @@ use objc2_core_foundation::{
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGBitmapInfo, CGColorSpace, CGContext, CGImageAlphaInfo,
-    CGImage, CGImageByteOrderInfo, CGImageComponentInfo, kCGColorSpaceExtendedLinearSRGB,
-    kCGColorSpaceSRGB,
+    CGImage, CGImageByteOrderInfo, CGImageComponentInfo, kCGColorSpaceDisplayP3,
+    kCGColorSpaceExtendedLinearDisplayP3, kCGColorSpaceExtendedLinearITUR_2020,
+    kCGColorSpaceExtendedLinearSRGB, kCGColorSpaceITUR_2020, kCGColorSpaceSRGB,
 };
 use objc2_image_io::{
     kCGImageAuxiliaryDataInfoDataDescription, kCGImageAuxiliaryDataInfoMetadata,
@@ -39,7 +40,7 @@ use objc2_image_io::{
     kCGImagePropertyPixelWidth, kCGImageSourceDecodeRequest, kCGImageSourceDecodeToHDR,
     CGImageMetadata, CGImageMetadataTag, CGImageSource,
 };
-use tohdr_core::{GainMapMeta, HdrRgb, Rgb};
+use tohdr_core::{GainMapMeta, HdrRgb, Primaries, Rgb};
 
 use crate::{Error, ReadBack, Result};
 
@@ -449,6 +450,7 @@ fn draw_band(sh: &SharedImage, f: BandFmt, buf: &mut [u8], y0: usize, rows: usiz
 fn render_banded_into<T, F>(
     d: &Decoded,
     hdr: bool,
+    primaries: Primaries,
     out: &mut [T],
     row_len: usize,
     convert: F,
@@ -459,12 +461,30 @@ where
 {
     let (w, h) = (d.w, d.h);
 
-    // 32-bit float RGBA in extended linear sRGB for HDR (so above-white
-    // survives), 8-bit RGBA sRGB for SDR.
+    // 32-bit float RGBA in an *extended linear* space for HDR (so above-white
+    // survives), 8-bit RGBA in the display-referred one for SDR.
+    //
+    // Which primaries is the caller's choice, and it is a lossy one made here
+    // rather than later: CoreGraphics converts into the space asked for and
+    // represents anything outside its primaries as negative components, which the
+    // `.max(0.0)` below then discards. Asking for the narrow space is what threw
+    // wide-gamut colour away -- 12.33% of the pixels of a Lightroom P3 export,
+    // worst dE 5.35 (`examples/probe_gamut.rs`). Asking for the wide one keeps it,
+    // and costs nothing on a source that never needed it.
     let (cs_name, bits, bytes_per_px) = if hdr {
-        (unsafe { kCGColorSpaceExtendedLinearSRGB }, 32usize, 16usize)
+        let cs = match primaries {
+            Primaries::Bt709 => unsafe { kCGColorSpaceExtendedLinearSRGB },
+            Primaries::DisplayP3 => unsafe { kCGColorSpaceExtendedLinearDisplayP3 },
+            Primaries::Bt2020 => unsafe { kCGColorSpaceExtendedLinearITUR_2020 },
+        };
+        (cs, 32usize, 16usize)
     } else {
-        (unsafe { kCGColorSpaceSRGB }, 8usize, 4usize)
+        let cs = match primaries {
+            Primaries::Bt709 => unsafe { kCGColorSpaceSRGB },
+            Primaries::DisplayP3 => unsafe { kCGColorSpaceDisplayP3 },
+            Primaries::Bt2020 => unsafe { kCGColorSpaceITUR_2020 },
+        };
+        (cs, 8usize, 4usize)
     };
     let cs = CGColorSpace::with_name(Some(cs_name))
         .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
@@ -526,12 +546,12 @@ where
     failed
 }
 
-pub(crate) fn load_hdr(path: &Path) -> Result<HdrRgb> {
+pub(crate) fn load_hdr(path: &Path, primaries: Primaries) -> Result<HdrRgb> {
     let d = open_image(path, true)?;
     let (w, h) = (d.w, d.h);
     let row_len = w * 3;
     let mut data = vec![0f32; row_len * h];
-    render_banded_into(&d, true, &mut data, row_len, |dst, band, bpp| {
+    render_banded_into(&d, true, primaries, &mut data, row_len, |dst, band, bpp| {
         let mut o = 0;
         for px in dst.chunks_exact_mut(3) {
             for (c, v) in px.iter_mut().enumerate() {
@@ -544,12 +564,12 @@ pub(crate) fn load_hdr(path: &Path) -> Result<HdrRgb> {
     Ok(HdrRgb { width: w as u32, height: h as u32, data })
 }
 
-pub(crate) fn load_sdr(path: &Path) -> Result<Rgb> {
+pub(crate) fn load_sdr(path: &Path, primaries: Primaries) -> Result<Rgb> {
     let d = open_image(path, false)?;
     let (w, h) = (d.w, d.h);
     let row_len = w * 3;
     let mut data = vec![0u16; row_len * h];
-    render_banded_into(&d, false, &mut data, row_len, |dst, band, bpp| {
+    render_banded_into(&d, false, primaries, &mut data, row_len, |dst, band, bpp| {
         let mut o = 0;
         for px in dst.chunks_exact_mut(3) {
             px[0] = band[o] as u16;

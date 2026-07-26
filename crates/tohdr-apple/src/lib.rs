@@ -12,19 +12,22 @@
 
 use std::path::Path;
 
-use tohdr_core::{EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, Rgb};
+use tohdr_core::{
+    EncodeOptions, GainMapEncoder, GainMapMeta, GainPlane, HdrRgb, Primaries, Rgb,
+};
 
 mod read;
 mod write;
 
 pub use write::{encode_from_hdr, encode_parts, encode_plane_heic_gray, encode_plane_heic_rgb};
 
-/// An 8-bit sRGB `CGImage`, for probes that need a real image to hand a
+/// An 8-bit `CGImage` in `primaries`, for probes that need a real image to hand a
 /// destination. Not part of the encoding surface — `examples/` only.
 pub fn cg_image_for_probe(
     rgb: &Rgb,
+    primaries: Primaries,
 ) -> Result<objc2_core_foundation::CFRetained<objc2_core_graphics::CGImage>> {
-    write::cg_image_from_sdr(rgb)
+    write::cg_image_from_sdr(rgb, primaries)
 }
 
 pub mod vtenc;
@@ -122,12 +125,28 @@ impl GainMapEncoder for AppleEngine {
 /// the *reconstruction* of base plus gain map rather than anything stored
 /// directly. `1.0` in the result is SDR diffuse white.
 pub fn load_hdr(path: &Path) -> Result<HdrRgb> {
-    read::load_hdr(path)
+    load_hdr_in(path, Primaries::Bt709)
+}
+
+/// [`load_hdr`] into a chosen set of primaries.
+///
+/// The choice is lossy and it is made here, not later: ImageIO renders into the
+/// space asked for and carries anything outside its primaries as negative
+/// components, which this loader clamps away. So the *narrow* request is the
+/// destructive one, and there is no recovering from it downstream — see
+/// [`tohdr_core::colour`] for what it costs on real files.
+pub fn load_hdr_in(path: &Path, primaries: Primaries) -> Result<HdrRgb> {
+    read::load_hdr(path, primaries)
 }
 
 /// Decode the SDR base of a file, without applying any gain map.
 pub fn load_sdr(path: &Path) -> Result<Rgb> {
-    read::load_sdr(path)
+    load_sdr_in(path, Primaries::Bt709)
+}
+
+/// [`load_sdr`] into a chosen set of primaries.
+pub fn load_sdr_in(path: &Path, primaries: Primaries) -> Result<Rgb> {
+    read::load_sdr(path, primaries)
 }
 
 /// What macOS ImageIO reports about a file. The comparison target for Engine B

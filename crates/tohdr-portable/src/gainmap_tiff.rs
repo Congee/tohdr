@@ -1,11 +1,13 @@
 //! Reading the gain map out of a Lightroom Classic "HDR Output" TIFF.
 //!
-//! With *HDR Output* checked and Color Space set to "HDR sRGB (Rec. 709)",
-//! LrC 15.4.1 does not write a single HDR image. It writes a **pair**, in one
-//! TIFF:
+//! With *HDR Output* checked, LrC 15.4.1 does not write a single HDR image. It
+//! writes a **pair**, in one TIFF. The structure below was read off an export
+//! made with Color Space "HDR sRGB (Rec. 709)"; the colour space changes only
+//! IFD0's embedded ICC profile, which [`read`] now reads to decide what the
+//! output should declare (the plugin asks for "HDR Display P3").
 //!
-//! - `IFD0` — the SDR rendition, 16-bit integer, sRGB primaries and sRGB
-//!   transfer (ICC `sRGB IEC61966-2.1`, 3144 bytes).
+//! - `IFD0` — the SDR rendition, 16-bit integer, with the export's primaries and
+//!   the sRGB transfer (ICC `sRGB IEC61966-2.1`, 3144 bytes, on that export).
 //! - a SubIFD referenced by tag 330, with `PhotometricInterpretation = 52553`
 //!   and `NewSubfileType = 32` — a full-resolution **3-channel 16-bit gain
 //!   map**, and a 145-byte tag **52557** holding ISO 21496-1 clause C.2.2
@@ -73,7 +75,7 @@
 use std::path::Path;
 
 use tohdr_core::derive::srgb_to_linear;
-use tohdr_core::{iso21496, par, GainMapMeta, HdrRgb, Rgb};
+use tohdr_core::{colour, iso21496, par, GainMapMeta, HdrRgb, Primaries, Rgb};
 
 use crate::{Error, Result};
 
@@ -89,6 +91,11 @@ const TAG_GAIN_MAP_METADATA: u16 = 52557;
 /// `145 - 4 = 141` bytes, which is exactly C.2.2 for a 3-channel map
 /// (`4 + 5 + 8 + 8 + 3 * 40`), with nothing spare.
 const METADATA_PREFIX_LEN: usize = 4;
+
+/// `InterColorProfile` — the embedded ICC profile, which is the file's only
+/// statement of what its pixels mean. LrC always writes one: a 3144-byte
+/// 1998 HP-authored `sRGB IEC61966-2.1` for the HDR sRGB export.
+const TAG_ICC_PROFILE: u16 = 34675;
 
 const TAG_IMAGE_WIDTH: u16 = 256;
 const TAG_IMAGE_LENGTH: u16 = 257;
@@ -116,6 +123,13 @@ pub struct GainMapTiff {
     /// callers can report Adobe's headroom next to the one we derive; the two
     /// are different quantities and need not agree.
     pub declared: GainMapMeta,
+    /// The primaries `base` and `hdr` are in, read from the embedded ICC profile.
+    ///
+    /// `None` when the TIFF carries no profile, or one this crate has no matrix
+    /// for — an Adobe RGB or ProPhoto export, say. `None` is not "assume sRGB":
+    /// assuming would produce a file whose pixels and label disagree, which is
+    /// undetectable downstream, so the caller has to decide what to do about it.
+    pub primaries: Option<Primaries>,
 }
 
 /// Shape and metadata only. Derived `Debug` on this would try to format two
@@ -217,7 +231,16 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Option<GainMapTiff>> {
         )));
     }
 
-    Ok(Some(reconstruct(&base_plane, &gain_plane, declared)))
+    // Read before reconstructing so a profile problem is reported against the
+    // file rather than against pixels we already spent time on.
+    let primaries = ifd0
+        .get(TAG_ICC_PROFILE)
+        .and_then(|e| tiff.bytes_of(&e).ok())
+        .and_then(colour::primaries_from_icc);
+
+    let mut out = reconstruct(&base_plane, &gain_plane, declared);
+    out.primaries = primaries;
+    Ok(Some(out))
 }
 
 fn read_metadata(tiff: &Tiff, gain_ifd: &Ifd) -> Result<GainMapMeta> {
@@ -329,6 +352,8 @@ fn reconstruct(base: &Plane<'_>, gain: &Plane<'_>, declared: GainMapMeta) -> Gai
             data: base8,
         },
         declared,
+        // Filled in by `read`, which is where the IFD is still in hand.
+        primaries: None,
     }
 }
 

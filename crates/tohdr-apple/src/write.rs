@@ -22,7 +22,9 @@ use objc2_core_foundation::{
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
     CGImageAlphaInfo, CGImageByteOrderInfo, CGImageComponentInfo,
-    kCGColorSpaceExtendedLinearSRGB, kCGColorSpaceGenericGrayGamma2_2, kCGColorSpaceSRGB,
+    kCGColorSpaceDisplayP3, kCGColorSpaceExtendedLinearDisplayP3,
+    kCGColorSpaceExtendedLinearITUR_2020, kCGColorSpaceExtendedLinearSRGB,
+    kCGColorSpaceGenericGrayGamma2_2, kCGColorSpaceITUR_2020, kCGColorSpaceSRGB,
 };
 use objc2_image_io::{
     kCGImageAuxiliaryDataInfoData, kCGImageAuxiliaryDataInfoDataDescription,
@@ -36,7 +38,7 @@ use objc2_image_io::{
     CGImageDestination, CGImageMetadataTag, CGImageMetadataType, CGImageSource,
     CGImageMetadata, CGMutableImageMetadata,
 };
-use tohdr_core::{EncodeOptions, GainMapMeta, GainPlane, HdrRgb, Rgb};
+use tohdr_core::{EncodeOptions, GainMapMeta, GainPlane, HdrRgb, Primaries, Rgb};
 
 use crate::{Error, Result};
 
@@ -65,7 +67,7 @@ fn cf_dict(pairs: &[(&CFString, &CFType)]) -> CFRetained<CFDictionary> {
 /// linear light, `1.0` at SDR diffuse white, values above it permitted. Using
 /// a non-extended space here would clamp the headroom away before ImageIO ever
 /// sees it.
-fn cg_image_from_hdr(hdr: &HdrRgb) -> Result<CFRetained<CGImage>> {
+fn cg_image_from_hdr(hdr: &HdrRgb, primaries: Primaries) -> Result<CFRetained<CGImage>> {
     // 4 components, not 3. CoreGraphics has no valid alpha-less 96 bpp RGB
     // float layout; `CGImageCreate` accepts the arithmetic without complaint
     // and then misreads the buffer. Measured on the same source: the 96 bpp
@@ -82,8 +84,14 @@ fn cg_image_from_hdr(hdr: &HdrRgb) -> Result<CFRetained<CGImage>> {
     let data = CFData::from_bytes(&bytes);
     let provider = CGDataProvider::with_cf_data(Some(&data))
         .ok_or(Error::NullFromFramework("CGDataProviderCreateWithCFData"))?;
-    let cs = unsafe { CGColorSpace::with_name(Some(kCGColorSpaceExtendedLinearSRGB)) }
-        .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
+    let cs = unsafe {
+        CGColorSpace::with_name(Some(match primaries {
+            Primaries::Bt709 => kCGColorSpaceExtendedLinearSRGB,
+            Primaries::DisplayP3 => kCGColorSpaceExtendedLinearDisplayP3,
+            Primaries::Bt2020 => kCGColorSpaceExtendedLinearITUR_2020,
+        }))
+    }
+    .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
 
     // Float samples, little-endian, 4th channel present but ignored. Spelled
     // through the component and byte-order enums because the flat
@@ -112,8 +120,13 @@ fn cg_image_from_hdr(hdr: &HdrRgb) -> Result<CFRetained<CGImage>> {
     .ok_or(Error::NullFromFramework("CGImageCreate (hdr)"))
 }
 
-/// Wrap 8-bit sRGB RGB in a `CGImage`.
-pub(crate) fn cg_image_from_sdr(rgb: &Rgb) -> Result<CFRetained<CGImage>> {
+/// Wrap 8-bit display-referred RGB in a `CGImage`.
+///
+/// `primaries` must be the space the pixels are actually in. ImageIO writes the
+/// matching ICC profile into the output from this tag alone, so a wrong value here
+/// is not a rounding error: it is a file that says one thing and contains another,
+/// and every consumer then applies a conversion nobody asked for.
+pub(crate) fn cg_image_from_sdr(rgb: &Rgb, primaries: Primaries) -> Result<CFRetained<CGImage>> {
     if rgb.bits != 8 {
         return Err(Error::Unreadable(format!(
             "Engine A's SDR path takes 8-bit input, got {}-bit",
@@ -124,8 +137,14 @@ pub(crate) fn cg_image_from_sdr(rgb: &Rgb) -> Result<CFRetained<CGImage>> {
     let data = CFData::from_bytes(&bytes);
     let provider = CGDataProvider::with_cf_data(Some(&data))
         .ok_or(Error::NullFromFramework("CGDataProviderCreateWithCFData"))?;
-    let cs = unsafe { CGColorSpace::with_name(Some(kCGColorSpaceSRGB)) }
-        .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
+    let cs = unsafe {
+        CGColorSpace::with_name(Some(match primaries {
+            Primaries::Bt709 => kCGColorSpaceSRGB,
+            Primaries::DisplayP3 => kCGColorSpaceDisplayP3,
+            Primaries::Bt2020 => kCGColorSpaceITUR_2020,
+        }))
+    }
+    .ok_or(Error::NullFromFramework("CGColorSpaceCreateWithName"))?;
     unsafe {
         CGImage::new(
             rgb.width as usize,
@@ -149,8 +168,8 @@ pub(crate) fn cg_image_from_sdr(rgb: &Rgb) -> Result<CFRetained<CGImage>> {
 /// Apple picks the tone curve, the gain plane and every container detail, so
 /// the result is the ground truth for "what a gain-map HEIC should look like on
 /// this OS". `quality` is `1..=100`, mapped onto ImageIO's `0.0..=1.0`.
-pub fn encode_from_hdr(hdr: &HdrRgb, quality: u8) -> Result<Vec<u8>> {
-    let image = cg_image_from_hdr(hdr)?;
+pub fn encode_from_hdr(hdr: &HdrRgb, quality: u8, primaries: Primaries) -> Result<Vec<u8>> {
+    let image = cg_image_from_hdr(hdr, primaries)?;
 
     let out = CFMutableData::new(None, 0).ok_or(Error::NullFromFramework("CFDataCreateMutable"))?;
     let uti = CFString::from_str(HEIC_UTI);
@@ -190,8 +209,8 @@ pub fn encode_from_hdr(hdr: &HdrRgb, quality: u8) -> Result<Vec<u8>> {
 /// The output is hpvca's contract exactly: one coded image item, no `grid`, so
 /// [`tohdr_heif::HeifFile::coded_image`] can pull the HEVC and `hvcC` straight
 /// back out with no re-encode.
-pub fn encode_plane_heic_rgb(rgb: &Rgb, quality: u8) -> Result<Vec<u8>> {
-    let image = cg_image_from_sdr(rgb)?;
+pub fn encode_plane_heic_rgb(rgb: &Rgb, quality: u8, primaries: Primaries) -> Result<Vec<u8>> {
+    let image = cg_image_from_sdr(rgb, primaries)?;
     finalize_single_image(&image, quality)
 }
 
@@ -462,7 +481,7 @@ pub fn encode_parts(
     meta: &GainMapMeta,
     opts: &EncodeOptions,
 ) -> Result<Vec<u8>> {
-    let image = cg_image_from_sdr(base)?;
+    let image = cg_image_from_sdr(base, opts.base_primaries)?;
     let out = CFMutableData::new(None, 0).ok_or(Error::NullFromFramework("CFDataCreateMutable"))?;
     let uti = CFString::from_str(HEIC_UTI);
     let dest = unsafe { CGImageDestination::with_data(&out, &uti, 1, None) }

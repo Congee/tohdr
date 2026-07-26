@@ -87,6 +87,16 @@ pub struct EncodeOptions<'a> {
     /// the container says so — and it has to say the same thing the Exif tag in
     /// the same file says. See [`crate::orient`].
     pub orientation: crate::HeifTransform,
+    /// Which primaries the `base` pixels are actually in, and therefore what the
+    /// output must declare.
+    ///
+    /// This is not a request to convert — by the time an engine sees the base, the
+    /// conversion has happened in the loader. It is the caller stating what it
+    /// loaded, so the container can say the same thing. The two have to come from
+    /// one decision or the file is mislabelled, which is the one colour bug
+    /// nothing downstream can detect: the pixels decode fine and are simply the
+    /// wrong colour. See [`crate::colour`].
+    pub base_primaries: crate::Primaries,
 }
 
 impl Default for EncodeOptions<'_> {
@@ -100,6 +110,12 @@ impl Default for EncodeOptions<'_> {
             xmp: None,
             opaque_items: &[],
             orientation: crate::HeifTransform::default(),
+            // Rec.709, not the wider space the CLI defaults to. This default
+            // serves the muxing tests and probes, which compare containers and
+            // codecs rather than colour, and whose recorded output hashes are
+            // what they are; the colour decision belongs to whoever loaded the
+            // pixels. `tohdr convert` states P3 explicitly.
+            base_primaries: crate::Primaries::Bt709,
         }
     }
 }

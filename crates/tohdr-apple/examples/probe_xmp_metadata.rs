@@ -131,7 +131,7 @@ fn main() {
         bits: 8,
         data: vec![128u16; 8 * 8 * 3],
     };
-    let image = tohdr_apple::cg_image_for_probe(&base).expect("CGImage");
+    let image = tohdr_apple::cg_image_for_probe(&base, tohdr_core::Primaries::Bt709).expect("CGImage");
     let out = CFMutableData::new(None, 0).expect("CFMutableData");
     let uti = CFString::from_str("public.heic");
     let dest = unsafe { CGImageDestination::with_data(&out, &uti, 1, None) }.expect("destination");

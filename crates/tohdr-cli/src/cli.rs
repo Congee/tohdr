@@ -112,6 +112,24 @@ pub struct ConvertArgs {
     #[arg(long = "tone-map", default_value = "reinhard", value_parser = parse_tone_map)]
     pub tone_map: ToneMapKind,
 
+    /// Colour primaries for the output's SDR base: `p3` or `srgb` (`rec2020`
+    /// is accepted for a Rec.2020 source).
+    ///
+    /// Display P3 by default, because that is what the hardware and the
+    /// reference file both do: every iPhone capture since 2020 ships a P3 base,
+    /// so it is the compatibility-proven choice rather than the adventurous one.
+    /// It is also not free to give up — rendering into Rec.709 instead discards
+    /// every colour outside it, measured at 12.33% of the pixels of a Lightroom
+    /// P3 export with a worst error of dE 5.35
+    /// (`tohdr-apple/examples/probe_gamut.rs`).
+    ///
+    /// This selects the space the source is *rendered into* as well as the one
+    /// the output declares; the two are one decision on purpose, since a file
+    /// whose pixels and label disagree is wrong in a way no consumer can detect.
+    #[arg(long = "colour-space", alias = "color-space", default_value = "p3",
+          value_parser = tohdr_core::Primaries::parse)]
+    pub colour_space: tohdr_core::Primaries,
+
     /// Gain-plane downscale factor relative to the base, e.g. `2` = half
     /// resolution (Apple's convention).
     #[arg(long = "gain-subsample", default_value_t = 2)]
@@ -166,6 +184,11 @@ pub struct BatchArgs {
     #[arg(long = "gain-subsample", default_value_t = 2)]
     pub gain_subsample: u32,
 
+    /// Colour primaries for each output's SDR base. See `tohdr convert --help`.
+    #[arg(long = "colour-space", alias = "color-space", default_value = "p3",
+          value_parser = tohdr_core::Primaries::parse)]
+    pub colour_space: tohdr_core::Primaries,
+
     /// Give every file its own `VTCompressionSession` instead of reusing one.
     ///
     /// Only affects `--engine portable` on a machine with a media block. Reuse
@@ -199,6 +222,7 @@ impl BatchArgs {
             min_quality: self.min_quality,
             tone_map: self.tone_map,
             gain_subsample: self.gain_subsample,
+            colour_space: self.colour_space,
             headroom: None,
             json: false,
         }

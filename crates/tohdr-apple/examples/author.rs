@@ -13,7 +13,7 @@ fn main() {
     let peak = hdr.peak_luma(0.001);
     println!("source {}x{}, peak {peak:.3}x SDR white", hdr.width, hdr.height);
 
-    let bytes = tohdr_apple::encode_from_hdr(&hdr, q).expect("encode_from_hdr");
+    let bytes = tohdr_apple::encode_from_hdr(&hdr, q, tohdr_core::Primaries::DisplayP3).expect("encode_from_hdr");
     std::fs::write(&dst, &bytes).expect("write");
     println!("wrote {dst} ({} bytes) at quality {q}", bytes.len());
 

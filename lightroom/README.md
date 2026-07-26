@@ -74,6 +74,7 @@ Either way:
 | Maximum file size (e.g. 4 MB) | `--max-size` |
 | Quality, minimum quality | `--quality`, `--min-quality` |
 | Tone map — clip / Reinhard | `--tone-map` |
+| *(not exposed)* base colour space, fixed at P3 | `--colour-space p3` |
 | Custom tohdr path | — |
 
 The maximum-size box maps onto the CLI's quality search: it steps quality down
@@ -81,11 +82,28 @@ until the file fits, and **fails the photo loudly** rather than writing an
 oversized file. Failures surface per photo through `uploadFailed`, carrying the
 CLI's own last line of stderr rather than a bare exit code.
 
-The intermediate render is forced to an uncompressed 16-bit **HDR sRGB (Rec.
-709)** TIFF with `LR_enableHDRDisplay`, and deleted after conversion. That is
-not configurable on purpose: a JPEG or 8-bit intermediate has already discarded
-the above-white highlights, and would yield a structurally perfect file
-containing no HDR.
+The intermediate render is forced to an uncompressed 16-bit **HDR Display P3**
+TIFF with `LR_enableHDRDisplay`, and deleted after conversion. That is not
+configurable on purpose: a JPEG or 8-bit intermediate has already discarded the
+above-white highlights, and would yield a structurally perfect file containing no
+HDR.
+
+P3 rather than sRGB because the narrow request is not the neutral one. Rendering
+into Rec.709 discards every colour outside it — measured on a real export of
+DSC07746, 12.33% of the frame, worst error dE 5.35, concentrated in a coherent
+yellow/yellow-green region rather than scattered
+(`tohdr-apple/examples/probe_gamut.rs`). The sRGB export's own row in that table
+reads dE 0.00 for the least reassuring reason available: Lightroom had already
+clipped it, so there was nothing left to lose. For an iPhone capture P3 is
+*exactly* enough — 0 pixels of IMG_4913 fall outside it, against 44,799 outside
+Rec.709.
+
+This was sRGB until `tohdr` could read the intermediate's embedded ICC profile.
+Asking for wider primaries before that would have mislabelled rather than carried
+them: the pixels would have been P3 and the output would have said Rec.709, which
+no consumer can detect — it simply renders desaturated. `tohdr` now reads IFD0's
+profile and declares what it finds, so a Lightroom that ignored the request would
+produce a reported mismatch instead of a quietly wrong file.
 
 What that intermediate actually contains is worth knowing, because it changes
 what the CLI does with it. Lightroom does not write one HDR image; it writes a
@@ -163,7 +181,16 @@ Be clear about which half of this is proven.
 - Any end-to-end export of an actual photo through to a written HEIC.
 - That `waitForRender`, `uploadFailed` and `configureProgress` behave as expected
   across a full export session.
-- That `LR_enableHDRDisplay` / `LR_export_colorSpaceNonJPEG = 'sRGB_hdr'` /
+- **That Lightroom honours `LR_export_colorSpaceNonJPEG = 'p3_hdr'`.** The token
+  is LrC's own — it is what LrC writes into `EditInPs_hdr_colorSpace` for its
+  Edit-in-Photoshop HDR path, and the export keys take the same `<space>_hdr`
+  spellings — but no export has been driven through it yet, and Adobe documents
+  none of these values. If it is ignored, the intermediate arrives in some other
+  space; `tohdr` then reports the mismatch from the embedded ICC profile rather
+  than mislabelling the output, so the failure is loud rather than silent. The
+  thing to check on the first P3 export is that `tohdr` prints no `note:` line
+  about the source's profile disagreeing with the requested space.
+- That `LR_enableHDRDisplay` / `LR_export_colorSpaceNonJPEG` /
   `LR_export_bitDepthOthers` are accepted under those names by an export
   service. The names and values are confirmed to be what the *dialog* stores
   (`AgExport_enableHDRDisplay`, `AgExport_export_colorSpaceNonJPEG`,

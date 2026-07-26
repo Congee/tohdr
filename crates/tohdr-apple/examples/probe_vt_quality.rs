@@ -53,8 +53,8 @@ impl PlaneCodec for TunedVt {
 
     /// BT.709, matching `VideoToolboxCodec` — the whole point is to vary quality
     /// with everything else held at what the shipping codec does.
-    fn base_colour(&self) -> tohdr_heif::ColourInfo {
-        tohdr_heif::PlaneCodec::base_colour(&vtenc::VideoToolboxCodec)
+    fn base_colour(&self, p: tohdr_core::Primaries) -> tohdr_heif::ColourInfo {
+        tohdr_heif::PlaneCodec::base_colour(&vtenc::VideoToolboxCodec, p)
     }
 
     fn encode_base(&self, base: &Rgb, quality: u8) -> Result<CodedImage, Self::Error> {

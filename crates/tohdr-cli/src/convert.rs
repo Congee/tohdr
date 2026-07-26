@@ -93,6 +93,10 @@ pub struct ConvertReport {
     pub quality: u8,
     pub gain_quality: u8,
     pub gain_subsample: u32,
+    /// Primaries the output's SDR base is in and declares, e.g. `"p3"`. On the
+    /// embedded-gain-map path this is the source TIFF's own profile rather than
+    /// what `--colour-space` asked for; see the note `convert` prints.
+    pub colour_space: String,
     pub headroom_stops: f32,
     pub headroom_overridden: bool,
     pub bytes_written: u64,
@@ -107,11 +111,13 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
         println!("{}", serde_json::to_string(&report)?);
     } else {
         println!(
-            "wrote {} ({} bytes, {} engine, {} flavor, quality {}, headroom {:.3} stops{})",
+            "wrote {} ({} bytes, {} engine, {} flavor, {} base, quality {}, \
+             headroom {:.3} stops{})",
             report.output,
             report.bytes_written,
             report.engine,
             report.flavor,
+            report.colour_space,
             report.quality,
             report.headroom_stops,
             if report.headroom_overridden { ", overridden" } else { "" },
@@ -203,6 +209,15 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     };
 
     let loader = Engine::new(args.engine);
+    // One decision, two uses: the space the source is rendered into, and the space
+    // the output declares. Split them and the file lies about its own pixels.
+    //
+    // The embedded-gain-map path is the exception, and deliberately: those base
+    // pixels are *Lightroom's* rendition, shipped as they are. Re-matrixing them
+    // into a different set of primaries would be reprocessing the photographer's
+    // output, so that path declares what the TIFF's own ICC profile says instead
+    // of what was requested.
+    let mut primaries = args.colour_space;
     let (hdr, base, tone_map_used, gain_map_source) = match embedded {
         Some(g) => {
             step!(
@@ -211,6 +226,31 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
                 args.input.display(),
                 g.declared.alt_headroom,
             );
+            match g.primaries {
+                Some(p) => {
+                    if p != args.colour_space {
+                        eprintln!(
+                            "tohdr: note: {} is {} by its own ICC profile, so the output declares \
+                             {} rather than the requested {}. Re-matrixing Lightroom's own SDR \
+                             rendition would reprocess it; export from Lightroom in {} instead.",
+                            args.input.display(),
+                            p.label(),
+                            p.label(),
+                            args.colour_space.label(),
+                            args.colour_space.label(),
+                        );
+                    }
+                    primaries = p;
+                }
+                None => eprintln!(
+                    "tohdr: warning: {} embeds no ICC profile this build recognises, so its \
+                     colour space is a guess; declaring {}. An Adobe RGB or ProPhoto export \
+                     would be silently desaturated -- export as HDR sRGB, Display P3, or \
+                     Rec.2020.",
+                    args.input.display(),
+                    primaries.label(),
+                ),
+            }
             (
                 g.hdr,
                 g.base,
@@ -220,12 +260,13 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         }
         None => {
             step!(
-                "tohdr: loading {} with {} engine",
+                "tohdr: loading {} with {} engine, rendering into {}",
                 args.input.display(),
-                loader.name()
+                loader.name(),
+                primaries.label()
             );
             let hdr = loader
-                .load_hdr(&args.input)
+                .load_hdr(&args.input, primaries)
                 .with_context(|| format!("loading HDR source {}", args.input.display()))?;
 
             let white = hdr.peak_luma(PEAK_OUTLIER_FRACTION);
@@ -419,6 +460,7 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         orientation: tohdr_core::heif_transform(
             source_exif.as_ref().map_or(1, |e| e.orientation),
         ),
+        base_primaries: primaries,
     };
 
     let (bytes, quality_used, attempts, within_budget) = if let Some(max_bytes) = args.max_size {
@@ -493,6 +535,7 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         quality: quality_used,
         gain_quality: quality_used,
         gain_subsample: derive_opts.subsample,
+        colour_space: primaries.label().to_string(),
         headroom_stops: meta.alt_headroom,
         headroom_overridden,
         bytes_written: bytes.len() as u64,
