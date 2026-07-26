@@ -22,6 +22,16 @@ realigns its headroom tag (§8 below). Converting a source that has no MakerAppl
 tags of its own — a TIFF or a JPEG — still passes 10/10 applicable and skips 8,
 which is the correct outcome rather than a gap: there is no tag to check.
 
+That last case is where having two checkers paid for itself. `tohdr verify`
+**failed** it — "Apple aux image present but MakerApple tags are missing" — while
+the Python checker skipped it, so the two disagreed about a file that was in fact
+correct, and every TIFF or JPEG conversion exited non-zero for obeying §8's
+"never from nothing" rule. The Rust checker was the wrong one and now skips too.
+Measured on all four files, both checkers agree: `tohdr verify` and
+`verify_gainmap.py` exit 0 on `IMG_4913.HEIC` and on a TIFF conversion, and 1 on
+both `DSC07752*`. A disagreement between them is by construction a bug in one of
+them, and should be chased rather than explained away.
+
 Reference values come from `docs/heic-gainmap-structure.md`, decoded byte by byte
 from the real files; the raw payloads are committed under `assets/fixtures/`.
 

@@ -94,29 +94,44 @@ pub fn checks_for(rb: &ReadBack) -> Vec<Check> {
         }
     }
 
-    match (rb.tag33, rb.tag48) {
-        (Some(t33), Some(t48)) => checks.push(Check {
-            name: "maker_apple_tags_non_negative".into(),
-            passed: t33 >= 0.0 && t48 >= 0.0,
-            detail: format!(
+    // Absent tags are a *skip*, not a failure, even with an Apple aux image
+    // present. `docs/acceptance-criteria.md` §8 settles this: writing no tags
+    // is the one option that never lies, so it is what we do both when the
+    // source had no MakerNote to carry and when the headroom exceeds the 3.0
+    // stops Apple's formula can express. Nothing in a `ReadBack` tells those
+    // apart from a writer that simply forgot — the source's MakerNote is not
+    // in the output — so absence is no evidence of a defect and this check has
+    // nothing to say about it. `tools/verify_gainmap.py:587` skips the same
+    // case; failing it here made every TIFF and JPEG conversion exit non-zero
+    // for doing the right thing.
+    //
+    // A skip is modeled as pass-with-reason, matching `headroom_consistent`
+    // above, rather than adding a third state to `Check` and the JSON the
+    // plugin reads.
+    let (tags_ok, tags_detail) = match (rb.tag33, rb.tag48) {
+        (Some(t33), Some(t48)) => (
+            t33 >= 0.0 && t48 >= 0.0,
+            format!(
                 "tag33={t33:.6} tag48={t48:.6}{}",
-                if t48 < 0.0 {
-                    " -- negative tag48 is the toGainMapHDR bug"
-                } else {
-                    ""
-                }
+                if t48 < 0.0 { " -- negative tag48 is the toGainMapHDR bug" } else { "" }
             ),
-        }),
-        _ => checks.push(Check {
-            name: "maker_apple_tags_non_negative".into(),
-            passed: !rb.apple_aux,
-            detail: if rb.apple_aux {
-                "Apple aux image present but MakerApple tags are missing".into()
-            } else {
-                "no Apple flavor, tags not expected".into()
-            },
-        }),
-    }
+        ),
+        // tag33 picks which regime of Apple's headroom formula applies, so
+        // tag48 without it decodes to nothing. Criterion 8 requires the pair;
+        // the catch-all arm this replaces judged the case on `apple_aux` and
+        // so could pass a file carrying an undecodable tag48.
+        (None, Some(t48)) => (
+            false,
+            format!("tag48={t48:.6} but tag33 is missing -- neither decodes without the other"),
+        ),
+        (Some(t33), None) => (t33 >= 0.0, format!("tag33={t33:.6}, no tag48 to check")),
+        (None, None) => (true, "skipped: no MakerApple headroom tags present".into()),
+    };
+    checks.push(Check {
+        name: "maker_apple_tags_non_negative".into(),
+        passed: tags_ok,
+        detail: tags_detail,
+    });
 
     if let Some(m) = &rb.iso_meta {
         let phone_w = gain_weight(m, PHONE_HEADROOM_STOPS);
@@ -272,8 +287,13 @@ mod tests {
         assert!(c.passed, "no ISO metadata to check should not fail");
     }
 
+    /// The inverse of what this test used to assert. It required a failure when
+    /// an Apple-flavor file carried no tags, which contradicted
+    /// `docs/acceptance-criteria.md` §8 and `tools/verify_gainmap.py:587` — and
+    /// made a conversion of any TIFF or JPEG exit non-zero, since those have no
+    /// MakerNote to carry and §8's rule is "never from nothing".
     #[test]
-    fn missing_tags_on_apple_flavor_fails() {
+    fn missing_tags_on_apple_flavor_skips() {
         let mut rb = base_readback();
         rb.tag33 = None;
         rb.tag48 = None;
@@ -282,6 +302,24 @@ mod tests {
             .iter()
             .find(|c| c.name == "maker_apple_tags_non_negative")
             .unwrap();
-        assert!(!c.passed, "apple_aux=true but tags missing must fail");
+        assert!(c.passed, "no tags to check is a skip, not a failure");
+        assert!(c.detail.contains("skipped"), "a skip must read as one: {}", c.detail);
+        assert!(checks.iter().all(|c| c.passed), "{checks:?}");
+    }
+
+    /// tag48 alone is undecodable: tag33 selects which regime of Apple's
+    /// formula applies. The catch-all arm that preceded the explicit match
+    /// judged this case on `apple_aux` and let it pass.
+    #[test]
+    fn tag48_without_tag33_fails() {
+        let mut rb = base_readback();
+        rb.tag33 = None;
+        let checks = checks_for(&rb);
+        let c = checks
+            .iter()
+            .find(|c| c.name == "maker_apple_tags_non_negative")
+            .unwrap();
+        assert!(!c.passed, "an undecodable tag48 must not pass");
+        assert!(c.detail.contains("tag33 is missing"), "{}", c.detail);
     }
 }
