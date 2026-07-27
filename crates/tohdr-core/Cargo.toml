@@ -11,4 +11,6 @@ license.workspace = true
 [dev-dependencies]
 # Independent oracle for our ISO 21496-1 serializer. Deliberately NOT a runtime
 # dependency: we cross-check against it rather than trust it in the hot path.
-ultrahdr-core = "0.6"
+# default-features off: its `tonemap` feature pulls AGPL-3.0-only zentone, which
+# we do not use and cargo-deny does not see through dev-dependencies.
+ultrahdr-core = { version = "0.6", default-features = false, features = ["std"] }
