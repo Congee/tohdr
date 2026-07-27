@@ -25,7 +25,7 @@ pub enum Command {
     Batch(BatchArgs),
     /// Report what's actually in a HEIC's gain map, both flavors.
     Inspect(InspectArgs),
-    /// Check a file's gain map against the correctness invariants IMG_4913 holds.
+    /// Check a file's gain map against the invariants a correct capture holds.
     Verify(VerifyArgs),
     /// Compare the Apple and portable engines on one input.
     Bench(BenchArgs),
@@ -259,8 +259,8 @@ pub struct InspectArgs {
 pub struct VerifyArgs {
     pub file: PathBuf,
 
-    /// Reference file to compare against. Defaults to IMG_4913.HEIC, the file
-    /// that renders correctly everywhere tested.
+    /// Reference file to compare against. Defaults to `TOHDR_REFERENCE` if set;
+    /// with neither, the comparison check is simply skipped.
     #[arg(long = "against")]
     pub against: Option<PathBuf>,
 

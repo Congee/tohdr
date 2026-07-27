@@ -85,14 +85,14 @@ impl Default for GainMapMeta {
     }
 }
 
-/// IMG_4913's headroom, 2.287109 stops == 4.880771x linear (exiftool reports
+/// The reference capture's headroom, 2.287109 stops == 4.880771x linear (exiftool reports
 /// 4.880772 for the same file). Scene-specific — a placeholder, not a constant
 /// to ship as-is.
 const APPLE_REFERENCE_STOPS: f32 = 2.287109;
 
 impl GainMapMeta {
     /// Retargets the headroom, keeping `max_log2 == alt_headroom` — the
-    /// invariant IMG_4913 holds and both washed-out exports violate. Declaring
+    /// invariant the reference capture holds and both washed-out exports violate. Declaring
     /// more headroom than the map encodes makes a conformant renderer
     /// under-apply it (weight is `(display - base) / (alt - base)`, libavif
     /// `src/gainmap.c:61`), so the flat SDR base shows through.

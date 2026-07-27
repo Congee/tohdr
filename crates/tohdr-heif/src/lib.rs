@@ -3,7 +3,7 @@
 //! Engine B owns its container because the structure a gain-map HEIC needs -- a
 //! `tmap` derived item, an auxiliary image with Apple's URN, and an `auxl`
 //! back-reference over one shared gain-map item -- is exactly what general-purpose
-//! HEIF writers do not expose. Reverse-engineered from `IMG_4913.HEIC`; see
+//! HEIF writers do not expose. Reverse-engineered from the reference capture; see
 //! docs/heic-gainmap-structure.md.
 //!
 //! Reading covers locating image items, their `hvcC` and coded data, and either
@@ -115,7 +115,7 @@ pub struct MuxRequest {
     pub meta: GainMapMeta,
     pub flavor: Flavor,
     pub base_colour: Option<ColourInfo>,
-    /// Colour info for the `tmap` item. `IMG_4913.HEIC` carries a Display-P3
+    /// Colour info for the `tmap` item. The reference capture carries a Display-P3
     /// primaries + PQ profile here, describing the *reconstructed* HDR image
     /// rather than the SDR base.
     pub tmap_colour: Option<ColourInfo>,
@@ -196,7 +196,7 @@ pub struct Item {
     pub auxiliary_to: Vec<ItemId>,
     /// Items this one *describes* (`cdsc`). The link that separates metadata
     /// belonging to the photograph from metadata belonging to some auxiliary
-    /// image: in `IMG_4913.HEIC` the Exif item and the Photographic Styles plist
+    /// image: in the reference capture the Exif item and the Photographic Styles plist
     /// both describe the primary, while four XMP items describe mattes.
     pub describes: Vec<ItemId>,
 }
@@ -208,7 +208,7 @@ impl Item {
 }
 
 /// Where a file's gain map lives and how it is signaled. Both flavors can be
-/// present at once and, in `IMG_4913.HEIC`, point at the same pixel data.
+/// present at once and, in the reference capture, point at the same pixel data.
 #[derive(Clone, Debug)]
 pub struct GainMapInfo {
     /// The image item holding the gain-map plane.

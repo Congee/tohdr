@@ -142,7 +142,7 @@ impl<C: PlaneCodec + Sync> GainMapEncoder for MuxEngine<C> {
             base_colour: Some(self.0.base_colour(opts.base_primaries)),
             // The `tmap` describes the reconstructed HDR image, not the SDR
             // base: Display P3 primaries with the PQ transfer, which is what
-            // `IMG_4913.HEIC` puts here (as an ICC profile rather than
+            // the reference capture puts here (as an ICC profile rather than
             // `nclx`).
             tmap_colour: Some(ColourInfo::Nclx {
                 primaries: 12, // Display P3

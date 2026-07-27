@@ -15,8 +15,14 @@ unsafe fn cf_ref<'a>(ptr: *const c_void) -> &'a CFType {
 }
 
 fn main() {
-    let path = "~/Downloads/IMG_4913.HEIC";
-    let cfpath = CFString::from_str(path);
+    let path = match std::env::args().nth(1) {
+        Some(p) => p,
+        None => {
+            eprintln!("usage: probe_meta <file.heic>");
+            std::process::exit(2);
+        }
+    };
+    let cfpath = CFString::from_str(&path);
     let url = CFURL::with_file_system_path(
         None,
         Some(&cfpath),

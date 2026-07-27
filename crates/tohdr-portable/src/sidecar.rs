@@ -2,7 +2,7 @@
 //! its XMP packet, and any opaque item that describes it.
 //!
 //! HEIF answers "about the photograph" in the file itself: a `cdsc` reference
-//! means *this item describes that one*. In `IMG_4913.HEIC` the Exif item and the
+//! means *this item describes that one*. In the reference capture the Exif item and the
 //! Photographic Styles plist point at the primary image and its `tmap`, while four
 //! XMP items point at auxiliary images (sky, skin and portrait mattes, and the
 //! gain map). Carrying those four forward would claim mattes the output does not

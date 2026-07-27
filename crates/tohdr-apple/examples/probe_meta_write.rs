@@ -1,7 +1,7 @@
 //! Scratch probe (not part of the public API): can we *build* the
 //! `HDRToneMap` metadata tree from scratch with `CGMutableImageMetadata` +
 //! path-based setters, matching what `probe_meta` read back from
-//! IMG_4913.HEIC? Informs `AppleEngine::encode`.
+//! the reference capture? Informs `AppleEngine::encode`.
 use std::ffi::c_void;
 
 use objc2_core_foundation::{CFArray, CFDictionary, CFNumber, CFNumberType, CFRetained, CFString, CFType};

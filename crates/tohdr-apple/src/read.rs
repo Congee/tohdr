@@ -260,7 +260,7 @@ fn analyze(isrc: &CGImageSource) -> Result<ReadBack> {
     let apple = aux_info(isrc, index, unsafe { kCGImageAuxiliaryDataTypeHDRGainMap });
     let iso = aux_info(isrc, index, unsafe { kCGImageAuxiliaryDataTypeISOGainMap });
 
-    // Either flavor's dictionary describes the same plane in `IMG_4913.HEIC`;
+    // Either flavor's dictionary describes the same plane in the reference capture;
     // prefer ISO's when both are present, since that is the one carrying the
     // parameters we also want.
     let plane_src = iso.as_ref().or(apple.as_ref());

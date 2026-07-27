@@ -12,7 +12,7 @@
 //! the plane encodes. A conformant renderer weights the map by
 //! `(display - base) / (alt - base)`, so over-declaring makes it *under-apply* and
 //! the flat base shows through. [`derive_consistent`] derives the declared
-//! headroom from the plane itself, the invariant `IMG_4913.HEIC` holds and both
+//! headroom from the plane itself, the invariant the reference capture holds and both
 //! washed-out exports break.
 
 use crate::derive::{self, sample_gain_bilinear, DeriveOptions, EPS, LUMA};

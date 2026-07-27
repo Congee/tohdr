@@ -24,13 +24,14 @@ SDR-only viewer actually has.
 
 ## From a plain HDR source, where we render the base ourselves
 
-`IMG_4913.HEIC` 5712x4284 (24.5 MP, gain plane 2856x2142 — exactly half),
-reference = Apple's own base, ours via `tohdr convert --engine apple`:
+The iPhone 17 Pro HDR reference capture, 5712x4284 (24.5 MP, gain plane 2856x2142
+— exactly half). Reference = Apple's own base, ours via
+`tohdr convert --engine apple`:
 
 | base | mean | p95 | spread | rms | sat32 | clip% | dmean | dmax |
 |---|---|---|---|---|---|---|---|---|
-| IMG_4913, ImageIO | 98.6 | 197 | 187 | 64.8 | 0.264 | 1.93% | - | - |
-| IMG_4913, libheif | 98.6 | 197 | 187 | 64.8 | 0.263 | 2.33% | 0.15 | 7.60 |
+| Apple's base, ImageIO | 98.6 | 197 | 187 | 64.8 | 0.264 | 1.93% | - | - |
+| Apple's base, libheif | 98.6 | 197 | 187 | 64.8 | 0.263 | 2.33% | 0.15 | 7.60 |
 | ours `reinhard`, ImageIO | 100.8 | 201 | 190 | 64.4 | 0.260 | 2.65% | 3.15 | 44.45 |
 | ours `reinhard`, libheif | 100.8 | 201 | 190 | 64.4 | 0.260 | 3.92% | 3.12 | 44.45 |
 | ours `clip`, ImageIO | 113.5 | 239 | 228 | 76.5 | 0.246 | 8.45% | 14.89 | 77.21 |
@@ -100,7 +101,7 @@ file and 1.6/255 on ours.
 Walking `iprp`/`ipco`/`ipma` and reporting `colr` per item (`item 46` is `pitm`
 in both files):
 
-| | our output | `IMG_4913.HEIC` |
+| | our output | reference |
 |---|---|---|
 | base, item 46 | `colr/nclx`, primaries *Unspecified*, transfer *Unspecified*, matrix BT.601, full range | `colr/prof`, 536 B, `"Display P3"` — and **no `nclx` at all** |
 | `tmap` item | 66: `colr/nclx`, BT.2020 primaries, PQ transfer, matrix 9 | 122: `colr/prof`, 26,664 B, `"Display P3 Primaries; PQ (Adaptive Gain Curve …)"` |
@@ -108,7 +109,7 @@ in both files):
 
 Apple's base has no `nclx` box at all, only the ICC, so the two files declare
 their base colour space by entirely different mechanisms — not one merely adding
-a profile on top. And the gap is not one profile against zero: `IMG_4913`
+a profile on top. And the gap is not one profile against zero: the reference capture
 attaches an ICC to a hundred items.
 
 Conversely we are less silent than "no ICC at all" suggests: our `tmap` declares

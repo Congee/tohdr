@@ -6,15 +6,15 @@ left after it. This document records what is carried, what is not, and — for e
 thing that is not — whether that is a decision, a platform limit, or work
 outstanding.
 
-Everything here is measured on real files: `IMG_4913.HEIC` (5712×4284, iPhone 17
-Pro), a 16-bit TIFF with Lightroom-shaped metadata injected, and a JPEG derived
-from it. Tag counts are `exiftool -a -G1 -s` group counts.
+Everything here is measured on real files: an iPhone 17 Pro HDR reference capture
+(5712×4284), a 16-bit TIFF with Lightroom-shaped metadata injected, and a JPEG
+derived from it. Tag counts are `exiftool -a -G1 -s` group counts.
 
 ## 1. What a conversion keeps
 
 Same scene through both engines, against the source:
 
-| group | `IMG_4913` | Engine B | Engine A |
+| group | reference | Engine B | Engine A |
 |---|---|---|---|
 | `IFD0` | 9 | **9** | **9** |
 | `ExifIFD` | 32 | **32** | **32** |
@@ -81,7 +81,7 @@ relative to the enclosing TIFF header, so a relocated one no longer parses.
 Instead of detecting vendors, [`serialize`] puts the value back at the **exact
 block-relative offset the source had it at**, padding to reach it. The bytes then
 see the same addresses they were written for, whichever vendor wrote them.
-`IMG_4913.HEIC` needs 12 bytes of padding; all 25 Apple tags read back with
+The reference capture needs 12 bytes of padding; all 25 Apple tags read back with
 byte-identical values.
 
 Pinning can fail only for a source laid out backwards — values before IFDs — in
@@ -96,7 +96,7 @@ it is not optional. `acceptance-criteria.md` §9 requires every copy of the
 headroom in one file to agree within `1e-3`, because a consumer picks one and a
 file whose copies disagree is one where somebody reads the wrong number. The
 source's tag 48 describes the *source's* headroom; this conversion derives its
-own. On `IMG_4913.HEIC` they differ by 0.019 stops — a 1.3% over-declaration
+own. On the reference capture they differ by 0.019 stops — a 1.3% over-declaration
 riding into a file whose ISO payload says otherwise, which is the exact defect
 criterion 5 exists to catch.
 
@@ -130,7 +130,7 @@ well-formed by construction rather than by luck, and no partial XMP model gets a
 chance to drop the schemas it does not know.
 
 Which XMP is carried is decided by the container, not by a heuristic. HEIF's
-`cdsc` reference means *this item describes that one*, and `IMG_4913.HEIC` uses it
+`cdsc` reference means *this item describes that one*, and the reference capture uses it
 to draw exactly the needed line:
 
 ```
@@ -245,7 +245,7 @@ Lightroom's own output.
 
 Three things, and only the last is a passthrough gap.
 
-**ICC profiles (4 in `IMG_4913`, 113 exiftool tags).** Not a passthrough gap but a
+**ICC profiles (4 in the reference capture, 113 exiftool tags).** Not a passthrough gap but a
 colour-authority one: the output states its colour in `colr` as `nclx`, and a
 second statement that disagreed would be unresolvable. Carrying Apple's
 26,664-byte "Display P3 Primaries; PQ (Adaptive Gain Curve)" profile onto our

@@ -3,13 +3,18 @@
 Produce HDR gain-map HEICs that actually render as HDR — verified against
 Apple's own decoder, not against our own parser.
 
-The project started from a concrete failure: two exported HEICs
-(`DSC07752.heic`, `DSC07752_iso.heic`) looked washed out in the iOS WeChat app,
-while an iPhone 17 Pro capture (`IMG_4913.HEIC`) looked right. Both are HEIC,
-both carry a gain map. [`docs/heic-gainmap-structure.md`](docs/heic-gainmap-structure.md)
-is the byte-level teardown of why they differ, and
-[`docs/acceptance-criteria.md`](docs/acceptance-criteria.md) turns "as good as
-IMG_4913" into 16 machine-checkable criteria.
+A HEIC can carry a gain map and still render washed out instead of HDR. Whether
+it works depends on container details that no error message reports: which items
+exist, how they reference each other, and whether the declared headroom agrees
+with what the gain map actually encodes.
+
+Three real files anchor the work — an iPhone 17 Pro capture that renders as HDR
+everywhere, and two third-party exports of one scene that render washed out, one
+with Apple-style signaling and one with ISO 21496-1 signaling.
+[`docs/heic-gainmap-structure.md`](docs/heic-gainmap-structure.md) is the
+byte-level comparison of what differs between them, and
+[`docs/acceptance-criteria.md`](docs/acceptance-criteria.md) turns "matches the
+capture that works" into 16 machine-checkable criteria.
 
 ## Quick start
 
@@ -88,27 +93,28 @@ and the Python checker both called valid, while ImageIO reported no ISO gain map
 at all. The cause was a missing `grpl`/`altr` entity group; nothing but the
 platform oracle could have caught it.
 
-The second layer needed auditing too. Adversarial review found that criteria 1
-and 4 could pass *vacuously* — the "base" item was derived from `dimg[0]` and
-then compared against `dimg[0]`. Both now compare against `pitm`, which lives
-in a different box, and the fix is demonstrated with a crafted file whose
-`dimg` is reversed to `[gain, base]`: it fails, where the old checker passed
-it.
+The second layer needed auditing too. Criteria 1 and 4 could pass *vacuously* —
+the "base" item was derived from `dimg[0]` and then compared against `dimg[0]`.
+Both now compare against `pitm`, which lives in a different box, and the fix is
+demonstrated with a crafted file whose `dimg` is reversed to `[gain, base]`: it
+fails, where the old checker passed it.
 
-Current status against the criteria:
+Current status against the criteria. The first row is the iPhone capture that
+renders correctly; the last two are the washed-out exports, which is what the
+criteria have to be able to reject:
 
 | File | Result |
 |---|---|
-| `IMG_4913.HEIC` (reference) | 11 passed, 0 failed |
+| iPhone 17 Pro reference capture | 11 passed, 0 failed |
 | `apple-imageio` output | 10 passed, 0 failed, 1 skipped |
 | `hardware-videotoolbox` output | 10 passed, 0 failed, 1 skipped |
 | `portable-hpvca` output | 10 passed, 0 failed, 1 skipped |
-| `DSC07752_iso.heic` | **4 failed** |
-| `DSC07752.heic` | **1 failed** |
+| washed-out ISO-flavor export | **4 failed** |
+| washed-out Apple-flavor export | **1 failed** |
 
 The remaining skip is criterion 8, MakerApple tags 33/48, which neither engine
 writes — deliberately. Apple's tag formula cannot express more than 3.0 stops
-without a negative `tag48`, which is exactly how `DSC07752.heic` broke; clamping
+without a negative `tag48`, which is exactly how the Apple-flavor export broke; clamping
 instead makes the tags disagree with the ISO payload and fails criterion 9.
 Writing nothing is the only option that never states a wrong headroom. See
 criterion 8 in [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md).
@@ -117,8 +123,8 @@ criterion 8 in [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md).
 
 `lightroom/tohdr.lrplugin` exports gain-map HEICs by shelling out to this CLI,
 with flavor, engine, quality, tone map, and a maximum output size in the export
-dialog. It runs inside Lightroom Classic 15.4.1: a 60.2 MP `DSC07746.ARW`
-exports to a gain-map HEIC that passes `tohdr verify`. Its Lua logic is unit-
+dialog. It runs inside Lightroom Classic 15.4.1: a 60.2 MP Sony raw exports to a
+gain-map HEIC that passes `tohdr verify`. Its Lua logic is unit-
 tested with a stock interpreter as well. See
 [`lightroom/README.md`](lightroom/README.md) for what that live run established
 — including that Lightroom's Lua sandbox has no `os.getenv` — and what is still
@@ -141,9 +147,10 @@ docs/                  structure teardown, acceptance criteria, engine compariso
 
 ## Known gaps
 
-- **The original symptom is unconfirmed.** Nobody has opened any output of this
-  project in the iOS WeChat app. Every check here is necessary; only a device
-  test is sufficient.
+- **No output has been checked in a closed-source third-party viewer.** The
+  washed-out rendering that motivated this work was seen in one such app (iOS
+  WeChat), and no output of this project has been opened there. Every check here
+  is necessary; only viewing on a device is sufficient.
 - `tohdr_apple::encode_from_hdr` — letting ImageIO author the file from an HDR
   image — emits zero declared headroom from a source with real headroom. A
   sweep over four pixel layouts and two colour spaces rules out the pixel

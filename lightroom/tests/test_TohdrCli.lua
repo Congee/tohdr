@@ -154,7 +154,7 @@ print("maker note from the original file")
 -- ===========================================================================
 
 do
-	local raw = "/Volumes/Photos/7.19/DSC07746.ARW"
+	local raw = "/Volumes/Photos/shoot/IMG_0001.ARW"
 	local args = Cli.build_convert_args({ tohdr_makerNote = true }, "/in.tif", "/out.heic", raw)
 	eq(arg_after(args, "--maker-note-from"), raw, "the raw path is passed through")
 end
@@ -166,7 +166,7 @@ do
 	local plain = Cli.build_convert_args({}, "/in.tif", "/out.heic")
 
 	local unchecked = Cli.build_convert_args(
-		{ tohdr_makerNote = false }, "/in.tif", "/out.heic", "/some/DSC07746.ARW"
+		{ tohdr_makerNote = false }, "/in.tif", "/out.heic", "/some/IMG_0001.ARW"
 	)
 	check(not has_arg(unchecked, "--maker-note-from"), "unchecked really omits the flag")
 	eq(#unchecked, #plain, "unchecked emits nothing extra")

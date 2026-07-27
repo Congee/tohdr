@@ -391,7 +391,7 @@ def analyze(path):
     # The two independent signals are the Apple auxC URN and the fact that a
     # gain map is single-channel where the base is three-channel.
     #
-    # Grid tiles have to come out of the candidate set first -- IMG_4913 has
+    # Grid tiles have to come out of the candidate set first -- the reference capture has
     # ~120 of them, and its gain tiles are single-channel too, so without this
     # the pixi signal is hopelessly ambiguous. A tile is an item that some
     # NON-tmap item derives from.
@@ -634,7 +634,7 @@ def check(info, expect_flavor):
     # can show: delivered == min(display_headroom, alt_headroom). Given
     # base_headroom == 0 that follows from criterion 5, since
     #   delivered = max_log2 * clamp(display/alt) = alt * min(1, display/alt).
-    # An over-declaring file breaks it: DSC07752_iso encodes 1.96 stops but
+    # An over-declaring file breaks it: the ISO-flavor export encodes 1.96 stops but
     # declares 3.568, so a 2.3-stop display gets 1.263 where it should get 1.96.
     if not iso:
         skip(10, 'display receives every stop it can show', 'no ISO metadata')

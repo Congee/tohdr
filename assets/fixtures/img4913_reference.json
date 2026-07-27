@@ -1,8 +1,8 @@
 {
   "_comment": [
-    "Ground truth measured from ~/Downloads/IMG_4913.HEIC (iPhone 17 Pro).",
-    "That file is the user's private capture and is NOT committed; this is the",
-    "distilled reference so `tohdr verify` and the test suite can assert against",
+    "Ground truth measured from an iPhone 17 Pro HDR capture, IMG_4913.HEIC.",
+    "That capture is private and is NOT committed; this is the distilled",
+    "reference so `tohdr verify` and the test suite can assert against",
     "it on any machine. Sources: heif_detail.py box walk, exiftool -G1 -a -s, and",
     "the committed 62-byte tmap payload img4913_iso21496.bin decoded field by",
     "field. See docs/heic-gainmap-structure.md and docs/acceptance-criteria.md."

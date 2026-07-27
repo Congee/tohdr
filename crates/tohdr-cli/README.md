@@ -75,16 +75,16 @@ headroom they decode to, and the ISO 21496-1 metadata (including whether
 
 ## `verify`
 
-Checks a file against the correctness invariants that separate
-`IMG_4913.HEIC` (renders correctly everywhere tested) from the washed-out
-exports this project exists to fix. Exits non-zero on any failed check, so
-it's usable as a CI gate or from the Lightroom plugin:
+Checks a file against the correctness invariants that separate an iPhone 17 Pro
+HDR capture, which renders correctly in every viewer tested, from the washed-out
+third-party exports this project exists to fix. Exits non-zero on any failed
+check, so it's usable as a CI gate or from the Lightroom plugin:
 
 ```sh
-# Compares against IMG_4913.HEIC by default.
+# No reference unless TOHDR_REFERENCE is set; the comparison check just skips.
 tohdr verify out.heic
 
-# Explicit reference.
+# Explicit reference: a capture known to render as HDR correctly.
 tohdr verify out.heic --against reference.heic
 
 tohdr verify out.heic --json

@@ -9,18 +9,21 @@ clamp.
 
 Measured by `crates/tohdr-apple/examples/probe_gamut.rs`, which renders each file
 into extended-linear sRGB *and* extended-linear Display P3, then cross-checks the
-two by matrix. The second render exists to prove the premise: if CoreGraphics
+two by matrix. Two sources are used: the reference capture, an iPhone 17 Pro HDR
+capture in Display P3, and the 60 MP Sony raw, a 60.2 MP Sony raw, developed several
+ways to vary how wide its gamut ends up. The second render exists to prove the
+premise: if CoreGraphics
 gamut-*mapped* instead of preserving negatives, the 709 render would read as
 in-gamut and every number here would be vacuous.
 
 ```text
-                                 outside    dE>=1     dE>=3    worst
-                                 Rec.709   of image  of image     dE
-  IMG_4913.HEIC (P3 capture)       0.18%     0.01%     0.00%    2.63
-  DSC07746.ARW, ImageIO develop   39.41%     1.79%     0.18%    5.48
-  DSC07746, LrC HDR sRGB           0.88%     0.00%     0.00%    0.00
-  DSC07746, LrC HDR Display P3    12.33%     5.10%     1.37%    5.35
-  DSC07746, LrC HDR Rec.2020      12.42%     5.12%     1.38%    9.94
+                                  outside    dE>=1     dE>=3    worst
+                                  Rec.709   of image  of image     dE
+  iPhone reference (P3 capture)     0.18%     0.01%     0.00%    2.63
+  Sony raw, ImageIO develop        39.41%     1.79%     0.18%    5.48
+  Sony raw, LrC HDR sRGB            0.88%     0.00%     0.00%    0.00
+  Sony raw, LrC HDR Display P3     12.33%     5.10%     1.37%    5.35
+  Sony raw, LrC HDR Rec.2020       12.42%     5.12%     1.38%    9.94
 ```
 
 Every cross-check agreed to <2e-4, so CoreGraphics does preserve out-of-gamut

@@ -27,11 +27,12 @@ the independent `tools/verify_gainmap.py` (which shares no code with the Rust
 crates). Only criterion 8 skips, and only for a source that carries no
 MakerApple tags to begin with: there is nothing to check. Criterion 9 passes —
 the XMP headroom copy agrees with the ISO payload to 3.4e-05 on Engine B and
-5.2e-08 on Engine A. `IMG_4913.HEIC` itself scores 11/11.
+5.2e-08 on Engine A. The iPhone 17 Pro reference capture — used throughout as the
+example of a file that renders as HDR correctly — itself scores 11/11.
 
 What ImageIO reports for each engine's output:
 
-| | Engine A | Engine B | IMG_4913 |
+| | Engine A | Engine B | reference |
 |---|---|---|---|
 | `apple_aux` | yes | yes | yes |
 | `iso_aux` | yes | yes | yes |
@@ -100,8 +101,8 @@ and `then` separately, and the columns here say which regime they are in.
 | 9504×6336 (60.22 MP) | 545.3 ms | 430.7 ms | **221.3 ms** | 5762.5 ms |
 
 Fixtures: `out/tiny.tiff`, `out/small.tiff`, `out/scene.tiff`, and a 60 MP export
-of `DSC07746.ARW`. The last is 722 MB and is not kept in the tree; regenerate it
-with `cargo run --release --example export_hdr_tiff -p tohdr-apple -- <raw>
+of a 60.2 MP Sony raw. The last is 722 MB and is not kept in the tree; regenerate
+it with `cargo run --release --example export_hdr_tiff -p tohdr-apple -- <raw>
 out/big60.tiff`, which verifies the round trip is bit-identical before returning.
 
 Reading it:
@@ -217,7 +218,7 @@ total verified good on the worst geometry rather than at the observed edge.
 What it costs: nothing measurable. Best of three on 8 × 60.2 MP ARW at `--jobs 4`,
 **9.32 s gated against 9.46 s ungated**, and all eight outputs are byte-identical
 across the two — the gate decides *when* a session exists, never how it is
-configured. The `--max-size` search on the user's own file went from that error to
+configured. The `--max-size` search on a real capture went from that error to
 3,790,256 bytes at q61 inside a 4 MB budget, `tohdr verify` **PASS**.
 
 ### What made Engine B 2.1x faster, and where its ceiling is
@@ -569,8 +570,8 @@ already supported by our serializer (141-byte payload).
 ## On a real photograph
 
 Everything above uses the synthetic source. The end-to-end run that matters most
-is the user's own capture, `IMG_4913.HEIC` (24.5 MP), decoded by ImageIO with
-its gain map applied, tone-mapped and re-derived by us, and re-encoded:
+is the iPhone 17 Pro reference capture (24.5 MP), decoded by ImageIO with its gain
+map applied, tone-mapped and re-derived by us, and re-encoded:
 
 ```
 tohdr convert IMG_4913.HEIC -o real_apple.heic --engine apple --flavor both
@@ -596,7 +597,7 @@ not the encoder**. Both of its codecs would encode this fine; the pure-Rust
 *readers* take TIFF/PNG/JPEG, not HEIC, and say so rather than guessing:
 
 ```
-error: loading /…/IMG_4913.HEIC: unsupported extension Some("heic")
+error: loading /…/the reference capture: unsupported extension Some("heic")
        (want tif/tiff/png/jpg/jpeg)   [exit 1, no file written]
 ```
 

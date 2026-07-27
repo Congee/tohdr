@@ -11,8 +11,8 @@ use crate::{GainMapMeta, GainPlane, Rgb};
 ///
 /// These are not interchangeable in the wild: a consumer that only knows
 /// Apple's auxiliary-image convention ignores a `tmap`, and an ISO 21496-1
-/// consumer ignores the Apple URN. `IMG_4913.HEIC` — the reference file that
-/// renders correctly everywhere tested — carries **both**, which is why
+/// consumer ignores the Apple URN. The iPhone reference capture, which renders
+/// correctly everywhere tested, carries **both** — which is why
 /// [`Flavor::Both`] is the default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Flavor {
@@ -25,7 +25,7 @@ pub enum Flavor {
     /// `ftyp`. The interoperable, vendor-neutral form.
     Iso,
     /// Both of the above over one shared gain-map image item, matching
-    /// `IMG_4913.HEIC`. Costs a few hundred bytes of extra boxes and no extra
+    /// the reference capture. Costs a few hundred bytes of extra boxes and no extra
     /// pixel data.
     #[default]
     Both,

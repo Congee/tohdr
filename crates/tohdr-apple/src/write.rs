@@ -261,14 +261,14 @@ fn finalize_single_image(image: &CGImage, quality: u8) -> Result<Vec<u8>> {
 }
 
 /// `L008`: one 8-bit luminance channel, the `PixelFormat` Apple reports for
-/// every gain plane measured (`IMG_4913.HEIC`, `DSC07752.heic`, and ImageIO's
+/// every gain plane measured (the reference capture, the Apple-flavor export, and ImageIO's
 /// own output).
 const PIXEL_FORMAT_L008: i64 = 1_278_226_488;
 
 /// Build the `CGImageMetadata` holding the ISO 21496-1 parameters, in the
 /// `HDRToneMap` namespace ImageIO reads them back from.
 ///
-/// Shape reverse-engineered from `IMG_4913.HEIC` via `examples/probe_meta`:
+/// Shape reverse-engineered from the reference capture via `examples/probe_meta`:
 /// three scalars at the top level plus a `ChannelMetadata` array whose single
 /// element is a *structure* tag carrying the five per-channel parameters.
 fn tone_map_metadata(meta: &GainMapMeta) -> Result<CFRetained<CGMutableImageMetadata>> {

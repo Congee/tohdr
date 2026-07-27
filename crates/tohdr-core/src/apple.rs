@@ -53,7 +53,7 @@ const MAX_REPRESENTABLE_STOPS: f64 = 3.0;
 /// Apple documents no inverse, and the obvious one is a trap: emitting
 /// `tag48 = (3.0 - stops) / 70.0` unclamped makes tag48 *negative* above 8x, and
 /// Apple-stack decoders then read back less headroom than 8x -- a washed-out
-/// render. `DSC07752.heic` (headroom 11.86, tag48 -0.008) is exactly that bug.
+/// render. The Apple-flavor export (headroom 11.86, tag48 -0.008) is exactly that bug.
 ///
 /// So: always `tag33 = 1.0` (Skia only tests the threshold, never the magnitude),
 /// branches inverted at [`STOPS_BRANCH_BOUNDARY`], and a hard clamp at

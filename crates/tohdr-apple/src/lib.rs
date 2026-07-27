@@ -104,7 +104,7 @@ impl GainMapEncoder for AppleEngine {
             // and no key for a raw vendor blob, so an iPhone's `MakerNote`
             // round-trips and a Sony one does not survive being turned into
             // properties and back. Measured: a block carrying the byte-identical
-            // 38,332-byte Sony blob out of `DSC07746.ARW` yields 0 `MakerNote`
+            // 38,332-byte Sony blob out of a 60 MP Sony raw yields 0 `MakerNote`
             // tags here and 124 through Engine B.
             maker_note: false,
             // The block reaches ImageIO inside a JPEG carrier, whose `APP1`
@@ -190,7 +190,7 @@ pub struct ReadBack {
 }
 
 impl ReadBack {
-    /// Does this file hold the invariant that separates `IMG_4913.HEIC` from the
+    /// Does this file hold the invariant that separates the reference capture from the
     /// washed-out exports: declared headroom equal to what the plane encodes?
     ///
     /// `None` when there is no ISO metadata to check.

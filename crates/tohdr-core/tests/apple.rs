@@ -82,8 +82,8 @@ fn tags_from_headroom_is_monotonic_non_increasing() {
 
 // --- Real-file anchors, via `exiftool -MakerNotes:all -HDRGainMapHeadroom` ---
 //
-//   IMG_4913.HEIC   (iPhone, correct)  tag33 1.00999999  tag48  0.05253907666  headroom  4.880772
-//   DSC07752.heic   (washed out)       tag33 1           tag48 -0.008120966145 headroom 11.863581
+//   the reference capture   (iPhone, correct)  tag33 1.00999999  tag48  0.05253907666  headroom  4.880772
+//   the Apple-flavor export   (washed out)       tag33 1           tag48 -0.008120966145 headroom 11.863581
 
 #[test]
 fn reproduces_iphone_reference_headroom() {
@@ -108,7 +108,7 @@ fn reproduces_broken_export_headroom_from_its_negative_tag48() {
 
 #[test]
 fn correct_encoder_would_not_have_produced_a_negative_tag48_for_the_broken_file() {
-    // If the tool that produced DSC07752.heic had used tags_from_headroom
+    // If the tool that produced the Apple-flavor export had used tags_from_headroom
     // instead of its own broken inverse, its 11.86x headroom (above the
     // 8x/3.0-stop representable ceiling) would have clamped to a non-negative
     // tag48, not gone to -0.008.

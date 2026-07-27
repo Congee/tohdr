@@ -116,7 +116,7 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
     props.push(hvcc_box(&req.gain.hvcc));
     assocs.push((gain_id, props.len() as u16, true));
     // A gain map is not a colour image, but it still needs a `colr`: both
-    // `IMG_4913.HEIC` (item 62) and ImageIO's own ISO output (item 11) put an
+    // the reference capture (item 62) and ImageIO's own ISO output (item 11) put an
     // essential `nclx` with everything "unspecified" (2/2/2) and full range on
     // the gain-map item, and ImageIO reports no ISO gain map at all when it is
     // absent -- measured, and the last thing separating our `tmap` from one
@@ -143,7 +143,7 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
         // `pixi` and `colr` are not decoration here. macOS ImageIO reports
         // `iso_aux = false` for an otherwise byte-valid `tmap` that lacks
         // them — measured, not assumed — so a file without them is invisible
-        // as an ISO gain map to every Apple consumer. `IMG_4913.HEIC` carries
+        // as an ISO gain map to every Apple consumer. The reference capture carries
         // `colr`/`ispe`/`pixi` on its own `tmap` (item 122).
         //
         // The `tmap` stands for the *reconstructed* image, so its `pixi`
@@ -194,7 +194,7 @@ pub(crate) fn mux(req: &MuxRequest) -> Result<Vec<u8>> {
     let mut meta = Vec::new();
     let meta_pos = begin_fullbox(&mut meta, b"meta", 0, 0);
     write_hdlr(&mut meta);
-    // `pitm` names the base, matching `IMG_4913.HEIC` and `DSC07752_iso.heic`.
+    // `pitm` names the base, matching the reference capture and the ISO-flavor export.
     // Pointing it at the `tmap` was tried and changes nothing about whether
     // ImageIO recognizes the gain map.
     write_pitm(&mut meta, base_id);

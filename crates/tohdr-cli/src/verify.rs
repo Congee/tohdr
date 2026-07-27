@@ -1,5 +1,5 @@
 //! `tohdr verify`: does a file hold the correctness invariants that separate
-//! `IMG_4913.HEIC` from the washed-out exports in
+//! the reference capture from the washed-out exports in
 //! `docs/heic-gainmap-structure.md`? Exits non-zero on any failed check, so
 //! it is usable as a CI gate and from the Lightroom plugin.
 
@@ -13,21 +13,15 @@ use tohdr_core::hdr::gain_weight;
 use crate::cli::VerifyArgs;
 use crate::panic_guard::catch;
 
-/// Bundled reference file used when `--against` is omitted: the iPhone
-/// capture that renders correctly everywhere tested.
-/// Reference file `--against` falls back to when the caller names none.
+/// Reference file `--against` falls back to when the caller names none: whatever
+/// `TOHDR_REFERENCE` points at, typically a capture known to render as HDR
+/// correctly.
 ///
-/// Overridable via `TOHDR_REFERENCE`, because the default is one particular
-/// iPhone capture that exists only on the machine this was developed on. Its
-/// absence is not an error: the reference is printed beside the target for
+/// Having none is not an error: the reference is printed beside the target for
 /// human comparison and never folded into the pass/fail decision.
 fn default_reference() -> Option<std::path::PathBuf> {
-    if let Ok(p) = std::env::var("TOHDR_REFERENCE") {
-        if !p.is_empty() {
-            return Some(std::path::PathBuf::from(p));
-        }
-    }
-    let p = std::path::PathBuf::from("~/Downloads/IMG_4913.HEIC");
+    let p = std::env::var("TOHDR_REFERENCE").ok().filter(|p| !p.is_empty())?;
+    let p = std::path::PathBuf::from(p);
     p.exists().then_some(p)
 }
 
@@ -63,7 +57,7 @@ pub fn checks_for(rb: &ReadBack) -> Vec<Check> {
     });
 
     // The format must actually *be* `L008`, not merely be reported. Checking
-    // only `is_some()` passed `DSC07752_iso.heic` — whose plane is `420f`,
+    // only `is_some()` passed the ISO-flavor export — whose plane is `420f`,
     // 3-channel 4:2:0 float, the exact defect criterion 2 names for that file
     // in `docs/acceptance-criteria.md`'s comparison table. It escaped notice
     // because criteria 5 and 8 also fail on that file, so the exit code was
@@ -352,7 +346,7 @@ mod tests {
     }
 
     /// Criterion 2. `gain_plane_present` used to test only that a format was
-    /// *reported*, so `DSC07752_iso.heic`'s 3-channel `420f` plane — the defect
+    /// *reported*, so the ISO-flavor export's 3-channel `420f` plane — the defect
     /// the acceptance doc names for that file — read as `ok`.
     #[test]
     fn multi_channel_gain_plane_fails() {

@@ -249,7 +249,7 @@ const IFD0_DROP: &[u16] = &[
 
 /// Beyond this much padding, pinning a `MakerNote` costs more than the tag is
 /// worth. Reached only by a source whose Exif block is mostly values we drop;
-/// `IMG_4913.HEIC` needs 12 bytes.
+/// the reference capture needs 12 bytes.
 const MAX_PIN_PADDING: usize = 1 << 20;
 
 /// Apple's `MakerNote` signature. Two bytes after it comes its own byte-order
@@ -257,7 +257,7 @@ const MAX_PIN_PADDING: usize = 1 << 20;
 /// exactly what [`serialize`]'s pinning preserves.
 const APPLE_MAKER_SIG: &[u8] = b"Apple iOS\0\0";
 /// Distance from an Apple `MakerNote`'s first byte to its IFD: the signature, a
-/// version byte, and the byte-order mark. Measured on `IMG_4913.HEIC`, where the
+/// version byte, and the byte-order mark. Measured on the reference capture, where the
 /// 59-entry IFD at `+14` ends exactly where its first value begins.
 const APPLE_MAKER_IFD_AT: usize = 14;
 /// `HDRHeadroom` and `HDRGain` inside Apple's `MakerNote`.
@@ -285,7 +285,7 @@ pub enum AppleHeadroom {
 /// Headroom is stated three times -- ISO payload, XMP, MakerApple 33/48 -- and all
 /// copies in one file must agree within 1e-3 (docs/acceptance-criteria.md 9), or a
 /// consumer reads the wrong number. The source's tag 48 describes the *source's*
-/// headroom, 0.019 stops off ours on `IMG_4913.HEIC`, so carrying it verbatim
+/// headroom, 0.019 stops off ours on the reference capture, so carrying it verbatim
 /// imports a 1.3% over-declaration.
 ///
 /// Only tag 48 is rewritten: `headroom_from_tags` uses tag 33 solely to pick a
@@ -522,7 +522,7 @@ pub fn read_bytes_with_maker_note(
 /// How much of a companion file's head is read looking for its `MakerNote`.
 ///
 /// The point of reading the original at all is to *not* read the whole thing:
-/// `DSC07746.ARW` is 71,708,672 bytes and holds `IFD0` at 8, its Exif IFD at
+/// a 60 MP Sony raw is 71,708,672 bytes and holds `IFD0` at 8, its Exif IFD at
 /// 4,544 and the `MakerNote` at 5,222 — a targeted read of that range measures
 /// 0.00 ms. A camera writes its IFDs ahead of its image data because the image
 /// data is the part that is big, so this ceiling clears the real thing by three
@@ -1982,7 +1982,7 @@ mod tests {
     /// payload says, or `acceptance-criteria.md` §9 is violated by construction.
     #[test]
     fn the_maker_notes_headroom_is_realigned_to_the_output() {
-        // Apple's own numbers from IMG_4913: 2.2871 stops, where this output
+        // Apple's own numbers from the reference capture: 2.2871 stops, where this output
         // derives 2.2681.
         let mn = apple_maker_note((1058474, 1048501), (8699, 165572));
         let src = block_with_apple_maker_note(&mn);
@@ -2015,7 +2015,7 @@ mod tests {
         let src = block_with_apple_maker_note(&mn);
         let mut out = read_bytes(&src).unwrap().unwrap();
 
-        // 3.568 stops: DSC07752's headroom, the case §8 is written about.
+        // 3.568 stops: the Apple-flavor export's headroom, the case §8 is written about.
         let too_much = 2f32.powf(3.568);
         assert_eq!(
             align_apple_headroom(&mut out.tiff, too_much),

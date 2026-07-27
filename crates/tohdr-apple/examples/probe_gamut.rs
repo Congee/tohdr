@@ -299,7 +299,7 @@ fn draw_band(
 /// gamut purely from float error in the two matrix multiplies, and the error
 /// scales with the pixel: an HDR highlight at Y = 10 carries a thousand times
 /// the absolute noise of a mid-tone. Measured symptom of getting this wrong —
-/// 481 pixels of `IMG_4913` reported outside Rec.2020 while none were outside
+/// 481 pixels of the reference capture reported outside Rec.2020 while none were outside
 /// P3, which cannot happen, since P3's primaries sit strictly inside
 /// Rec.2020's.
 fn out_of_gamut(v: [f64; 3]) -> bool {

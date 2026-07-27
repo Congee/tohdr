@@ -1,10 +1,18 @@
-# What "as good as IMG_4913" means, measurably
+# What "renders as HDR, like a real camera capture" means, measurably
 
-`IMG_4913.HEIC` (iPhone 17 Pro capture) renders as real HDR everywhere it has
-been tried, including the iOS WeChat app. `DSC07752.heic` and
-`DSC07752_iso.heic` render washed out there. This file turns "same or better
-effect" into checks a machine can run, so the claim is never a matter of
-squinting at two phones.
+Three real files set the bar, named here by what they are. The **reference
+capture** is an HDR photo straight from an iPhone 17 Pro; it renders as real HDR
+in every viewer tried. The **Apple-flavor export** and the **ISO-flavor export**
+are one scene put through third-party software, the first with Apple-style
+gain-map signaling and the second with ISO 21496-1 signaling; both render washed
+out instead. Any criterion worth having must accept the first and reject the
+other two.
+
+The checkers print the underlying filenames — `IMG_4913.HEIC`, `DSC07752.heic`
+and `DSC07752_iso.heic` respectively — so their output maps back to those names.
+
+This file turns "same or better effect" into checks a machine can run, so the
+claim is never a matter of squinting at two phones.
 
 Every criterion below is either **[verify]** — checked by at least one automated
 checker, exit non-zero on failure — or **[manual]**, with the reason it cannot be
@@ -32,11 +40,11 @@ no code with the Rust crates: it walks the boxes from raw bytes with stdlib
 `struct` and cross-checks the headroom against `exiftool`. `tohdr verify` uses
 our own reader, so a bug present in both our reader and our writer would sail
 through it; the Python checker exists to make that class of self-consistent error
-visible. Measured discrimination on the three reference files: IMG_4913 passes
-11/11 and exits 0; `DSC07752_iso` fails criteria 2, 5, 8, 10 and exits 1;
-`DSC07752` fails criterion 8 and exits 1. A conversion **of `IMG_4913.HEIC`** now
-passes 11/11 through either engine, because it carries the source's MakerNote and
-realigns its headroom tag (§8 below). Converting a source that has no MakerApple
+visible. Measured discrimination on the three files above: the reference capture
+passes 11/11 and exits 0; the ISO-flavor export fails criteria 2, 5, 8, 10 and
+exits 1; the Apple-flavor export fails criterion 8 and exits 1. A conversion **of
+the reference capture** now passes 11/11 through either engine, because it carries
+the source's MakerNote and realigns its headroom tag (§8 below). Converting a source that has no MakerApple
 tags of its own — a TIFF or a JPEG — still passes 10/10 applicable and skips 8,
 which is the correct outcome rather than a gap: there is no tag to check.
 
@@ -46,8 +54,8 @@ the Python checker skipped it, so the two disagreed about a file that was in fac
 correct, and every TIFF or JPEG conversion exited non-zero for obeying §8's
 "never from nothing" rule. The Rust checker was the wrong one and now skips too.
 Measured on all four files, both checkers agree: `tohdr verify` and
-`verify_gainmap.py` exit 0 on `IMG_4913.HEIC` and on a TIFF conversion, and 1 on
-both `DSC07752*`. A disagreement between them is by construction a bug in one of
+`verify_gainmap.py` exit 0 on the reference capture and on a TIFF conversion, and 1 on
+both washed-out exports. A disagreement between them is by construction a bug in one of
 them, and should be chased rather than explained away.
 
 Reference values come from `docs/heic-gainmap-structure.md`, decoded byte by byte
@@ -58,7 +66,7 @@ from the real files; the raw payloads are committed under `assets/fixtures/`.
 The three files fail differently here, which is why all of it is checked
 rather than just the parts one broken file got wrong:
 
-| | IMG_4913 (good) | DSC07752 | DSC07752_iso |
+| | reference | Apple-flavor | ISO-flavor |
 |---|---|---|---|
 | `auxC` boxes | 6 | 2 | **0** |
 | Apple gain-map URN | present | present | **absent** |
@@ -70,9 +78,9 @@ rather than just the parts one broken file got wrong:
 | gamma | `0.825684` | n/a (no ISO) | **`1.0`** |
 
 **The two broken files fail differently, and neither failure mode alone
-explains both.** `DSC07752` is a structurally valid *Apple* gain map — correct
+explains both.** The Apple-flavor export is a structurally valid *Apple* gain map — correct
 URN, correct `auxl`, single-channel plane — whose only measurable defect is the
-out-of-domain negative tag 48. `DSC07752_iso` is a valid *ISO* file whose defect
+out-of-domain negative tag 48. The ISO-flavor export is a valid *ISO* file whose defect
 is the 1.61-stop over-declaration (criterion 5), and which additionally lost the
 Apple URN, went full-res 3-channel, and reverted gamma to the UltraHDR nominal
 `1.0`. What they share is that both **mis-state the headroom**, via different
@@ -87,12 +95,12 @@ is a defect even when one implementation's algebra survives it.
 
 1. **[verify]** The base image is the primary item (`pitm`).
 2. **[verify]** The gain map is a separate image item, single-channel 8-bit
-   (`L008`), not a 3-channel RGB image. `DSC07752_iso` ships full-res 3-channel,
+   (`L008`), not a 3-channel RGB image. The ISO-flavor export ships full-res 3-channel,
    which costs bytes for no fidelity gain on a luma-derived map.
 
    `tohdr verify`'s `gain_plane_present` used to test only that ImageIO
    *reported* a format, never that it equalled `L008`, so it read `[ok]` on
-   `DSC07752_iso`'s `420f` plane — the very file this criterion names. The exit
+   the ISO-flavor export's `420f` plane — the very file this criterion names. The exit
    code was still 1 because criteria 5 and 8 fail there too, which is why the
    hole went unnoticed: a regression breaking only the channel count would have
    passed. Both checkers now fail it.
@@ -111,8 +119,8 @@ This is where both broken exports actually fail, and the failure is shared:
 
 5. **[verify]** `max_log2 == alt_headroom` (±1e-3). **The single most important
    check.** The gain plane can deliver at most `max_log2` stops; `alt_headroom`
-   declares how much the scene needs. IMG_4913 keeps them identical (2.287109).
-   `DSC07752_iso` declares 3.568470 while encoding 1.96 — a 1.61-stop
+   declares how much the scene needs. The reference capture keeps them identical (2.287109).
+   The ISO-flavor export declares 3.568470 while encoding 1.96 — a 1.61-stop
    over-declaration. A conformant renderer weights the map by
    `(display - base) / (alt - base)` (libavif `src/gainmap.c:52-63`), so
    over-declaring makes it *under-apply* the map and the flat SDR base shows
@@ -135,7 +143,7 @@ This is where both broken exports actually fail, and the failure is shared:
 7. **[verify]** Passes libavif's own validation (`avifGainMapValidateMetadata`,
    `src/gainmap.c:431-448`): all denominators nonzero, `max >= min`, gamma
    numerator nonzero. Note what it does *not* check — channel-count consistency
-   — which is why `DSC07752_iso`'s redundant `is_multichannel=1` is survivable
+   — which is why the ISO-flavor export's redundant `is_multichannel=1` is survivable
    and not on this list as a defect.
 8. **[verify]** MakerApple tag 48 (`HDRGain`) is **non-negative**, and tag 33
    (`HDRHeadroom`) is present when tag 48 is and is itself non-negative — it selects
@@ -144,7 +152,7 @@ This is where both broken exports actually fail, and the failure is shared:
 
    Unreachable through our own writers (`tags_from_headroom` hardcodes tag33 to
    `1.0`, `align_apple_headroom` raises anything below it), so this guards
-   third-party and hand-corrupted input. `DSC07752` carries `-0.008120966145`, which
+   third-party and hand-corrupted input. The Apple-flavor export carries `-0.008120966145`, which
    `chemharuka/toGainMapHDR`'s unclamped `(3.0 - stops) / 70` branch produces for
    any headroom above 8x — reproduced to ~2e-10.
 
@@ -164,7 +172,7 @@ This is where both broken exports actually fail, and the failure is shared:
    Apple's tag formula tops out at 3.0 stops: in
    the `tag33 >= 1.0` regime it is `stops = -70 · tag48 + 3.0`, so a headroom
    above 8x can only be expressed by pushing tag48 *negative* — precisely how
-   `DSC07752.heic` ended up at `-0.00812`.
+   The Apple-flavor export ended up at `-0.00812`.
    `tohdr_core::apple::tags_from_headroom` clamps instead (pinned by
    `clamps_above_8x_instead_of_reproducing_the_washout_bug`), which is the safe
    behavior but means the tags then **understate** the headroom.
@@ -181,7 +189,7 @@ This is where both broken exports actually fail, and the failure is shared:
    The third is the only one that never lies, so it is what we do when there are
    no tags to begin with — and it is also what `align_apple_headroom` falls back
    to above the ceiling, removing tags 33 and 48 from the carried note in place
-   while keeping its other 23. Note `IMG_4913.HEIC` declares 2.287109 stops —
+   while keeping its other 23. Note the reference capture declares 2.287109 stops —
    comfortably under the ceiling — which is why Apple could write all three copies
    in agreement, and why a conversion of it can too. The rule is unchanged: write
    the tags **when and only when** the headroom is at most 3.0 stops; above that,
@@ -194,7 +202,7 @@ This is where both broken exports actually fail, and the failure is shared:
    `verify_gainmap.py` originally compared only the ISO and XMP copies, which
    made this criterion blind to the copy most likely to be stale: the MakerApple
    pair a conversion inherits when it carries a source's MakerNote. It now
-   compares all three. The extended check passes on `IMG_4913.HEIC` itself (worst
+   compares all three. The extended check passes on the reference capture itself (worst
    delta 9.59e-05) and fails a verbatim carry, which is what forced the tag-48
    rewrite in §8.
 
@@ -213,7 +221,7 @@ display:
     sign flip, so the check could only fail on NaN and stayed green on a file
     whose delivered gain was off by a full stop. It is now
     `every_display_gets_its_stops` and reports identically to the Python
-    checker: on `DSC07752_iso` both say *worst at 2.00-stop display: delivered
+    checker: on the ISO-flavor export both say *worst at 2.00-stop display: delivered
     1.099, expected 1.960 (err 0.861)*.
 
     *This criterion was originally written as "a ~2.3-stop display applies
@@ -224,19 +232,19 @@ display:
     actually distinguishes correct from broken, and it follows from #5 given
     `base_headroom == 0`:
     `delivered = max_log2 · clamp(display/alt) = alt · min(1, display/alt)`.
-    It still catches the real defect — `DSC07752_iso` encodes 1.96 stops but
+    It still catches the real defect — the ISO-flavor export encodes 1.96 stops but
     declares 3.568, so a 2.3-stop display gets 1.263 stops where it should get
-    1.96, and the criterion fails. Measured: IMG_4913 passes, `DSC07752_iso`
+    1.96, and the criterion fails. Measured: the reference capture passes, the ISO-flavor export
     fails.
 11. **[verify]** No display in `1.0..=4.0` stops receives *less* gain from our
-    output than from IMG_4913 at the same declared headroom.
+    output than from the reference capture at the same declared headroom.
 
     "At the same declared headroom" is a condition, not decoration: comparing
     delivered gain between files that declare different headroom measures the
     two *scenes* rather than the two encoders, so the check skips unless the
     declarations match within 1e-3. `tohdr verify`'s `no_worse_than_reference`
-    implements it against `--against` (default `IMG_4913.HEIC`, overridable via
-    `TOHDR_REFERENCE`).
+    implements it against `--against`, which falls back to `TOHDR_REFERENCE` and
+    skips the check when neither is set.
 
     *This was enforced nowhere until it was checked.* `verify.rs` computed the
     verdict before the reference was inspected and then printed the reference's
@@ -274,7 +282,7 @@ display:
 16. **[verify]** `--max-size N` produces a file of at most N bytes, or fails
     loudly. Never silently ships an oversized file.
 
-## Where "better than IMG_4913" is available
+## Where "better than the reference capture" is available
 
 Not required to pass, but reachable and worth measuring:
 
@@ -286,5 +294,5 @@ Not required to pass, but reachable and worth measuring:
   141-byte payloads.
 - **10-bit base.** Removes the 8-bit banding that currently sets the noise floor
   for criterion 12 in shadows.
-- **Both flavors at once.** IMG_4913 does this; `DSC07752*` each pick one and
+- **Both flavors at once.** the reference capture does this; the two washed-out exports each pick one and
   miss the other. `Flavor::Both` is the default for exactly this reason.

@@ -8,7 +8,7 @@
 //! ImageIO authors that engine's file and takes Exif only through a properties
 //! dictionary, never as raw bytes. Rather than hand-map every tag number to a CF
 //! key, Engine A wraps the block in [`SMALLEST_JPEG`] and lets ImageIO parse its
-//! own way in. Measured on `IMG_4913.HEIC`: bare gives `count=0` and no
+//! own way in. Measured on the reference capture: bare gives `count=0` and no
 //! properties, wrapped gives 32 Exif, 9 TIFF and 15 GPS entries. See
 //! `crates/tohdr-apple/examples/probe_exif_props.rs`.
 
@@ -55,7 +55,7 @@ pub const MAX_BLOCK: usize = u16::MAX as usize - 2 - EXIF_ID.len();
 ///
 /// `None` when the block cannot fit one `APP1` segment. Splitting across
 /// segments is legal for XMP and not for Exif, so there is no larger form to
-/// fall back on — and no real Exif block comes close: `IMG_4913.HEIC`'s is
+/// fall back on — and no real Exif block comes close: the reference capture's is
 /// 3,074 bytes against this 65,527-byte ceiling.
 pub fn wrap_in_jpeg(block: &[u8]) -> Option<Vec<u8>> {
     wrap_app1(EXIF_ID, block)

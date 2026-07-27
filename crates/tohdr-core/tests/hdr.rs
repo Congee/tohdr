@@ -65,7 +65,7 @@ fn clip_discards_above_white_but_reinhard_does_not() {
 
 #[test]
 fn derive_consistent_always_holds_the_invariant() {
-    // The invariant IMG_4913 holds and both washed-out exports break.
+    // The invariant the reference capture holds and both washed-out exports break.
     for peak in [1.0f32, 2.0, 4.88, 11.86, 50.0] {
         let hdr = hdr_ramp(48, 8, peak);
         let sdr = ToneMap::Reinhard { white: peak }.to_sdr(&hdr);
@@ -145,7 +145,7 @@ fn weight_matches_libavif_including_the_negative_branch() {
 
 #[test]
 fn over_declared_headroom_under_applies_the_map() {
-    // DSC07752_iso.heic, decoded from assets/fixtures/dsc07752_iso21496.bin:
+    // The ISO-flavor export, decoded from assets/fixtures/dsc07752_iso21496.bin:
     // it declares 3.568470 stops while its plane only encodes 1.96.
     let broken = GainMapMeta {
         max_log2: [1.96; 3],
@@ -153,7 +153,7 @@ fn over_declared_headroom_under_applies_the_map() {
         alt_headroom: 3.568470,
         ..GainMapMeta::default()
     };
-    // IMG_4913.HEIC keeps the two equal.
+    // The reference capture keeps the two equal.
     let good = GainMapMeta {
         max_log2: [2.287109; 3],
         base_headroom: 0.0,

@@ -128,13 +128,14 @@ HDR.
 
 P3 rather than sRGB because the narrow request is not the neutral one. Rendering
 into Rec.709 discards every colour outside it — measured on a real export of
-DSC07746, 12.33% of the frame, worst error dE 5.35, concentrated in a coherent
+the 60 MP Sony raw, a 60.2 MP Sony raw, 12.33% of the frame, worst error dE 5.35,
+concentrated in a coherent
 yellow/yellow-green region rather than scattered
 (`tohdr-apple/examples/probe_gamut.rs`). The sRGB export's own row in that table
 reads dE 0.00 for the least reassuring reason available: Lightroom had already
 clipped it, so there was nothing left to lose. For an iPhone capture P3 is
-*exactly* enough — 0 pixels of IMG_4913 fall outside it, against 44,799 outside
-Rec.709.
+*exactly* enough — 0 pixels of the reference capture reference capture fall outside
+it, against 44,799 outside Rec.709.
 
 This was sRGB until `tohdr` could read the intermediate's embedded ICC profile.
 Asking for wider primaries before that would have mislabelled rather than carried
@@ -159,7 +160,7 @@ exact failure this project exists to prevent.
 
 ### The camera's MakerNote
 
-The intermediate cannot carry one. Measured on `DSC07746.ARW` and the TIFF
+The intermediate cannot carry one. Measured on the 60 MP Sony raw and the TIFF
 Lightroom exports from it: 42 of the raw's 60 standard Exif tags reach the TIFF
 and **none** of Sony's 124 `MakerNote` ones. A vendor block is opaque to a
 renderer, and it is addressed with offsets into the raw file, so there is nothing
@@ -317,7 +318,7 @@ Be clear about which half of this is proven.
   sandbox is undocumented, and one demonstrated absence is enough to stop
   guessing.
 - **A full export of a real photo, through to a HEIC that passes `tohdr
-  verify`.** `DSC07746.ARW` (60.2 MP) exported to a 3.8 MB gain-map HEIC:
+  verify`.** the 60 MP Sony raw (60.2 MP) exported to a 3.8 MB gain-map HEIC:
   9202x6135 base, 4601x3068 gain plane, both flavors present, 2.524 declared
   stops, every invariant `ok`. So `waitForRender` and `configureProgress` behave
   as assumed across a session — and `uploadFailed` does too, from the export
@@ -347,8 +348,8 @@ Be clear about which half of this is proven.
 
   So the intermediate itself was read. The plugin deletes it, but not until after
   the conversion, which leaves a window of seconds: a poller on the export
-  destination caught `DSC07746.tif` at 677,497,058 bytes and pulled tag 34675
-  straight out of IFD0. It is **Apple's Display P3** — 548 bytes, profile version
+  destination caught the intermediate TIFF at 677,497,058 bytes and pulled tag
+  34675 straight out of IFD0. It is **Apple's Display P3** — 548 bytes, profile version
   4.0.0, creator "Apple Computer Inc.", "Copyright Apple Inc., 2015", colorants
   `0.51512 / 0.29198 / 0.15710` — which `primaries_from_icc` classifies `p3`.
   Lightroom honoured the token, and the output's P3 label came from the source
@@ -438,7 +439,7 @@ Be clear about which half of this is proven.
     `tohdr_makerNote = true`, so Engine B ran with the box checked, and Engine B
     is the engine that *can* carry a foreign blob;
   - the catalog (read `immutable=1`) gives the master as `fileFormat = RAW`,
-    `masterImage` null, path `…/7.19/DSC07746.ARW`, a file that exists — so
+    `masterImage` null, path `…/7.19/the 60 MP Sony raw`, a file that exists — so
     `original_path`'s format, virtual-copy, path and existence gates all pass;
   - both files' Exif is little-endian, so `byte-order-differs` cannot fire;
   - `exportRendition.photo` is documented, as are `isVirtualCopy`, `masterPhoto`,

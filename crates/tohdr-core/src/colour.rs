@@ -46,7 +46,7 @@ impl Primaries {
         match self {
             Primaries::Bt709 => 1,
             // 12 is SMPTE EG 432-1, the code Display P3 is signalled with; Apple
-            // writes it on the `tmap` of IMG_4913.HEIC and exiftool renders it as
+            // writes it on the `tmap` of the reference capture and exiftool renders it as
             // "SMPTE EG 432-1".
             Primaries::DisplayP3 => 12,
             Primaries::Bt2020 => 9,

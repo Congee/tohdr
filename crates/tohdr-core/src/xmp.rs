@@ -1,19 +1,19 @@
 //! The XMP copy of the gain-map headroom.
 //!
 //! Apple states the headroom three times -- ISO 21496-1 `tmap`, MakerApple tags
-//! 33/48, and here -- and in `IMG_4913.HEIC` all three agree. Different consumers
+//! 33/48, and here -- and in the reference capture all three agree. Different consumers
 //! read different copies, so disagreement means something reads the wrong number.
-//! `DSC07752_iso.heic` dropped this copy; `DSC07752.heic` kept an XMP headroom of
+//! The ISO-flavor export dropped this copy; the Apple-flavor export kept an XMP headroom of
 //! 11.863581 its gain plane could not deliver.
 //!
 //! **`HDRGainMapHeadroom` is linear, not stops** -- the multiplier over SDR white.
-//! `IMG_4913.HEIC` pairs `4.880772` with an ISO `alternate_hdr_headroom` of
+//! The reference capture pairs `4.880772` with an ISO `alternate_hdr_headroom` of
 //! `2.287109` stops. Writing stops here understates it by an exponent.
 
 /// Apple's XMP namespace for the gain-map headroom.
 pub const HDR_GAIN_MAP_NS: &str = "http://ns.apple.com/HDRGainMap/1.0/";
 
-/// `HDRGainMapVersion` as `IMG_4913.HEIC` carries it. Packed as
+/// `HDRGainMapVersion` as the reference capture carries it. Packed as
 /// major<<16 | minor<<8 | ..., so `131072` = `0x00020000`, which exiftool
 /// renders as `0.2.0.0`. Writing `65536` instead yields `0.1.0.0` -- a
 /// different version than any Apple capture declares.
@@ -104,7 +104,7 @@ mod tests {
         rest[..end].parse().expect("a number")
     }
 
-    /// The real numbers from `IMG_4913.HEIC`: 2.287109 stops alongside an XMP
+    /// The real numbers from the reference capture: 2.287109 stops alongside an XMP
     /// headroom of 4.880772. We land on 4.880770 — f32 `exp2` rounding, 2e-6
     /// away, and criterion 9 compares copies at 1e-3.
     #[test]
@@ -112,7 +112,7 @@ mod tests {
         let got = emitted_headroom(2.287109);
         assert!(
             (got - 4.880772).abs() < 1e-3,
-            "expected ~4.880772 (what IMG_4913 carries), got {got}"
+            "expected ~4.880772 (what the reference capture carries), got {got}"
         );
     }
 
@@ -128,7 +128,7 @@ mod tests {
         assert!((emitted_headroom(0.0) - 1.0).abs() < 1e-6);
     }
 
-    /// exiftool renders the packed version as 0.2.0.0, matching IMG_4913.
+    /// exiftool renders the packed version as 0.2.0.0, matching the reference capture.
     #[test]
     fn version_matches_what_apple_writes() {
         assert_eq!(HDR_GAIN_MAP_VERSION, 0x0002_0000);

@@ -1,6 +1,6 @@
 //! Spike: exercise Apple ImageIO gain-map READ and WRITE through Rust FFI.
 //!
-//! Goal 1 (read): open IMG_4913.HEIC, dump the HDR/ISO gain-map auxiliary
+//! Goal 1 (read): open the reference capture, dump the HDR/ISO gain-map auxiliary
 //! data info dicts and a couple of Apple MakerNote tags.
 //!
 //! Goal 2 (write): decode the primary image, re-attach the ISO gain map we
@@ -19,8 +19,7 @@ use objc2_image_io::{
     CGImageSource,
 };
 
-const INPUT: &str = "~/Downloads/IMG_4913.HEIC";
-const OUTPUT: &str = "~/dev/tohdr/out/engineA_iso.heic";
+const OUTPUT: &str = "out/engineA_iso.heic";
 
 /// Cast a raw CF void pointer (as returned by `CFDictionary::keys_and_values`
 /// / `CFDictionary::value`) to a `&CFType`. Every CF object is a valid
@@ -246,14 +245,19 @@ fn goal2_write(isrc: &CGImageSource, iso_gain_map: Option<&CFDictionary>) {
 }
 
 fn main() {
-    assert!(Path::new(INPUT).is_file(), "input HEIC not found at {INPUT}");
+    // A gain-map HEIC to probe; no default, since the original is not in the tree.
+    let input = std::env::args()
+        .nth(1)
+        .or_else(|| std::env::var("TOHDR_REFERENCE").ok())
+        .expect("usage: imageio-probe <file.heic>, or set TOHDR_REFERENCE");
+    assert!(Path::new(&input).is_file(), "input HEIC not found at {input}");
 
-    let input_path = CFString::from_str(INPUT);
+    let input_path = CFString::from_str(&input);
     let url = CFURL::with_file_system_path(None, Some(&input_path), CFURLPathStyle::CFURLPOSIXPathStyle, false)
         .expect("failed to build input CFURL");
     let isrc = unsafe { CGImageSource::with_url(&url, None) }.expect("CGImageSourceCreateWithURL returned NULL");
 
-    println!("opened {INPUT}, type = {:?}", unsafe { isrc.r#type() });
+    println!("opened {input}, type = {:?}", unsafe { isrc.r#type() });
     println!("image count = {}\n", unsafe { isrc.count() });
 
     let iso_dict = goal1_read(&isrc);

@@ -1,20 +1,38 @@
-# HEIC Gain-Map Container Structure — Reverse-Engineering Notes
+# HEIC Gain-Map Container Structure
 
-Target files (all read-only, never modified — see verification at the bottom):
+Why some gain-map HEICs render as HDR and others render washed out, established
+by comparing three real files box by box.
 
-| Label | Path | Notes |
+Three files are compared throughout, named by what they are rather than by their
+camera-assigned filenames. Each is a real capture or export, kept read-only (the
+verification section at the bottom confirms they were never modified). The files
+themselves are not redistributed with this repository — only small extracted
+metadata blobs under `assets/fixtures/`.
+
+| Name used here | What it is | Renders as HDR? |
 |---|---|---|
-| **IMG_4913** (gold reference) | `~/Downloads/IMG_4913.HEIC` | iPhone-native HDR photo, 5712x4284, 8-bit base. Renders HDR correctly everywhere. |
-| **DSC07752** | `~/Desktop/DSC07752.heic` | Third-party export, 9504x6336, 8-bit. Washed out in iOS WeChat. |
-| **DSC07752_iso** | `~/Desktop/DSC07752_iso.heic` | Same source, re-encoded with an "ISO gain map" flag, 10-bit. Has `tmap` brand but still washed out. |
+| **reference** | HDR photo straight from an iPhone 17 Pro camera, 5712x4284, 8-bit base, Apple gain-map signaling. The shape a writer should aim for. | Yes, in every viewer tried |
+| **Apple-flavor export** | One scene put through third-party software, 9504x6336, 8-bit, Apple-style signaling but no `tmap` item. | No — washed out |
+| **ISO-flavor export** | That same export re-encoded 10-bit with ISO 21496-1 gain-map signaling. Carries the `tmap` brand. | No — still washed out |
 
-Method: a from-scratch ~250-line stdlib-only Python ISOBMFF/HEIF box parser (no third-party libraries), cross-checked against `exiftool -v3` / `-a -u -G1` output. Scripts live in `~/.claude/jobs/d8bbb591/tmp/` (throwaway, not committed to this repo). Every table below is generated from that parser's output on the actual files; byte offsets are absolute file offsets unless noted.
+The verifier and the test suite print the original filenames instead —
+`IMG_4913.HEIC`, `DSC07752.heic` and `DSC07752_iso.heic`, in the order of the
+rows above — so their output can be matched back to this table.
+
+The washed-out behaviour was observed in a closed-source third-party viewer (the
+iOS WeChat app); it is one consumer renderer, not a spec authority, which is why
+everything below is grounded in box structure rather than in that observation.
+
+Method: a from-scratch ~250-line stdlib-only Python ISOBMFF/HEIF box parser (no
+third-party libraries), cross-checked against `exiftool -v3` / `-a -u -G1`
+output. Every table below is generated from that parser's output on the actual
+files; byte offsets are absolute file offsets unless noted.
 
 ---
 
 ## 1. `ftyp` comparison
 
-| | IMG_4913 (gold) | DSC07752 | DSC07752_iso |
+| | reference | Apple-flavor | ISO-flavor |
 |---|---|---|---|
 | major_brand | `heic` | `heic` | `heix` |
 | minor_version | 0 | 0 | 0 |
@@ -22,13 +40,13 @@ Method: a from-scratch ~250-line stdlib-only Python ISOBMFF/HEIF box parser (no 
 | has `tmap` brand | **yes** | no | yes |
 | has `MiHA`/`MiPr` (Apple HDR-adjunct brands) | **yes (both)** | no | `MiHA` only, no `MiPr` |
 
-Note the gold file advertises **both** `tmap` (ISO/IEC 23008-12 gain-map amendment) and Apple's private `MiHA`/`MiPr`/`MiHE`/`MiHB` brands in the same `compatible_brands` list — it is deliberately dual-format. DSC07752 advertises neither `tmap` nor `MiHA`/`MiPr`. DSC07752_iso added `tmap` and `MiHA` but not `MiPr`, and also swapped major_brand from `heic`→`heix` and dropped `MiHE`/`MiPr`.
+Note the reference file advertises **both** `tmap` (ISO/IEC 23008-12 gain-map amendment) and Apple's private `MiHA`/`MiPr`/`MiHE`/`MiHB` brands in the same `compatible_brands` list — it is deliberately dual-format. The Apple-flavor export advertises neither `tmap` nor `MiHA`/`MiPr`. The ISO-flavor export added `tmap` and `MiHA` but not `MiPr`, and also swapped major_brand from `heic`→`heix` and dropped `MiHE`/`MiPr`.
 
 ---
 
 ## 2. Item graph comparison
 
-### IMG_4913 (gold) — full item graph
+### Reference — full item graph
 
 `meta` box tree (order as written): `hdlr, dinf(dref), pitm, iinf, iref, iprp(ipco,ipma), grpl(altr), idat, iloc`.
 
@@ -75,9 +93,9 @@ cdsc  123  -> [46, 122]
 cdsc  124  -> [46, 122]
 ```
 
-**Key structural fact**: IMG_4913 has *both* the Apple aux-image gain map (item 62, `auxl`→46, `auxC` = `urn:com:apple:photo:2020:aux:hdrgainmap`) **and** the ISO `tmap` item (122). The `tmap` item does not carry pixel data of its own — it is a *derived* item whose `dimg` reference list is `[46, 62]`: base image first, gain map second. This is the graph a decoder walks to do ISO-standard reconstruction, while decoders that only understand Apple's own `auxC` convention can find the same gain map (62) directly off the primary item without ever looking at 122.
+**Key structural fact**: the reference has *both* the Apple aux-image gain map (item 62, `auxl`→46, `auxC` = `urn:com:apple:photo:2020:aux:hdrgainmap`) **and** the ISO `tmap` item (122). The `tmap` item does not carry pixel data of its own — it is a *derived* item whose `dimg` reference list is `[46, 62]`: base image first, gain map second. This is the graph a decoder walks to do ISO-standard reconstruction, while decoders that only understand Apple's own `auxC` convention can find the same gain map (62) directly off the primary item without ever looking at 122.
 
-### DSC07752 — item graph (relevant items)
+### Apple-flavor export — item graph (relevant items)
 
 - `pitm`: 81
 - item 81 = grid (base, 9504x6336, 8-bit, not hidden)
@@ -88,27 +106,27 @@ cdsc  124  -> [46, 122]
 - item 246 = mime, `cdsc`→81
 - **No `tmap` item exists in this file at all.**
 
-So DSC07752 has *two* aux images at full base resolution: one correctly URN-tagged as Apple's gain map (243) and a second, oddly-URN-tagged aux image (162) using the generic HEVC aux-picture URN. There is no ISO tone-map item, matching the missing `tmap` brand.
+So the Apple-flavor export has *two* aux images at full base resolution: one correctly URN-tagged as Apple's gain map (243) and a second, oddly-URN-tagged aux image (162) using the generic HEVC aux-picture URN. There is no ISO tone-map item, matching the missing `tmap` brand.
 
-### DSC07752_iso — item graph (relevant items)
+### ISO-flavor export — item graph (relevant items)
 
 - `pitm`: 81
 - item 81 = grid (base, 9504x6336, colr=`prof`/Rec.709, pixi 3ch×10-bit)
 - item 162 = grid (hidden), `dimg`→[82..161], ispe=9504x6336 (full res, **not** downscaled), pixi **3 channels × 8-bit** (RGB gain map, not grayscale). **No `auxC` property at all** — item 162 is *not* declared as an auxiliary image by any mechanism other than being a `tmap` dimg target. It also carries an essential `colr` `nclx` property: primaries=9 (BT.2020), transfer=16 (SMPTE ST 2084 / PQ), matrix=6 or 9 depending on entry — i.e. the gain-map picture itself is tagged with an HDR/PQ colour space, which is semantically odd for what should be a linear/grayscale delta map.
-- item 163 = **tmap**, not hidden, `dimg`→[81, 162] (base then gain-map, same order convention as the gold file)
+- item 163 = **tmap**, not hidden, `dimg`→[81, 162] (base then gain-map, same order convention as the reference file)
 - item 165 = Exif, `cdsc`→[81, 163]
 - item 166 = mime, `cdsc`→[81, 163]
 
-So DSC07752_iso *does* build the same `dimg`=[base, gainmap] shape as the gold file's `tmap` item, but:
+So the ISO-flavor export *does* build the same `dimg`=[base, gainmap] shape as the reference file's `tmap` item, but:
 1. the gain-map item has no `auxC` property and no `auxl` reference back to the base — Apple-convention–only decoders (and even some ISO decoders that discover aux images before checking `tmap`) will not find it at all;
-2. the gain map is full resolution and 3-channel RGB (not the gold file's half-resolution, 1-channel, 8-bit grayscale);
+2. the gain map is full resolution and 3-channel RGB (not the reference file's half-resolution, 1-channel, 8-bit grayscale);
 3. the gain-map's own colour tagging (BT.2020/PQ) doesn't match its role as a difference/ratio map.
 
 ---
 
 ## 3. Property list (`ipco`) and `ipma` — essentials
 
-### IMG_4913 `ipco` (29 entries, order as stored)
+### Reference `ipco` (29 entries, order as stored)
 
 | idx | type | decoded |
 |---|---|---|
@@ -145,7 +163,7 @@ Essential `ipma` associations that matter:
 
 So the *reconstructed HDR output* is characterized by a large **ICC profile** attached to the `tmap` item (not a plain `nclx`), while the gain map picture itself is tagged with a throwaway "unspecified" `nclx`. The big ICC profile's description string literally says "PQ (Adaptive Gain Curve ...)" — Apple encodes the tone-mapping curve information partly through this profile, not solely through the ISO metadata payload.
 
-### DSC07752 `ipco` (10 entries)
+### Apple-flavor export `ipco` (10 entries)
 
 | idx | type | decoded |
 |---|---|---|
@@ -161,7 +179,7 @@ So the *reconstructed HDR output* is characterized by a large **ICC profile** at
 
 No `clli`, no PQ/HDR `nclx`, no ICC profile beyond a plain Rec.709 SDR one.
 
-### DSC07752_iso `ipco` (10 entries)
+### ISO-flavor export `ipco` (10 entries)
 
 | idx | type | decoded |
 |---|---|---|
@@ -176,7 +194,7 @@ No `clli`, no PQ/HDR `nclx`, no ICC profile beyond a plain Rec.709 SDR one.
 | 9 | colr | `nclx` primaries=9(BT.2020),transfer=16(PQ),matrix=9(BT.2020 ncl),full_range=1 — attached to `tmap` item 163, **essential** |
 | 10 | hvcC | present, not decoded |
 
-The `tmap` item's "output characterization" here is a small `nclx` (BT.2020/PQ) rather than a full ICC profile — structurally valid per spec, but a completely different mechanism than the gold file's ICC-based approach, and (per §5) numerically inconsistent with the gain map's own encoded range.
+The `tmap` item's "output characterization" here is a small `nclx` (BT.2020/PQ) rather than a full ICC profile — structurally valid per spec, but a completely different mechanism than the reference file's ICC-based approach, and (per §5) numerically inconsistent with the gain map's own encoded range.
 
 No `clli` box was found in **any** of the three files.
 
@@ -184,7 +202,7 @@ No `clli` box was found in **any** of the three files.
 
 ## 4. The gain map, specifically
 
-| | IMG_4913 (gold) | DSC07752 | DSC07752_iso |
+| | reference | Apple-flavor | ISO-flavor |
 |---|---|---|---|
 | item id | 62 | 243 (+ a bogus extra, 162) | 162 |
 | `auxC` URN | `urn:com:apple:photo:2020:aux:hdrgainmap` | `urn:com:apple:photo:2020:aux:hdrgainmap` (243); `urn:mpeg:hevc:2015:auxid:1` (162, wrong) | **none** |
@@ -202,16 +220,16 @@ No `clli` box was found in **any** of the three files.
 
 The `tmap` item's data is **not** a property — it's the item's own bytes, accessed through `iloc` with `construction_method = 1` (idat-relative), pointing into the `idat` box.
 
-- IMG_4913: `idat` box body at file offset **33764**, size 94. Item 122's `iloc` extent = offset 24, length 62 (relative to idat body) → absolute file bytes **[33788, 33850)**.
-- DSC07752_iso: `idat` box body at file offset **6012**, size 158. Item 163's `iloc` extent = offset 16, length 142 → absolute file bytes **[6028, 6170)**.
+- Reference: `idat` box body at file offset **33764**, size 94. Item 122's `iloc` extent = offset 24, length 62 (relative to idat body) → absolute file bytes **[33788, 33850)**.
+- ISO-flavor export: `idat` box body at file offset **6012**, size 158. Item 163's `iloc` extent = offset 16, length 142 → absolute file bytes **[6028, 6170)**.
 
 Extracted verbatim (byte-for-byte, nothing else) to:
-- `~/dev/tohdr/assets/fixtures/img4913_iso21496.bin` (62 bytes)
-- `~/dev/tohdr/assets/fixtures/dsc07752_iso21496.bin` (142 bytes)
+- `assets/fixtures/img4913_iso21496.bin` (62 bytes)
+- `assets/fixtures/dsc07752_iso21496.bin` (142 bytes)
 
 ### Decoding method
 
-There is no public ISO/IEC 21496-1 text available in this environment (WebFetch disabled). Instead I pulled the open-source reference **encoder/decoder** from `google/libultrahdr` (`lib/include/ultrahdr/gainmapmetadata.h` + `lib/src/gainmapmetadata.cpp`, fetched via `curl` from `raw.githubusercontent.com`, Apache-2.0/MIT licensed, an implementation of this exact ISO format), and validated the byte layout against the raw bytes by brute-forcing the header length until every rational field's denominator came out self-consistent. Header length 6 bytes made **all 7 (IMG_4913) / all 14 (DSC07752_iso) rational denominators identical and sane** (1,000,000 and 100,000 respectively) — strong confirmation the layout below is correct, further cross-validated against exiftool's independently-parsed XMP `HDRGainMapHeadroom` tag (see below — matches to 4+ significant figures).
+ISO/IEC 21496-1 is a paid standard, so the layout below was not read off the spec text. It was derived from the open-source reference **encoder/decoder** in `google/libultrahdr` (`lib/include/ultrahdr/gainmapmetadata.h` + `lib/src/gainmapmetadata.cpp`, Apache-2.0/MIT licensed, an implementation of this exact ISO format), then validated against the raw bytes by brute-forcing the header length until every rational field's denominator came out self-consistent. Header length 6 bytes made **all 7 (the reference) / all 14 (the ISO-flavor export) rational denominators identical and sane** (1,000,000 and 100,000 respectively) — strong confirmation the layout below is correct, further cross-validated against exiftool's independently-parsed XMP `HDRGainMapHeadroom` tag (see below — matches to 4+ significant figures).
 
 Struct (single-channel case, `is_multichannel` bit clear):
 
@@ -248,7 +266,7 @@ two readings apart — which is exactly why the wrong one survived here, and why
 trusting a signed round trip. A capacity below 1.0 would mean a display dimmer
 than SDR reference, which is why the field has no need to go negative.
 
-### IMG_4913 payload — field-by-field (62 bytes)
+### Reference payload — field-by-field (62 bytes)
 
 ```
 offset  bytes                  field                         value
@@ -290,7 +308,7 @@ Full hexdump (62 bytes):
 00000030: 000a 000f 4240 0000 000a 000f 4240       ....B@......B@
 ```
 
-**Cross-validation**: `exiftool -a -u -G1` reports `[XMP-HDRGainMap] HDR Gain Map Headroom : 4.880772` for IMG_4913, against `2^2.287109 = 4.880771` from these bytes — agreement to 1e-6, so the field mapping is confirmed independently of the libultrahdr-derived struct.
+**Cross-validation**: `exiftool -a -u -G1` reports `[XMP-HDRGainMap] HDR Gain Map Headroom : 4.880772` for the reference, against `2^2.287109 = 4.880771` from these bytes — agreement to 1e-6, so the field mapping is confirmed independently of the libultrahdr-derived struct.
 
 Third independent agreement: decoding the MakerApple tags of the same file through Skia's formula (`tag33=1.00999999`, `tag48=0.05253907666`, see `crates/tohdr-core/src/apple.rs`) yields **4.880675x**, within 1e-4 of both. Apple writes this headroom three times — ISO `tmap` payload, XMP, and MakerNote — and all three agree.
 
@@ -298,7 +316,7 @@ Third independent agreement: decoding the MakerApple tags of the same file throu
 
 Both readings decode identical field values, since either way the fractions begin at byte 6 — but only the version-prefix reading generalizes. `crates/tohdr-core/tests/iso21496.rs` asserts this against both fixtures: strip one byte, and our parser reads Apple's real payload field-for-field.
 
-### DSC07752_iso payload — decode (142 bytes, multichannel)
+### ISO-flavor export payload — decode (142 bytes, multichannel)
 
 ```
 header: min_version=0, writer_version=0, reserved=0,0,0, flags=0xC0
@@ -314,17 +332,17 @@ channel B: identical to R
 
 142 bytes consumed exactly (0 leftover) — clean decode.
 
-**Cross-validation**: `exiftool` reports `[XMP-HDRGainMap] HDR Gain Map Headroom : 11.863581` for **DSC07752.heic** (the non-ISO sibling from the same source) — matches `2^3.56847 = 11.8636` almost exactly. That number is carried through from the original camera/tool metadata into both re-encodes.
+**Cross-validation**: `exiftool` reports `[XMP-HDRGainMap] HDR Gain Map Headroom : 11.863581` for **the Apple-flavor export** (the non-ISO sibling from the same source) — matches `2^3.56847 = 11.8636` almost exactly. That number is carried through from the original camera/tool metadata into both re-encodes.
 
-**But it does not match the gain map's own encoded range**: the metadata claims `hdr_capacity_max = 11.86x`, but the gain-map picture itself only encodes up to `max_content_boost = 3.89x` (`gain_map_max = 1.96` in log2). In the gold file these two numbers are **identical** (both 2.287109 → 4.880771x) by construction. This 3x discrepancy in DSC07752_iso is a real, decodable, structural defect — not a guess.
+**But it does not match the gain map's own encoded range**: the metadata claims `hdr_capacity_max = 11.86x`, but the gain-map picture itself only encodes up to `max_content_boost = 3.89x` (`gain_map_max = 1.96` in log2). In the reference file these two numbers are **identical** (both 2.287109 → 4.880771x) by construction. This 3x discrepancy in the ISO-flavor export is a real, decodable, structural defect — not a guess.
 
-Why that produces a washed-out render specifically on a phone: the standard weight is `w = clamp((display_hr - base_hr) / (alt_hr - base_hr), 0, 1)`, all in log2 stops (libavif `src/gainmap.c:61`). With `base_hr = 0` and `alt_hr = 3.568`, a ~2.3-stop phone display gets `w = 0.645`, so only 1.26 of the map's 1.96 encoded stops are applied. A Mac XDR panel (~2.98 stops) gets `w = 0.835` → 1.64 stops, noticeably closer to full. The gold file's `alt_hr = 2.287` is *below* both displays' headroom, so `w` clamps to 1.0 and the map applies in full everywhere. That asymmetry matches the reported symptom — fine on the Mac, washed on the phone — but it is a prediction from the metadata, not a measurement of any particular app's renderer.
+Why that produces a washed-out render specifically on a phone: the standard weight is `w = clamp((display_hr - base_hr) / (alt_hr - base_hr), 0, 1)`, all in log2 stops (libavif `src/gainmap.c:61`). With `base_hr = 0` and `alt_hr = 3.568`, a ~2.3-stop phone display gets `w = 0.645`, so only 1.26 of the map's 1.96 encoded stops are applied. A Mac XDR panel (~2.98 stops) gets `w = 0.835` → 1.64 stops, noticeably closer to full. The reference file's `alt_hr = 2.287` is *below* both displays' headroom, so `w` clamps to 1.0 and the map applies in full everywhere. That asymmetry matches the reported symptom — fine on the Mac, washed on the phone — but it is a prediction from the metadata, not a measurement of any particular app's renderer.
 
 ---
 
 ## 6. Apple MakerNote / XMP HDR tags
 
-| tag | IMG_4913 | DSC07752 | DSC07752_iso |
+| tag | reference | Apple-flavor | ISO-flavor |
 |---|---|---|---|
 | MakerNote tag 33 `HDRHeadroom` | 1.00999999 | 1 | 1 |
 | MakerNote tag 48 `HDRGain` | 0.05253907666 | -0.008120966145 | -0.008120966145 |
@@ -332,7 +350,7 @@ Why that produces a washed-out render specifically on a phone: the standard weig
 | XMP `HDRGainMapHeadroom` | 4.880772 | 11.863581 | **absent** |
 | QuickTime `AuxiliaryImageType` (exiftool's own detection) | `urn:com:apple:photo:2020:aux:hdrgainmap` | `urn:com:apple:photo:2020:aux:hdrgainmap` | **absent** |
 
-Note DSC07752 and DSC07752_iso report **byte-identical** MakerNote `HDRHeadroom`/`HDRGain` values (1 / -0.008120966145) despite being different encodes of a Sony-sourced photo — these look like boilerplate/pass-through values injected by the re-encoding tool rather than per-image computed values (Apple's own maker-note HDR fields are normally scene-specific, as seen varying in IMG_4913). DSC07752_iso additionally lost the XMP `HDRGainMap*` block and the `AuxiliaryImageType` detection entirely — consistent with §2/§4's finding that its gain map item carries no `auxC` property.
+Note the Apple-flavor export and the ISO-flavor export report **byte-identical** MakerNote `HDRHeadroom`/`HDRGain` values (1 / -0.008120966145) despite being different encodes of a Sony-sourced photo — these look like boilerplate/pass-through values injected by the re-encoding tool rather than per-image computed values (Apple's own maker-note HDR fields are normally scene-specific, as seen varying in the reference). The ISO-flavor export additionally lost the XMP `HDRGainMap*` block and the `AuxiliaryImageType` detection entirely — consistent with §2/§4's finding that its gain map item carries no `auxC` property.
 
 ---
 
@@ -340,15 +358,15 @@ Note DSC07752 and DSC07752_iso report **byte-identical** MakerNote `HDRHeadroom`
 
 | file | # colr `prof`/`rICC` entries | descriptions | attached to |
 |---|---|---|---|
-| IMG_4913 | 4 | "Display P3" (536B) / "sRGB IEC61966-2.1 Linear" (572B) / "Display P3 Linear" (560B) / "Display P3 Primaries; PQ (Adaptive Gain Curve 81B7427DF220A6FA)" (**26,664B**) | base(46) / a linear-thumbnail-family item / another linear-family item / **tmap(122), essential** |
-| DSC07752 | 1 | "Rec. ITU-R BT.709-5" (556B) | base(81) |
-| DSC07752_iso | 1 | "Rec. ITU-R BT.709-5" (556B) | base(81) — the `tmap` item here uses a plain `nclx` instead (see §3) |
+| reference | 4 | "Display P3" (536B) / "sRGB IEC61966-2.1 Linear" (572B) / "Display P3 Linear" (560B) / "Display P3 Primaries; PQ (Adaptive Gain Curve 81B7427DF220A6FA)" (**26,664B**) | base(46) / a linear-thumbnail-family item / another linear-family item / **tmap(122), essential** |
+| Apple-flavor | 1 | "Rec. ITU-R BT.709-5" (556B) | base(81) |
+| ISO-flavor | 1 | "Rec. ITU-R BT.709-5" (556B) | base(81) — the `tmap` item here uses a plain `nclx` instead (see §3) |
 
-The gold file's largest ICC profile (26,664 bytes, extracted verbatim to `assets/fixtures/img4913_tmap_icc_profile.icc`) is attached to the `tmap` item as an **essential** property. Its `desc` tag literally names an "Adaptive Gain Curve" with a per-image hex ID (`81B7427DF220A6FA`) — this is presumably Apple's private mechanism for embedding the actual tone-mapping curve as an ICC transform, layered on top of (and possibly redundant with, or complementary to) the ISO 21496-1 numeric metadata in §5. **I could not decode the internal ICC tag table beyond the `desc` string** — the profile almost certainly contains a `para`/curve or LUT tag encoding the adaptive gain curve itself, but I did not reverse-engineer ICC tag internals beyond extracting `desc`. Flagging as *present, not decoded*.
+The reference file's largest ICC profile (26,664 bytes, extracted verbatim to `assets/fixtures/img4913_tmap_icc_profile.icc`) is attached to the `tmap` item as an **essential** property. Its `desc` tag literally names an "Adaptive Gain Curve" with a per-image hex ID (`81B7427DF220A6FA`) — this is presumably Apple's private mechanism for embedding the actual tone-mapping curve as an ICC transform, layered on top of (and possibly redundant with, or complementary to) the ISO 21496-1 numeric metadata in §5. **The internal ICC tag table was not decoded beyond the `desc` string** — the profile almost certainly contains a `para`/curve or LUT tag encoding the adaptive gain curve itself, but ICC tag internals past `desc` were left alone. *Present, not decoded*.
 
 ---
 
-## 8. Annotated box tree — IMG_4913.HEIC (the target shape for a writer)
+## 8. Annotated box tree — the reference capture (the target shape for a writer)
 
 ```
 ftyp                                              @0       size=52
@@ -376,27 +394,27 @@ A writer targeting this exact shape must, in order: `ftyp` → `meta` (with chil
 
 ## 9. What the broken files are missing (concrete, actionable)
 
-**DSC07752.heic** (no `tmap`, washed out in WeChat):
+**The Apple-flavor export** (no `tmap`, washed out):
 1. **No ISO `tmap` item at all**, and no `tmap` in `compatible_brands`. Any decoder that requires ISO 21496-1 discovery (rather than Apple's private `auxC` URN) finds nothing to tone-map with. *Fix: emit a `tmap` item with `dimg`→[base, gainmap] and the ISO 21496-1 metadata payload in `idat`, and add `tmap` to `ftyp` compatible_brands.*
-2. Gain map is full base resolution (9504x6336) instead of downscaled — not a correctness bug per se, but a big deviation from the reference encoder's convention (half-res, item 62 in the gold file) and wastes space/decode time.
+2. Gain map is full base resolution (9504x6336) instead of downscaled — not a correctness bug per se, but a big deviation from the reference encoder's convention (half-res, item 62 in the reference file) and wastes space/decode time.
 3. A second aux item (162) exists with the wrong URN (`urn:mpeg:hevc:2015:auxid:1`, the generic HEVC-aux URN) at the same resolution as the real gain map (243) — likely leftover cruft from the encoding pipeline that could confuse a decoder scanning aux images by URN prefix match instead of exact string.
 
-**DSC07752_iso.heic** (has `tmap`, still washed out):
-1. **The gain-map item (162) has no `auxC` property at all** — it is only reachable through the `tmap` item's `dimg` list, so any decoder that discovers gain maps via the Apple aux-image convention (as many real-world decoders do, in addition to or instead of full ISO 21496-1 support) will not find it. *Fix: attach `auxC` = `urn:com:apple:photo:2020:aux:hdrgainmap` to the gain-map item in addition to the `tmap` reference, exactly as the gold file does for item 62.*
-2. **No `auxl` reference from the gain map back to the base image** — only the `tmap`'s `dimg` link exists. The gold file has both.
-3. **The ISO metadata's `alternate_hdr_headroom` (11.86x) does not match the gain map's own encoded `gain_map_max` (3.89x)**. A spec-compliant decoder that trusts the headroom field to decide how much to boost, but is clamped by the actual gain-map pixel range, will under- or over-shoot — this is a real numeric inconsistency in the payload itself, not just a missing-link problem. In the gold file these two values are identical by construction.
-4. Gain map is **3-channel RGB** at full base resolution instead of the gold file's **1-channel grayscale at half resolution** — larger, and tagged with an HDR/PQ `nclx` color property (BT.2020/PQ) on what should be a plain difference map. Semantically inconsistent property tagging on the gain-map item itself.
+**The ISO-flavor export** (has `tmap`, still washed out):
+1. **The gain-map item (162) has no `auxC` property at all** — it is only reachable through the `tmap` item's `dimg` list, so any decoder that discovers gain maps via the Apple aux-image convention (as many real-world decoders do, in addition to or instead of full ISO 21496-1 support) will not find it. *Fix: attach `auxC` = `urn:com:apple:photo:2020:aux:hdrgainmap` to the gain-map item in addition to the `tmap` reference, exactly as the reference file does for item 62.*
+2. **No `auxl` reference from the gain map back to the base image** — only the `tmap`'s `dimg` link exists. The reference file has both.
+3. **The ISO metadata's `alternate_hdr_headroom` (11.86x) does not match the gain map's own encoded `gain_map_max` (3.89x)**. A spec-compliant decoder that trusts the headroom field to decide how much to boost, but is clamped by the actual gain-map pixel range, will under- or over-shoot — this is a real numeric inconsistency in the payload itself, not just a missing-link problem. In the reference file these two values are identical by construction.
+4. Gain map is **3-channel RGB** at full base resolution instead of the reference file's **1-channel grayscale at half resolution** — larger, and tagged with an HDR/PQ `nclx` color property (BT.2020/PQ) on what should be a plain difference map. Semantically inconsistent property tagging on the gain-map item itself.
 5. XMP `HDRGainMap*` tags and the MakerNote `AuxiliaryImageType` detection are absent entirely (§6) — consistent with #1: exiftool's own heuristics for "this file has a gain map" fail on this file the same way a real decoder's heuristics likely do.
 
 ---
 
-## 10. What I could not decode
+## 10. Present but not decoded
 
-- **HEVC `hvcC` box internals** beyond `configurationVersion`, `general_profile_space`, `general_tier_flag`, `general_profile_idc`, and `general_level_idc` (these five fields have fixed, unambiguous byte offsets per ISO/IEC 14496-15 and were spot-checked: e.g. IMG_4913 tile hvcC entries show `profile_idc=3` (Main Still Picture) and `profile_idc=2` (Main 10) at `level_idc` 63 and 90 respectively). Chroma format, exact bit depth fields, parallelism type, and the embedded NAL unit arrays (VPS/SPS/PPS) were **not** decoded — present, contents not decoded.
-- **ICC tag-table internals** beyond the `desc` (ProfileDescription) tag — in particular the presumed curve/LUT tag inside IMG_4913's 26,664-byte "Adaptive Gain Curve" profile that likely encodes the actual per-image tone curve. Extracted verbatim as a fixture for further analysis; not reverse-engineered here.
-- **The exact bit-level meaning of the 3 "reserved" bytes** in the ISO 21496-1 header (offsets 2-4, always zero in both samples observed) — inferred to be reserved/padding by elimination (no other byte-count fits both samples' data cleanly), not confirmed against spec text (unavailable in this environment).
+- **HEVC `hvcC` box internals** beyond `configurationVersion`, `general_profile_space`, `general_tier_flag`, `general_profile_idc`, and `general_level_idc` (these five fields have fixed, unambiguous byte offsets per ISO/IEC 14496-15 and were spot-checked: e.g. The reference tile hvcC entries show `profile_idc=3` (Main Still Picture) and `profile_idc=2` (Main 10) at `level_idc` 63 and 90 respectively). Chroma format, exact bit depth fields, parallelism type, and the embedded NAL unit arrays (VPS/SPS/PPS) were **not** decoded — present, contents not decoded.
+- **ICC tag-table internals** beyond the `desc` (ProfileDescription) tag — in particular the presumed curve/LUT tag inside the reference's 26,664-byte "Adaptive Gain Curve" profile that likely encodes the actual per-image tone curve. Extracted verbatim as a fixture for further analysis; not reverse-engineered here.
+- **The exact bit-level meaning of the 3 "reserved" bytes** in the ISO 21496-1 header (offsets 2-4, always zero in both samples observed) — inferred to be reserved/padding by elimination (no other byte-count fits both samples' data cleanly), not confirmed against the paid spec text.
 - **The `useCommonDenominator` flag bit (0x08)** — this is documented in `google/libultrahdr`'s own source as a private encoding optimization on top of the ISO format; neither real-world sample here sets it, so its exact on-wire semantics (which the code does implement) were not needed to decode these two files, but a writer should know the alternate "common denominator" wire form exists.
-- **`altr` group semantics** in IMG_4913's `grpl` box (present, contents not decoded — likely an "alternative representations" grouping for cross-image-format switching, but the specific member list/logic was not parsed out).
+- **`altr` group semantics** in the reference's `grpl` box (present, contents not decoded — likely an "alternative representations" grouping for cross-image-format switching, but the specific member list/logic was not parsed out).
 
 ---
 
@@ -404,10 +422,10 @@ A writer targeting this exact shape must, in order: `ftyp` → `meta` (with chil
 
 | file | contents |
 |---|---|
-| `img4913_iso21496.bin` | Raw 62-byte ISO 21496-1 GainMapMetadata payload from IMG_4913's `tmap` item (122), byte-exact from `idat`. |
-| `img4913_auxc_urn.txt` | All 6 distinct `auxC` URN/tag strings found in IMG_4913, one per line. |
-| `img4913_tmap_icc_profile.icc` | The 26,664-byte ICC profile attached to IMG_4913's `tmap` item (desc: "Display P3 Primaries; PQ (Adaptive Gain Curve 81B7427DF220A6FA)"). |
-| `dsc07752_iso21496.bin` | Raw 142-byte ISO 21496-1 GainMapMetadata payload from DSC07752_iso's `tmap` item (163), byte-exact from `idat`. |
+| `img4913_iso21496.bin` | Raw 62-byte ISO 21496-1 GainMapMetadata payload from the reference's `tmap` item (122), byte-exact from `idat`. |
+| `img4913_auxc_urn.txt` | All 6 distinct `auxC` URN/tag strings found in the reference, one per line. |
+| `img4913_tmap_icc_profile.icc` | The 26,664-byte ICC profile attached to the reference's `tmap` item (desc: "Display P3 Primaries; PQ (Adaptive Gain Curve 81B7427DF220A6FA)"). |
+| `dsc07752_iso21496.bin` | Raw 142-byte ISO 21496-1 GainMapMetadata payload from the ISO-flavor export's `tmap` item (163), byte-exact from `idat`. |
 
 ---
 
