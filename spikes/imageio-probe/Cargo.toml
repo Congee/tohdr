@@ -4,6 +4,7 @@ version = "0.0.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 # Spike: exercise Apple ImageIO gain-map READ and WRITE through Rust FFI
 # (objc2-image-io / objc2-core-foundation / objc2-core-graphics). Throwaway.

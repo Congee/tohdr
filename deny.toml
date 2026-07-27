@@ -1,0 +1,23 @@
+[graph]
+exclude-dev = false
+
+[licenses]
+# Every license in the resolved graph is permissive; nothing is copyleft.
+# Caveat: cargo-deny does not walk dev-dependency subtrees, so this check alone
+# would not have caught the AGPL crate that ultrahdr-core's default features pulled in.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[advisories]
+version = 2

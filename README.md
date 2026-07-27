@@ -160,3 +160,24 @@ docs/                  structure teardown, acceptance criteria, engine compariso
   does not read `.xmp`, verified by converting a raw with and without its
   sidecar present and getting the same bytes. Use the Lightroom plugin, which
   is handed an already-developed image, or export a TIFF first.
+
+## License
+
+Dual-licensed under either
+
+- Apache License 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE)), or
+- MIT license ([`LICENSE-MIT`](LICENSE-MIT))
+
+at your option. Apache-2.0 is offered because this is codec-adjacent work: it
+carries an express patent grant from each contributor, which MIT does not. That
+grants only patents a contributor actually holds — neither license says anything
+about third-party patents, and HEVC in particular is pool-licensed by others.
+
+Unless you state otherwise, any contribution you submit for inclusion is dual-
+licensed as above, with no additional terms.
+
+Every dependency in the resolved graph is permissive — MIT, Apache-2.0, BSD-2,
+BSD-3, 0BSD, Zlib, Unicode-3.0 or Unlicense — enforced by `cargo deny` against
+[`deny.toml`](deny.toml). Note that `cargo deny` does not walk dev-dependency
+subtrees, so it will not catch a copyleft crate arriving that way; that is why
+`ultrahdr-core` is pinned to `default-features = false`.
