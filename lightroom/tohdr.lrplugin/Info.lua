@@ -32,13 +32,20 @@ return {
 	LrToolkitIdentifier = 'com.tohdr.lightroom-export',
 	LrPluginName = "HDR Gain-Map HEIC",
 
-	-- The fourth field is the build, and it takes a *string* as well as a number.
-	-- Adobe's own LrC 15.3 samples all carry
+	-- The fourth field is the build. It *accepts* a string -- Adobe's own LrC 15.3
+	-- samples all carry
 	--   VERSION = { major=15, minor=3, revision=0, build="202604090947-8f3672ed" }
-	-- which is a UTC build timestamp and a git short hash -- the same string that
-	-- names the SDK bundle it shipped in. (Its older samples use `build=200000`,
-	-- an integer, so both forms work. The SDK Guide documents neither; this is read
-	-- off `docs/LrC_15.3_*/Sample Plugins/*/Info.lua`.)
+	-- a UTC timestamp and a git short hash, the same string that names the SDK
+	-- bundle it shipped in -- but Plug-in Manager will not render a string as the
+	-- fourth component of `0.1.0.x`, so two installs that differ only there look
+	-- identical on screen. Measured, not assumed: two installs four hours apart
+	-- carried different strings and showed no visible difference.
+	--
+	-- So this is a *number*, as Adobe's older samples have it (`build=200000`).
+	-- `tools/install-lrplugin.sh` sets it to `YYMMDDHHMM` in UTC, which rises with
+	-- every install and so always differs from the copy it replaced -- including a
+	-- reinstall from a dirty tree, which is exactly when "is this my edit?" gets
+	-- asked. The git hash keeps the precision, on the `installed-from` line below.
 	--
 	-- Worth using here, because this plugin has a provenance problem the same shape
 	-- as Adobe's. The `Modules` folder is scanned only at launch and a running
@@ -48,9 +55,11 @@ return {
 	-- once. Plug-in Manager shows this version string, so stamping the commit into
 	-- it answers that question by looking.
 	--
-	-- `"dev"` is what a checkout says. `tools/install-lrplugin.sh` rewrites this
-	-- line as it copies the bundle, so an installed plugin names its own commit.
-	VERSION = { major = 0, minor = 1, revision = 0, build = "dev" },
+	-- `build = 0` is what a checkout says, so a stamp can never be committed by
+	-- accident. **Bump `revision` on every change that ships**, so the version
+	-- reads as a change and not only as a reinstall.
+	VERSION = { major = 0, minor = 1, revision = 0, build = 0 },
+	-- installed-from: checkout
 
 	LrExportServiceProvider = {
 		title = "HDR Gain-Map HEIC",

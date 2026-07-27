@@ -218,10 +218,20 @@ local function original_path(rendition)
 	if not photo then
 		return nil, 'Lightroom did not say which photo this rendition came from'
 	end
-	-- pcall because this is metadata access on a catalog we do not own: a photo
-	-- can be removed mid-export, and losing one MakerNote must not fail a
+	-- Protected because this is metadata access on a catalog we do not own: a
+	-- photo can be removed mid-export, and losing one MakerNote must not fail a
 	-- conversion that would otherwise succeed.
-	local ok, path, format = pcall(function()
+	--
+	-- `LrTasks.pcall`, never the built-in. `getRawMetadata` yields the task's
+	-- coroutine -- that is why the SDK requires a task to call it from -- and in
+	-- Lua 5.1 a yield cannot cross a C function, which the built-in `pcall` is.
+	-- Wrapping it in `pcall` therefore *causes* the failure it was meant to
+	-- contain: every lookup died with "Yielding is not allowed within a C or
+	-- metamethod call", the flag was never passed, and the first live export took
+	-- no MakerNote at all. Adobe documents `LrTasks.pcall` as "simulates Lua's
+	-- standard pcall(), but in a way that allows a call to LrTasks.yield() to
+	-- occur inside it", which is precisely this.
+	local ok, path, format = LrTasks.pcall(function()
 		local subject = photo
 		if photo:getRawMetadata('isVirtualCopy') then
 			subject = photo:getRawMetadata('masterPhoto') or photo

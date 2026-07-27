@@ -26,9 +26,16 @@ GUI step:
 tools/install-lrplugin.sh
 ```
 
-which builds the CLI, copies the four `.lua` files and the binary, and stamps the
-commit into `Info.lua`'s `VERSION.build` — `202607271212-c374036f`, or
-`…-dirty` when the tree has uncommitted changes under `lightroom/` or `crates/`.
+which builds the CLI, copies the four `.lua` files and the binary, and stamps
+`Info.lua` twice: `VERSION.build` becomes `YYMMDDHHMM` in UTC, and an
+`installed-from:` comment records the commit. It prints both, the version spelled
+the way Plug-in Manager shows it:
+
+```
+version:        0.1.0.2607271253
+installed from: be03f8cd (2026-07-27T12:53Z)
+```
+
 By hand it is:
 
 ```sh
@@ -42,12 +49,23 @@ install -m 755 target/release/tohdr "$DEST/tohdr"
 The stamp exists because of point 2 below: nothing inside the plugin can tell you
 which copy of the Lua is live, and access times on those files do not move when
 Lightroom reads them — an hour went into learning that. Plug-in Manager displays
-the version string, so afterwards the question is answered by looking at it. The
-`<timestamp>-<short sha>` format is Adobe's own: every LrC 15.3 sample plugin
-carries `build="202604090947-8f3672ed"`, the string that also names the SDK bundle
-they shipped in. The SDK Guide documents the field nowhere; this was read off
-`docs/LrC_15.3_*/Sample Plugins/*/Info.lua`. The checkout stays `build = "dev"`,
-so a stamp can never be committed by accident.
+the version, so afterwards the question is answered by looking at it.
+
+It takes two fields because one cannot do both jobs. `VERSION.build` *accepts* a
+string — every LrC 15.3 sample carries `build="202604090947-8f3672ed"`, the string
+that also names the SDK bundle they shipped in, and the SDK Guide documents the
+field nowhere; this was read off `docs/LrC_15.3_*/Sample Plugins/*/Info.lua`. But
+Plug-in Manager does not render a string as the fourth component of `0.1.0.x`:
+two installs four hours apart carried different strings and looked identical on
+screen. So `build` is a *number*, as Adobe's older samples have it
+(`build=200000`), and time-based rather than commit-based so that it also rises
+on a reinstall from a dirty tree — which is exactly when "is this my edit?" gets
+asked. The commit keeps its precision on the `installed-from` line, and
+`-dirty` marks uncommitted changes under `lightroom/` or `crates/`.
+
+Two conventions follow. **`revision` gets bumped on every change that ships**, so
+the version reads as a change rather than only as a reinstall; the checkout keeps
+`build = 0`, so a stamp cannot be committed by accident.
 
 Either way:
 
@@ -219,7 +237,7 @@ Be clear about which half of this is proven.
 **Verified here, by running it:**
 
 - All four plugin files and the test file parse: `luajit -bl` on each, 5/5 OK.
-- `lua lightroom/tests/test_TohdrCli.lua` — **158 checks, 0 failures**. Covers
+- `lua lightroom/tests/test_TohdrCli.lua` — **159 checks, 0 failures**. Covers
   command-line construction and, most importantly, shell quoting: spaces,
   embedded single quotes, `$(...)`, backticks, semicolons, backslashes, double
   quotes and unicode all survive as literals. Also binary-location precedence,
@@ -239,6 +257,14 @@ Be clear about which half of this is proven.
   to its default with no error, the user's custom binary path included. Verified
   the guard fails: renaming one key in a scratch copy produces seven failures,
   from the declaration, the frozen list, the default and the binding.
+
+  A third scan covers the two ways Lightroom's Lua is not stock Lua, each of
+  which cost a live export to learn: **no built-in `pcall`** (only
+  `LrTasks.pcall` — see below), and **nothing from `os`**. Comment-only lines are
+  stripped first so the prose explaining the rules is not read as breaking them,
+  and each entry keeps its true line number rather than its index in the filtered
+  list. Verified both fail on a planted violation, and that the reported line is
+  the real one.
 
   Two more earn their keep by having caught something. `gain_map_source` must
   read the JSON, because the gate that guards this plugin's entire purpose — an
@@ -337,19 +363,65 @@ Be clear about which half of this is proven.
   place to read *what actually ran*, which is how the export below was diagnosed
   without guessing at the dialog state.
 
+- **The advisory dialog renders, and it is what found the bug below.** It read:
+
+  > The conversion succeeded, with notes:
+  >
+  > \- warning: the camera's MakerNote was requested, but the catalog would not
+  > answer (Yielding is not allowed within a C or metamethod call)
+
+  `LrDialogs.message` with a collected advisory in it, on screen, with the CLI's
+  wording and the plugin's reason side by side. It was worth building: an export
+  that succeeds while quietly dropping what you asked for is the failure mode this
+  channel exists to catch, and here it caught one on its first outing.
+- **That the built-in `pcall` cannot wrap a catalog call**, which is why that
+  first export took no `MakerNote`. `getRawMetadata` yields the task's coroutine —
+  that is the real reason the SDK insists on a task to call it from — and Lua 5.1
+  cannot yield across a C function, which `pcall` is. So the guard *caused* the
+  failure it was meant to contain: every lookup raised *"Yielding is not allowed
+  within a C or metamethod call"*, `original_path` returned nil, the flag was never
+  passed, and the conversion went ahead without it. `LrTasks.pcall` is Adobe's
+  yield-safe form — "simulates Lua's standard `pcall()`, but in a way that allows a
+  call to `LrTasks.yield()` to occur inside it" — and a source scan in the test
+  suite now rejects the built-in outright.
+
+  Everything measurable had pointed the other way, which is worth recording
+  because it is why the reason string was built instead of another guess:
+
+  - the prefs plist records `tohdr_engine = "portable"` and
+    `tohdr_makerNote = true`, so Engine B ran with the box checked, and Engine B
+    is the engine that *can* carry a foreign blob;
+  - the catalog (read `immutable=1`) gives the master as `fileFormat = RAW`,
+    `masterImage` null, path `…/7.19/DSC07746.ARW`, a file that exists — so
+    `original_path`'s format, virtual-copy, path and existence gates all pass;
+  - both files' Exif is little-endian, so `byte-order-differs` cannot fire;
+  - `exportRendition.photo` is documented, as are `isVirtualCopy`, `masterPhoto`,
+    `fileFormat` and `path` as raw-metadata keys, so no name is wrong;
+  - and replaying the *real* Exif through the CLI carries it: feeding the exported
+    HEIC back as the source with `--engine portable --maker-note-from` the ARW
+    reports `"maker_note_graft":"carried"`, 38,332 bytes pinned at 5,222, and the
+    result holds all **124** Sony tags, the same count as the ARW.
+
+  Every one of those was true and the feature still did nothing, because the fault
+  was in the wrapper rather than in anything it wrapped. No amount of further
+  reading would have found it: it took the plugin reporting the error text
+  verbatim. Which is the lesson worth keeping — the fix that mattered was making
+  the failure *speak*, and the one-line repair followed from what it said.
+
+  That reporting is now permanent, because the underlying gap was real: `tohdr`
+  warns about every `MakerNote` it refuses, but it cannot warn about a companion
+  file it was never handed, so a failed lookup was silent and indistinguishable
+  from success. `original_path` returns a reason with its nil and the plugin
+  raises it as an advisory, worded identically across photos so 200 renditions
+  collapse to one line with a count. Same shape as the `gain_map_source` gate
+  before it: a check that cannot report is a check that does not exist.
+
 **Still not verified:**
 
-- That the advisory dialog *renders*. Every export so far has had nothing to
-  report, which is the correct behaviour and is why the P3 result is trustworthy —
-  but it means `LrDialogs.message` with a collected advisory in it has been
-  exercised only in Lua, never on screen. The dialog is the last thing standing
-  between a future silent fallback and the user, so it is worth confirming the
-  first time an export legitimately trips one.
-- **Why a live export took no `MakerNote`, with every gate saying it should
-  have.** The first export with the feature installed produced no vendor tags at
-  all: `exiftool -a -Sony:all` on the output reports 0, and tag `0x927C` is absent
-  rather than present-and-broken. Everything measurable says it should have
-  worked:
+- **Whether the whole chain now works**, i.e. that with `LrTasks.pcall` the
+  lookup returns the path and 124 Sony tags land in the exported HEIC. Both halves
+  are proven separately — the CLI on the real Exif, and the SDK's contract for the
+  yield-safe call — but the two have not yet run together.
 
   - the prefs plist records `tohdr_engine = "portable"` and
     `tohdr_makerNote = true`, so Engine B ran with the box checked, and Engine B
@@ -372,18 +444,11 @@ Be clear about which half of this is proven.
   not predict (`getRawMetadata` inside `processRenderedPhotos`), or the graft was
   refused with a warning that reached a dialog nobody recorded.
 
-  Both are now self-reporting, which is the actual defect this exposed: `tohdr`
-  warns about every `MakerNote` it refuses, but it cannot warn about a companion
-  file it was never handed, so a failed lookup was *silent* and indistinguishable
-  from success. `original_path` now returns a reason with its nil, and the plugin
-  turns that into an advisory in the same collected channel. The reasons are
-  worded identically across photos so 200 renditions collapse to one line with a
-  count. This is the same shape of bug as the `gain_map_source` gate: a check that
-  cannot report is a check that does not exist.
-- **That Plug-in Manager displays `VERSION.build`** as the stamp
-  `tools/install-lrplugin.sh` writes. The field is a string in Adobe's own
-  samples and `Info.lua` still parses and `dofile`s with one in it, but the
-  rendering has not been looked at.
+- **That Plug-in Manager renders a numeric `VERSION.build`** as the fourth
+  component. That it does *not* render a string one is now known — two installs
+  four hours apart carried different strings and looked the same — which is why
+  the stamp is a number. `0.1.0.2607271253` parses and `dofile`s, but has not been
+  looked at on screen.
 
 The plugin is installed in the `Modules` folder on this machine, so the first two
 lists reflect a real Lightroom, not inference. Every item in the second list got

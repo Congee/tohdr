@@ -6,11 +6,14 @@
 # Lightroom holds the .lua files it loaded at startup. Nothing inside the plugin
 # can tell you which copy is live -- access times on those files do not move when
 # Lightroom reads them, which is a trap worth naming because it cost an hour of
-# debugging once. Plug-in Manager displays the VERSION string, so after this the
-# answer to "is Lightroom running what I just built?" is: look at it.
+# debugging once. Plug-in Manager displays the VERSION, so after this the answer
+# to "is Lightroom running what I just built?" is: look at it.
 #
-# The format is Adobe's own, read off their LrC 15.3 samples, which all carry
-# `build="202604090947-8f3672ed"` -- a UTC timestamp and a git short hash.
+# Two halves, because one number cannot do both jobs. `VERSION.build` gets
+# `YYMMDDHHMM` in UTC -- a *number*, since Plug-in Manager will not render a
+# string as the fourth component of `0.1.0.x`, and time-based so it rises on
+# every install including a reinstall of a dirty tree. The git hash goes on the
+# `installed-from` comment line, where it stays exact.
 #
 # Usage: tools/install-lrplugin.sh [dest-dir]
 #
@@ -31,7 +34,8 @@ if SHA="$(git -C "$REPO" rev-parse --short=8 HEAD 2>/dev/null)"; then
 else
     SHA="nogit"
 fi
-STAMP="$(date -u '+%Y%m%d%H%M')-$SHA"
+BUILD="$(date -u '+%y%m%d%H%M')"
+STAMP="$SHA ($(date -u '+%Y-%m-%dT%H:%MZ'))"
 
 echo "building tohdr (release)"
 ( cd "$REPO" && cargo build --release -p tohdr-cli )
@@ -42,17 +46,25 @@ for f in "$SRC"/*.lua; do
 done
 install -m 755 "$REPO/target/release/tohdr" "$DEST/tohdr"
 
-# Rewrite only the build field, in the installed copy -- never in the checkout,
-# which stays `"dev"` so the stamp can never be committed by accident.
+# Rewrite the build field and the provenance line, in the installed copy only --
+# never in the checkout, which stays `build = 0` so a stamp cannot be committed
+# by accident.
 INFO="$DEST/Info.lua"
 TMP="$INFO.tmp.$$"
-sed "s/build = \"[^\"]*\"/build = \"$STAMP\"/" "$INFO" > "$TMP"
-grep -q "build = \"$STAMP\"" "$TMP" || { rm -f "$TMP"; echo "stamp failed" >&2; exit 1; }
+sed -e "s/build = [0-9]*/build = $BUILD/" \
+    -e "s|-- installed-from: .*|-- installed-from: $STAMP|" "$INFO" > "$TMP"
+grep -q "build = $BUILD" "$TMP" || { rm -f "$TMP"; echo "stamp failed" >&2; exit 1; }
+grep -q "installed-from: $SHA" "$TMP" || { rm -f "$TMP"; echo "provenance failed" >&2; exit 1; }
 mv "$TMP" "$INFO"
 chmod 644 "$INFO"
 
+# The whole version, the way Plug-in Manager shows it, so what to look for on
+# screen needs no assembling.
+VERSION="$(sed -n 's/.*major = \([0-9]*\), minor = \([0-9]*\), revision = \([0-9]*\), build = \([0-9]*\).*/\1.\2.\3.\4/p' "$INFO")"
+
 echo "installed to $DEST"
-echo "  version build: $STAMP"
+echo "  version:       $VERSION"
+echo "  installed from: $STAMP"
 echo "  tohdr:         $("$DEST/tohdr" --version 2>/dev/null || echo '(no --version)')"
 echo
 echo "Restart Lightroom -- the Modules folder is only scanned at launch."

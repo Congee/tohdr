@@ -497,5 +497,62 @@ do
 end
 
 -- ===========================================================================
+print("Lightroom's Lua is not stock Lua")
+-- ===========================================================================
+--
+-- Two rules that cost a live export each to learn, both invisible to a parser
+-- and to every test that does not run inside Lightroom. Source scans, for the
+-- same reason as the frozen keys: cheap, and they fail on the way in.
+do
+	local sources = {
+		'lightroom/tohdr.lrplugin/ExportServiceProvider.lua',
+		'lightroom/tohdr.lrplugin/TohdrCli.lua',
+		'lightroom/tohdr.lrplugin/TohdrExportDialog.lua',
+		'lightroom/tohdr.lrplugin/Info.lua',
+	}
+
+	--- Source lines with comment-only lines dropped, so prose about `pcall()`
+	--- and `os.getenv` does not read as a use of either. Each entry keeps its
+	--- real line number: a failure message that points at the wrong line is worse
+	--- than one that points at none.
+	local function code_lines(path)
+		local f = assert(io.open(path, 'r'), "cannot read " .. path)
+		local lines, n = {}, 0
+		for line in f:lines() do
+			n = n + 1
+			if not line:match("^%s*%-%-") then
+				lines[#lines + 1] = { n = n, text = line }
+			end
+		end
+		f:close()
+		return lines
+	end
+
+	for _, path in ipairs(sources) do
+		local name = path:match("([^/]+)$")
+		for _, entry in ipairs(code_lines(path)) do
+			local i, line = entry.n, entry.text
+			-- The built-in pcall is a C function, and Lua 5.1 cannot yield across
+			-- one. Anything that reaches the catalog yields, so a built-in pcall
+			-- around it raises "Yielding is not allowed within a C or metamethod
+			-- call" -- turning the guard into the fault. LrTasks.pcall is the
+			-- yield-safe form and the only one allowed here.
+			for prefix in line:gmatch("([%w_%.]*)pcall%s*%(") do
+				check(prefix == 'LrTasks.',
+					name .. " line " .. i .. " calls a bare pcall; use LrTasks.pcall")
+			end
+			-- `os` is not in Lightroom's sandbox. `os.getenv` demonstrably is not
+			-- (it raises "attempt to call field 'getenv' (a nil value)" and the
+			-- export dies), and which other members survive is undocumented, so
+			-- the rule is none of them.
+			for member in line:gmatch("os%.([%w_]+)%s*%(") do
+				check(false, name .. " line " .. i .. " calls os." .. member
+					.. ", which Lightroom's sandbox may not have")
+			end
+		end
+	end
+end
+
+-- ===========================================================================
 print(string.format("\n%d checks, %d failures", checks, failures))
 os.exit(failures == 0 and 0 or 1)
