@@ -193,31 +193,52 @@ Be clear about which half of this is proven.
   photo with "Lightroom rendered an SDR intermediate", and instead the export
   succeeded with 2.524 stops of real headroom. A 16-bit HDR TIFF is what
   Lightroom actually wrote.
-
-**Partly verified — the export was not sRGB, but which wide space is not yet
-pinned down:**
-
 - **That Lightroom honours `LR_export_colorSpaceNonJPEG = 'p3_hdr'`.** The token
   is LrC's own — it is what LrC writes into `EditInPs_hdr_colorSpace` for its
   Edit-in-Photoshop HDR path, and the export keys take the same `<space>_hdr`
-  spellings — but Adobe documents none of these values.
+  spellings — and Adobe documents none of these values, so this was read off the
+  intermediate rather than trusted.
 
-  What the delivered file settles: its base declares `SMPTE EG 432-1` with EXIF
-  `ColorSpace: Uncalibrated`, and `primaries_from_icc` is verified to recognise
+  The delivered HEIC narrows it without settling it: a base labelled
+  `SMPTE EG 432-1` is what you get *either* from a recognised Display P3 source
+  *or* from an unrecognised wide one falling back to `--colour-space p3`. It does
+  rule out an sRGB fallback, since `primaries_from_icc` is verified to recognise
   the real 3144-byte `sRGB IEC61966-2.1` profile Lightroom embeds (see
-  `cargo run --example probe_icc -p tohdr-core`). Had Lightroom ignored the token
-  and fallen back to sRGB, the base would have been labelled `srgb` from that
-  profile. It was not, so it did not.
+  `cargo run --example probe_icc -p tohdr-core`) — had Lightroom ignored the token
+  and fallen back, the base would have been labelled `srgb` from that profile.
 
-  What it does not settle: a *recognised* Display P3 profile and an
-  *unrecognised* wide one (ProPhoto, say) both yield a P3-labelled base — the
-  first because the source said so, the second because `--colour-space p3` is the
-  fallback. They differ only in that the second prints `warning:`, and the plugin
-  discarded the CLI's output on success, so that line went nowhere. It is now
-  collected and shown (see "success advisories" above). **Silence from the next
-  export is the proof**; a dialog naming ProPhoto or Adobe RGB is the disproof.
+  So the intermediate itself was read. The plugin deletes it, but not until after
+  the conversion, which leaves a window of seconds: a poller on the export
+  destination caught `DSC07746.tif` at 677,497,058 bytes and pulled tag 34675
+  straight out of IFD0. It is **Apple's Display P3** — 548 bytes, profile version
+  4.0.0, creator "Apple Computer Inc.", "Copyright Apple Inc., 2015", colorants
+  `0.51512 / 0.29198 / 0.15710` — which `primaries_from_icc` classifies `p3`.
+  Lightroom honoured the token, and the output's P3 label came from the source
+  rather than from the flag's default. The export also produced no advisory
+  dialog, which is the same answer arrived at independently.
 
-The plugin is installed in the `Modules` folder on this machine, so the first
-two lists reflect a real Lightroom, not inference. Every item that moved out of
-"not verified" got there by someone clicking Export rather than by reading the
-code, which is a fair guide to how much confidence the remaining item deserves.
+  Worth knowing for the recognition code: this is *not* the 536-byte
+  `/System/Library/ColorSync/Profiles/Display P3.icc`. Lightroom embeds a
+  12-byte-larger variant with the same colorants — which is exactly why
+  recognition matches colorants against Bradford-adapted references instead of
+  comparing profiles byte for byte.
+
+**Still not verified:**
+
+- That the advisory dialog *renders*. Every export so far has had nothing to
+  report, which is the correct behaviour and is why the P3 result is trustworthy —
+  but it means `LrDialogs.message` with a collected advisory in it has been
+  exercised only in Lua, never on screen. The dialog is the last thing standing
+  between a future silent fallback and the user, so it is worth confirming the
+  first time an export legitimately trips one.
+
+The plugin is installed in the `Modules` folder on this machine, so the first two
+lists reflect a real Lightroom, not inference. Every item in the second list got
+there by someone clicking Export rather than by reading the code.
+
+One caveat on reproducing any of this: **Lua changes need a Lightroom restart**,
+and access times are no way to check whether one happened. After a confirmed
+restart the installed `.lua` files' atimes had not moved while the binary's had,
+so an unchanged atime says nothing about whether Lightroom re-read the file. A
+conversion picks up a newly installed `tohdr` immediately; a newly installed
+`ExportServiceProvider.lua` does not take effect until Lightroom is restarted.
