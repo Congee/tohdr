@@ -37,7 +37,7 @@ python3 tools/make_hdr_source.py out/scene.tiff --width 3024 --height 4032
 ```
 
 `--flavor apple | iso | both` chooses the signaling (`ios` is accepted as an
-alias for `iso`). `--engine apple | portable | hpvca` chooses the backend.
+alias for `iso`). `--engine apple | videotoolbox | hpvca` chooses the backend.
 
 ## Two engines, three backends
 
@@ -49,7 +49,7 @@ selectable backends.
 
 | | Engine A | Engine B | Engine B |
 |---|---|---|---|
-| `--engine` | `apple` | `portable` | `hpvca` |
+| `--engine` | `apple` | `videotoolbox` | `hpvca` |
 | Reports itself as | `apple-imageio` | `hardware-videotoolbox` | `portable-hpvca` |
 | Codec | Apple ImageIO | platform media block | `hpvca` (BSD-3/Apache) |
 | Container | ImageIO | `tohdr-heif` | `tohdr-heif` |
@@ -58,12 +58,14 @@ selectable backends.
 | 12.19 MP | 225.5 ms | **28.3 ms** | 257.4 ms |
 | 60.22 MP | 545.3 ms | **221.3 ms** | 5762.5 ms |
 
-`--engine portable` means "our container, the fastest codec this machine has" —
-the media block when the job allows it, `hpvca` when it does not (a 10-bit base,
-or a quality that asks for 4:4:4 chroma). `--engine hpvca` forces the pure-Rust
-path, which is how the two are compared. The choice is made before encoding, not
-by recovering from a hardware error, so a benchmark cannot be invalidated by a
-silent substitution.
+`--engine videotoolbox` means "our container, the fastest codec this machine
+has" — the media block when the job allows it, `hpvca` when it does not (a
+10-bit base, or a quality that asks for 4:4:4 chroma). `--engine hpvca` forces
+the pure-Rust path, which is how the two are compared. Only `hpvca` is portable:
+the other two need macOS, and the `videotoolbox` path hands camera RAW to
+ImageIO's decoder besides. The choice is made before encoding, not by recovering
+from a hardware error, so a benchmark cannot be invalidated by a silent
+substitution.
 
 Those timings are the mean of iterations 2..n with the `VTCompressionSession`
 reused — what a *second* file of the same geometry costs. Cold, in a fresh

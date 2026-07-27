@@ -122,7 +122,7 @@ impl Default for EncodeOptions<'_> {
 
 /// A backend that can mux a base image plus a gain map into one container.
 ///
-/// Engine A (Apple ImageIO) and Engine B (portable, hpvca + our own muxer) both
+/// Engine A (Apple ImageIO) and Engine B (our own muxer plus a plane codec) both
 /// implement this so their outputs can be diffed against each other and against
 /// an iPhone reference file.
 pub trait GainMapEncoder {

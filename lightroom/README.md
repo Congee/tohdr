@@ -107,7 +107,7 @@ Either way:
 | Setting | CLI equivalent |
 |---|---|
 | Flavor — Apple / ISO 21496-1 / Both | `--flavor` |
-| Engine — Apple ImageIO / portable | `--engine` |
+| Engine — Apple ImageIO / VideoToolbox / Portable | `--engine` |
 | Maximum file size (e.g. 4 MB) | `--max-size` |
 | Quality, minimum quality | `--quality`, `--min-quality` |
 | Tone map — clip / Reinhard | `--tone-map` |
@@ -127,15 +127,14 @@ above-white highlights, and would yield a structurally perfect file containing n
 HDR.
 
 P3 rather than sRGB because the narrow request is not the neutral one. Rendering
-into Rec.709 discards every colour outside it — measured on a real export of
-the 60 MP Sony raw, a 60.2 MP Sony raw, 12.33% of the frame, worst error dE 5.35,
-concentrated in a coherent
-yellow/yellow-green region rather than scattered
+into Rec.709 discards every colour outside it — measured on a real export of a
+60.2 MP Sony raw, 12.33% of the frame, worst error dE 5.35, concentrated in a
+coherent yellow/yellow-green region rather than scattered
 (`tohdr-apple/examples/probe_gamut.rs`). The sRGB export's own row in that table
 reads dE 0.00 for the least reassuring reason available: Lightroom had already
 clipped it, so there was nothing left to lose. For an iPhone capture P3 is
-*exactly* enough — 0 pixels of the reference capture reference capture fall outside
-it, against 44,799 outside Rec.709.
+*exactly* enough — 0 pixels of the reference capture fall outside it, against
+44,799 outside Rec.709.
 
 This was sRGB until `tohdr` could read the intermediate's embedded ICC profile.
 Asking for wider primaries before that would have mislabelled rather than carried
@@ -186,7 +185,7 @@ built-in and rejects it.
 
 Two caveats, both of which the dialog states:
 
-- **It needs a Portable engine.** Engine A rebuilds its metadata through
+- **It needs a non-Apple engine.** Engine A rebuilds its metadata through
   ImageIO's property model, which has a key for Apple's `MakerNote` and none for
   anyone else's, so a Sony block goes in and 0 tags come out. `tohdr` detects this
   from the engine's own `MetadataSupport` and withdraws the graft rather than
@@ -366,7 +365,7 @@ Be clear about which half of this is proven.
   own preferences.** After the keys were restored, an export wrote
   `sdk_com.tohdr.lightroom-export` in
   `~/Library/Preferences/com.adobe.LightroomClassicCC7.plist` holding all eleven
-  `tohdr_*` keys with non-default values intact — `tohdr_engine = "portable"`,
+  `tohdr_*` keys with non-default values intact — `tohdr_engine = "videotoolbox"`,
   `tohdr_maxSizeEnabled = true`, `tohdr_maxSizeValue = 4`. That plist is also the
   place to read *what actually ran*, which is how the export below was diagnosed
   without guessing at the dialog state.
@@ -394,7 +393,7 @@ Be clear about which half of this is proven.
   suite now rejects the built-in outright.
 
   Everything measurable had pointed the other way -- prefs confirmed
-  `tohdr_engine = "portable"` with the box checked, the catalog gave the master as
+  `tohdr_engine = "videotoolbox"` with the box checked, the catalog gave the master as
   an existing `RAW` file, every documented key name was right, and replaying the
   real Exif through the CLI carried all **124** Sony tags (38,332 bytes pinned at
   5,222). Every one of those was true and the feature still did nothing, because
@@ -410,7 +409,7 @@ Be clear about which half of this is proven.
   exist.
 
 - **The whole chain, in one export.** With `LrTasks.pcall` in place, the same
-  photo through the same preset — engine `portable`, box checked, 4 MB budget —
+  photo through the same preset — engine `videotoolbox`, box checked, 4 MB budget —
   produced a HEIC carrying **124 Sony tags, byte-for-byte the ARW's**:
 
   ```
@@ -435,7 +434,7 @@ Be clear about which half of this is proven.
 
 **Still not verified:**
 
-  - the prefs plist records `tohdr_engine = "portable"` and
+  - the prefs plist records `tohdr_engine = "videotoolbox"` and
     `tohdr_makerNote = true`, so Engine B ran with the box checked, and Engine B
     is the engine that *can* carry a foreign blob;
   - the catalog (read `immutable=1`) gives the master as `fileFormat = RAW`,
@@ -445,7 +444,7 @@ Be clear about which half of this is proven.
   - `exportRendition.photo` is documented, as are `isVirtualCopy`, `masterPhoto`,
     `fileFormat` and `path` as raw-metadata keys, so no name is wrong;
   - and replaying the *real* Exif through the CLI carries it: feeding the exported
-    HEIC back as the source with `--engine portable --maker-note-from` the ARW
+    HEIC back as the source with `--engine videotoolbox --maker-note-from` the ARW
     reports `"maker_note_graft":"carried"`, 38,332 bytes pinned at 5,222, and the
     result holds all **124** Sony tags, the same count as the ARW.
 

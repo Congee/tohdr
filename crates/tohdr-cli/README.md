@@ -6,7 +6,7 @@ The `tohdr` command line: produce and inspect HDR gain-map HEICs.
 tohdr convert <INPUT> --output <FILE> [options]
 tohdr inspect <FILE> [--json]
 tohdr verify <FILE> [--against <REF>] [--json]
-tohdr bench <INPUT> [--iterations <N>] [--engine <apple|portable|hpvca>] [--json]
+tohdr bench <INPUT> [--iterations <N>] [--engine <apple|videotoolbox|hpvca>] [--json]
 ```
 
 Progress and logging go to stderr; the result (human text or `--json`) goes
@@ -30,7 +30,7 @@ tohdr convert IMG_1234.HEIC --output out.heic --max-size 4MB
 
 # Engine B, hard clip instead of Reinhard roll-off, full-res gain plane.
 tohdr convert scene.exr --output out.heic \
-  --engine portable --tone-map clip --gain-subsample 1
+  --engine videotoolbox --tone-map clip --gain-subsample 1
 
 # Engine B pinned to the pure-Rust codec, e.g. to compare against the hardware
 # one or to reproduce a file byte for byte on a machine without a media block.
@@ -49,7 +49,7 @@ Flags:
 | Flag | Default | Notes |
 |---|---|---|
 | `--flavor <apple\|iso\|both>` | `both` | `ios` is accepted as a hidden alias for `iso`. |
-| `--engine <apple\|portable\|hpvca>` | `apple` | `apple` = ImageIO. `portable` = our muxer with the fastest plane codec available (the VideoToolbox media block; falls back to `hpvca` for a >8-bit base or `--quality >= 95`, saying so on stderr). `hpvca` (alias `software`) forces the pure-Rust codec, and reads only tif/tiff/png/jpg/jpeg — `portable` hands anything else, camera RAW included, to ImageIO's decoder, since Engine B is a claim about the encoder and container rather than the decoder. The engine name in the output reports the codec that actually ran. |
+| `--engine <apple\|videotoolbox\|hpvca>` | `apple` | `apple` = ImageIO. `videotoolbox` = our muxer with the fastest plane codec available (the VideoToolbox media block; falls back to `hpvca` for a >8-bit base or `--quality >= 95`, saying so on stderr). `hpvca` (alias `software`) forces the pure-Rust codec, and reads only tif/tiff/png/jpg/jpeg — `videotoolbox` hands anything else, camera RAW included, to ImageIO's decoder, since Engine B is a claim about the encoder and container rather than the decoder. Only `hpvca` is portable; the other two need macOS. The engine name in the output reports the codec that actually ran. |
 | `--max-size <SIZE>` | none | `4MB`, `4MiB`, `3.5m`, `1500000`. Fails loudly if even `--min-quality` overshoots, rather than shipping an oversized file. |
 | `--quality <1-100>` | `85` | Base (and gain-plane) quality. |
 | `--min-quality <1-100>` | `40` | Floor for the `--max-size` search. |
@@ -99,11 +99,11 @@ weight a ~2.3-stop phone and a ~2.98-stop Mac XDR display would each apply.
 
 Compares the engines on one input — same base, same gain plane, same metadata,
 only the encoder/muxer differs. With no `--engine`, all three run: `apple`,
-`portable` (hardware), and `hpvca`:
+`videotoolbox` (hardware), and `hpvca`:
 
 ```sh
 tohdr bench source.heic
-tohdr bench source.heic --iterations 10 --engine portable --json
+tohdr bench source.heic --iterations 10 --engine videotoolbox --json
 
 # Give every iteration its own VTCompressionSession, as a cold process does.
 tohdr bench source.heic --no-session-reuse

@@ -63,7 +63,7 @@ fn main() {
 
     // --- the candidate: VideoToolbox encodes, we mux ---
     // The shipping path, not a reimplementation of it: `MuxEngine` over
-    // `VideoToolboxCodec` is exactly what `--engine portable` builds, so this
+    // `VideoToolboxCodec` is exactly what `--engine videotoolbox` builds, so this
     // number and the CLI's cannot drift apart.
     let t = Instant::now();
     let out = tohdr_heif::MuxEngine::new(tohdr_apple::vtenc::VideoToolboxCodec)

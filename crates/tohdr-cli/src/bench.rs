@@ -1,5 +1,5 @@
-//! `tohdr bench`: compare the Apple and portable engines on one input -- wall time
-//! and output size.
+//! `tohdr bench`: compare the available engines on one input -- wall time and
+//! output size.
 //!
 //! The source is loaded and the gain map derived *once*, and both engines encode
 //! those identical bytes, so two TIFF decoders cannot leak into the measurement.
@@ -145,10 +145,14 @@ pub fn run(args: BenchArgs) -> anyhow::Result<i32> {
     // of the table in docs/engine-comparison.md.
     let kinds = match args.engine {
         Some(k) => vec![k],
-        None => vec![EngineKind::Apple, EngineKind::Portable, EngineKind::Hpvca],
+        None => vec![
+            EngineKind::Apple,
+            EngineKind::VideoToolbox,
+            EngineKind::Hpvca,
+        ],
     };
 
-    // Decode with the portable path specifically: it is the deterministic
+    // Decode with the pure-Rust path specifically: it is the deterministic
     // one, and using either engine's own decoder here would privilege that
     // engine's notion of the input.
     let prep = Instant::now();

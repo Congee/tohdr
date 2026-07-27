@@ -80,7 +80,7 @@ print("convert args")
 do
 	local args = Cli.build_convert_args({
 		tohdr_flavor = "both",
-		tohdr_engine = "portable",
+		tohdr_engine = "videotoolbox",
 		tohdr_quality = 85,
 		tohdr_minQuality = 40,
 		tohdr_toneMap = "reinhard",
@@ -90,7 +90,7 @@ do
 	eq(args[2], "/in.tif", "input is positional")
 	eq(arg_after(args, "--output"), "/out.heic", "output flag")
 	eq(arg_after(args, "--flavor"), "both", "flavor")
-	eq(arg_after(args, "--engine"), "portable", "engine")
+	eq(arg_after(args, "--engine"), "videotoolbox", "engine")
 	eq(arg_after(args, "--quality"), "85", "quality stringified")
 	eq(arg_after(args, "--tone-map"), "reinhard", "tone map")
 	check(has_arg(args, "--json"), "--json requested so failures are parseable")

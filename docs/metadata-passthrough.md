@@ -192,7 +192,7 @@ output.
 
 **Engine A writes no arbitrary items.** There is no ImageIO call that adds an
 `infe`/`iloc` pair to a HEIF file, so Apple's 110-key Photographic Styles plist
-can only be carried by our own muxer. `--engine portable` keeps it; the default
+can only be carried by our own muxer. `--engine videotoolbox` keeps it; the default
 `--engine apple` warns and drops it.
 
 **Engine A writes no IPTC**, and that is measured rather than inferred from an
@@ -265,4 +265,4 @@ decision.
 
 **Engine A's two gaps**, §5: the Photographic Styles plist and IPTC-IIM. The
 first is an ImageIO limitation with no workaround; the second is an ImageIO writer
-limitation. `--engine portable` has neither.
+limitation. `--engine videotoolbox` has neither.

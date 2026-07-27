@@ -3,10 +3,13 @@
 //! [`tohdr_core::GainMapEncoder`].
 //!
 //! Codec selection lives here because this is the only crate that sees both
-//! implementations. `--engine portable` means "our container, the fastest codec
-//! this machine has" -- VideoToolbox, ~6x the software codec, falling back to
-//! `hpvca` outside what the hardware supports. `--engine hpvca` forces software,
-//! which is how the two are compared.
+//! implementations. `--engine videotoolbox` means "our container, the platform
+//! media block" -- ~6x the software codec, falling back to `hpvca` outside what
+//! the hardware supports. `--engine hpvca` forces software, which is how the two
+//! are compared.
+//!
+//! Only `hpvca` is portable; VideoToolbox is macOS-only and its path hands
+//! camera RAW to ImageIO besides. Do not name it after portability.
 //!
 //! The choice is made *before* encoding, from bit depth and requested quality,
 //! rather than by recovering from a hardware error: the two codecs produce
@@ -28,7 +31,7 @@ use crate::panic_guard::catch;
 pub enum EngineKind {
     Apple,
     /// Engine B with the best plane codec available for the job.
-    Portable,
+    VideoToolbox,
     /// Engine B pinned to the pure-Rust codec.
     Hpvca,
 }
@@ -37,12 +40,12 @@ impl EngineKind {
     pub fn parse(s: &str) -> Result<Self, String> {
         match s.to_ascii_lowercase().as_str() {
             "apple" => Ok(EngineKind::Apple),
-            "portable" => Ok(EngineKind::Portable),
+            "videotoolbox" => Ok(EngineKind::VideoToolbox),
             // "software" reads better than the codec's name at a call site that
             // only means "not the hardware one".
             "hpvca" | "software" => Ok(EngineKind::Hpvca),
             other => Err(format!(
-                "unknown engine {other:?} (expected apple, portable, or hpvca)"
+                "unknown engine {other:?} (expected apple, videotoolbox, or hpvca)"
             )),
         }
     }
@@ -52,7 +55,7 @@ impl std::fmt::Display for EngineKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             EngineKind::Apple => "apple",
-            EngineKind::Portable => "portable",
+            EngineKind::VideoToolbox => "videotoolbox",
             EngineKind::Hpvca => "hpvca",
         })
     }
@@ -84,20 +87,20 @@ pub fn hardware_unavailable_because(base: &Rgb, base_quality: u8) -> Option<Stri
 pub enum Engine {
     Apple(AppleEngine),
     /// Engine B on the platform media block.
-    Hardware(MuxEngine<VideoToolboxCodec>),
+    VideoToolbox(MuxEngine<VideoToolboxCodec>),
     /// Engine B on the pure-Rust codec.
-    Portable(PortableEngine),
+    Hpvca(PortableEngine),
 }
 
 impl Engine {
-    /// Build an engine without knowing what it will encode. `Portable` resolves
-    /// to the hardware codec, which is right for the default 8-bit q85 job; use
-    /// [`Engine::for_job`] where the base image is already in hand.
+    /// Build an engine without knowing what it will encode. `VideoToolbox`
+    /// resolves to the hardware codec, which is right for the default 8-bit q85
+    /// job; use [`Engine::for_job`] where the base image is already in hand.
     pub fn new(kind: EngineKind) -> Self {
         match kind {
             EngineKind::Apple => Engine::Apple(AppleEngine),
-            EngineKind::Portable => Engine::Hardware(MuxEngine::new(VideoToolboxCodec)),
-            EngineKind::Hpvca => Engine::Portable(PortableEngine),
+            EngineKind::VideoToolbox => Engine::VideoToolbox(MuxEngine::new(VideoToolboxCodec)),
+            EngineKind::Hpvca => Engine::Hpvca(PortableEngine),
         }
     }
 
@@ -105,11 +108,11 @@ impl Engine {
     /// hardware path cannot serve it. Returns the reason alongside, so the
     /// caller can say so.
     pub fn for_job(kind: EngineKind, base: &Rgb, base_quality: u8) -> (Self, Option<String>) {
-        if kind != EngineKind::Portable {
+        if kind != EngineKind::VideoToolbox {
             return (Engine::new(kind), None);
         }
         match hardware_unavailable_because(base, base_quality) {
-            Some(why) => (Engine::Portable(PortableEngine), Some(why)),
+            Some(why) => (Engine::Hpvca(PortableEngine), Some(why)),
             None => (Engine::new(kind), None),
         }
     }
@@ -118,9 +121,9 @@ impl Engine {
     /// linear extended-range HDR.
     ///
     /// Engine B reads with the pure-Rust decoders, which cover tif/png/jpg but no
-    /// camera RAW -- so [`Engine::Hardware`] falls back to ImageIO for those. That
-    /// loses nothing it claimed (Engine B is a claim about the *encoder*, and
-    /// VideoToolbox is already platform-bound), but [`Engine::Portable`]
+    /// camera RAW -- so [`Engine::VideoToolbox`] falls back to ImageIO for those.
+    /// That loses nothing it claimed (Engine B is a claim about the *encoder*, and
+    /// VideoToolbox is already platform-bound), but [`Engine::Hpvca`]
     /// deliberately does not fall back: `--engine hpvca` is the pure-Rust
     /// reference path, and a silent hop into a system framework would void it.
     ///
@@ -143,14 +146,14 @@ impl Engine {
         };
         match self {
             Engine::Apple(_) => catch(name, "load_hdr", || tohdr_apple::load_hdr_in(path, primaries)),
-            Engine::Hardware(_) => catch(name, "load_hdr", || match portable(path) {
+            Engine::VideoToolbox(_) => catch(name, "load_hdr", || match portable(path) {
                 Err(tohdr_portable::Error::UnsupportedInput(_)) => {
                     tohdr_apple::load_hdr_in(path, primaries)
                         .map_err(|e| tohdr_portable::Error::Decode(e.to_string()))
                 }
                 other => other,
             }),
-            Engine::Portable(_) => catch(name, "load_hdr", || portable(path)),
+            Engine::Hpvca(_) => catch(name, "load_hdr", || portable(path)),
         }
     }
 
@@ -160,7 +163,7 @@ impl Engine {
         let name = self.name();
         match self {
             Engine::Apple(_) => catch(name, "load_sdr", || tohdr_apple::load_sdr(path)),
-            Engine::Hardware(_) | Engine::Portable(_) => {
+            Engine::VideoToolbox(_) | Engine::Hpvca(_) => {
                 catch(name, "load_sdr", || tohdr_portable::load_sdr(path))
             }
         }
@@ -173,16 +176,16 @@ impl GainMapEncoder for Engine {
     fn name(&self) -> &'static str {
         match self {
             Engine::Apple(e) => e.name(),
-            Engine::Hardware(e) => e.name(),
-            Engine::Portable(e) => e.name(),
+            Engine::VideoToolbox(e) => e.name(),
+            Engine::Hpvca(e) => e.name(),
         }
     }
 
     fn metadata_support(&self) -> tohdr_core::MetadataSupport {
         match self {
             Engine::Apple(e) => e.metadata_support(),
-            Engine::Hardware(e) => e.metadata_support(),
-            Engine::Portable(e) => e.metadata_support(),
+            Engine::VideoToolbox(e) => e.metadata_support(),
+            Engine::Hpvca(e) => e.metadata_support(),
         }
     }
 
@@ -196,8 +199,8 @@ impl GainMapEncoder for Engine {
         let name = self.name();
         match self {
             Engine::Apple(e) => catch(name, "encode", || e.encode(base, gain, meta, opts)),
-            Engine::Hardware(e) => catch(name, "encode", || e.encode(base, gain, meta, opts)),
-            Engine::Portable(e) => catch(name, "encode", || e.encode(base, gain, meta, opts)),
+            Engine::VideoToolbox(e) => catch(name, "encode", || e.encode(base, gain, meta, opts)),
+            Engine::Hpvca(e) => catch(name, "encode", || e.encode(base, gain, meta, opts)),
         }
     }
 }
@@ -219,7 +222,10 @@ mod tests {
     fn parses_known_engines() {
         assert_eq!(EngineKind::parse("apple").unwrap(), EngineKind::Apple);
         assert_eq!(EngineKind::parse("APPLE").unwrap(), EngineKind::Apple);
-        assert_eq!(EngineKind::parse("portable").unwrap(), EngineKind::Portable);
+        assert_eq!(
+            EngineKind::parse("videotoolbox").unwrap(),
+            EngineKind::VideoToolbox
+        );
         assert_eq!(EngineKind::parse("hpvca").unwrap(), EngineKind::Hpvca);
         assert_eq!(EngineKind::parse("software").unwrap(), EngineKind::Hpvca);
     }
@@ -229,11 +235,19 @@ mod tests {
         assert!(EngineKind::parse("cuda").is_err());
     }
 
+    /// The old name for the hardware engine, which described the one thing it is
+    /// not. Rejected outright rather than aliased: it would otherwise keep
+    /// selecting a macOS-only codec.
+    #[test]
+    fn rejects_the_former_portable_alias() {
+        assert!(EngineKind::parse("portable").is_err());
+    }
+
     #[test]
     fn names_match_backends() {
         assert_eq!(Engine::new(EngineKind::Apple).name(), "apple-imageio");
         assert_eq!(
-            Engine::new(EngineKind::Portable).name(),
+            Engine::new(EngineKind::VideoToolbox).name(),
             "hardware-videotoolbox"
         );
         assert_eq!(Engine::new(EngineKind::Hpvca).name(), "portable-hpvca");
@@ -241,7 +255,7 @@ mod tests {
 
     #[test]
     fn eight_bit_base_at_default_quality_gets_hardware() {
-        let (engine, why) = Engine::for_job(EngineKind::Portable, &base_8bit(), 85);
+        let (engine, why) = Engine::for_job(EngineKind::VideoToolbox, &base_8bit(), 85);
         assert!(why.is_none(), "{why:?}");
         assert_eq!(engine.name(), "hardware-videotoolbox");
     }
@@ -256,7 +270,7 @@ mod tests {
             bits: 10,
             data: vec![0u16; 4 * 4 * 3],
         };
-        let (engine, why) = Engine::for_job(EngineKind::Portable, &base, 85);
+        let (engine, why) = Engine::for_job(EngineKind::VideoToolbox, &base, 85);
         assert_eq!(engine.name(), "portable-hpvca");
         assert!(why.unwrap().contains("10-bit"));
     }
@@ -264,7 +278,7 @@ mod tests {
     /// Asking for 4:4:4 chroma is asking for the codec that can do it.
     #[test]
     fn quality_that_wants_444_falls_back_to_the_software_codec() {
-        let (engine, why) = Engine::for_job(EngineKind::Portable, &base_8bit(), 96);
+        let (engine, why) = Engine::for_job(EngineKind::VideoToolbox, &base_8bit(), 96);
         assert_eq!(engine.name(), "portable-hpvca");
         assert!(why.unwrap().contains("4:4:4"));
     }

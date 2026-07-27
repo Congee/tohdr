@@ -39,7 +39,7 @@ end
 -- One copy of the accepted values, so the dialog's choices and the args we emit
 -- cannot drift. Must match cli.rs parse_flavor / EngineKind::parse / parse_tone_map.
 M.FLAVORS = { "apple", "iso", "both" }
-M.ENGINES = { "apple", "portable" }
+M.ENGINES = { "apple", "videotoolbox", "hpvca" }
 M.TONE_MAPS = { "clip", "reinhard" }
 
 local function is_non_empty(v)

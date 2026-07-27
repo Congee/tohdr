@@ -50,9 +50,9 @@ try_value() {
 
 for v in apple iso both; do try_value --flavor "$v" flavor; done
 # All three engine values the dialog offers. Two engines: `apple` is Engine A,
-# and `portable`/`hpvca` are Engine B with the hardware and pure-Rust plane
+# and `videotoolbox`/`hpvca` are Engine B with the hardware and pure-Rust plane
 # codecs respectively.
-for v in apple portable hpvca; do try_value --engine "$v" engine; done
+for v in apple videotoolbox hpvca; do try_value --engine "$v" engine; done
 for v in clip reinhard; do try_value --tone-map "$v" tone-map; done
 # The plugin emits `p3` to match the `p3_hdr` intermediate it asks Lightroom for;
 # the others exist so a Rec.2020 or sRGB export can be handled deliberately.

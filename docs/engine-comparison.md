@@ -7,7 +7,7 @@ Two engines produce gain-map HEICs from the same derived inputs:
 - **Engine B — our muxer plus a swappable plane codec.** `tohdr-heif`, written
   for this project, assembles the container; the HEVC encoder behind it is a
   [`PlaneCodec`](../crates/tohdr-heif/src/engine.rs) implementation:
-  - `hardware-videotoolbox` — the platform media block. What `--engine portable`
+  - `hardware-videotoolbox` — the platform media block. What `--engine videotoolbox`
     selects when the job allows it.
   - `portable-hpvca` — `hpvca` (BSD-3/Apache), pure Rust, no Apple frameworks.
     The fallback, and what `--engine hpvca` forces.
@@ -119,7 +119,7 @@ Reading it:
   545 ms after, at 60 MP — but it is framework initialisation, paid once per
   process, not once per geometry.
 
-`--engine portable` picks between the two codecs per job. It selects the hardware
+`--engine videotoolbox` picks between the two codecs per job. It selects the hardware
 codec at every size, which the warm column now justifies at the small end too;
 before, sub-megapixel inputs were a case of preferring one rate-distortion curve
 over a small speed loss.
@@ -156,7 +156,7 @@ either way; the pool only keeps them alive between encodes.
 
 **What reaches the wall clock depends on how much of the batch is encoding**, and
 the two ends are far apart. Interleaved A/B, four repeats,
-`tohdr batch --engine portable --no-session-reuse` against the default:
+`tohdr batch --engine videotoolbox --no-session-reuse` against the default:
 
 | batch | jobs | own session per file | reused | |
 |---|---|---|---|---|
@@ -179,7 +179,7 @@ and `bench` exists so the claim can be re-measured rather than believed.
 
 Sessions are cheap to keep but not free to *exist*, and the pool above was bounded
 in sessions rather than in pixels. A Lightroom export of a 60 MP Sony ARW through
-`--engine portable --max-size 4MB` failed with
+`--engine videotoolbox --max-size 4MB` failed with
 
 ```text
 tohdr: error: encoding within budget: hardware-videotoolbox:
@@ -256,7 +256,7 @@ deliberately saturated highlight discussed under "Output size" below.
 
 ### Where the remaining 8x lives — profiled, not assumed
 
-Sampled with `samply` over a full 60 MP `convert --engine portable`, symbolized
+Sampled with `samply` over a full 60 MP `convert --engine videotoolbox`, symbolized
 against the binary, aggregated by encoder stage over all 70 threads. Total
 **30.83 CPU-seconds** in 3.93 s wall — 7.8x parallel on 10 cores, so this is
 **not** a parallelism failure. It is a total-work problem: Engine A does the same
@@ -464,7 +464,7 @@ encode**, so Vulkan is not a way to reach Apple's encoder either. Metal or Vulka
 *compute* would mean writing an HEVC encoder from scratch, which the Amdahl bound
 above caps at ~1.9x — far worse than simply calling the ASIC.
 
-**Status: wired.** `--engine portable` builds `MuxEngine<VideoToolboxCodec>` and
+**Status: wired.** `--engine videotoolbox` builds `MuxEngine<VideoToolboxCodec>` and
 falls back to `HpvcaCodec` when the hardware path cannot serve the job.
 `--engine hpvca` (alias `software`) forces the software codec.
 

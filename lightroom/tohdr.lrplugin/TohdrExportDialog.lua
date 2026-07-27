@@ -69,15 +69,14 @@ function M.sections_for_top_of_dialog(f, property_table)
 					alignment = "right",
 					width = label_width,
 				},
-				-- Two engines, three values: `portable` picks the fastest codec
-				-- this machine has (VideoToolbox, ~6x software), `hpvca` pins
-				-- the pure-Rust reference path. Do not label `portable` "pure
-				-- Rust" -- it runs Apple's hardware encoder.
+				-- Two engines, three values: `videotoolbox` is Apple's media
+				-- block (~6x software), `hpvca` pins the pure-Rust reference
+				-- path. Only `hpvca` is portable; the other two need macOS.
 				f:popup_menu {
 					value = bind 'tohdr_engine',
 					items = {
 						{ title = "Apple (ImageIO)", value = "apple" },
-						{ title = "Portable (hardware, fastest)", value = "portable" },
+						{ title = "VideoToolbox (hardware, fastest)", value = "videotoolbox" },
 						{ title = "Portable (pure Rust)", value = "hpvca" },
 					},
 				},
@@ -168,9 +167,9 @@ function M.sections_for_top_of_dialog(f, property_table)
 				f:spacer { width = label_width },
 				-- The trap worth spelling out: ImageIO's property model has a key
 				-- for Apple's MakerNote and none for anyone else's, so a Sony
-				-- block survives only on the portable engines.
+				-- block survives only on the two non-Apple engines.
 				f:static_text {
-					title = "Lens, shutter count, creative style. Needs a Portable engine --\n"
+					title = "Lens, shutter count, creative style. Needs a non-Apple engine --\n"
 						.. "the Apple engine writes only Apple's. Describes the capture,\n"
 						.. "not your edit, so as-shot white balance and style stay as shot.",
 					height_in_lines = 3,

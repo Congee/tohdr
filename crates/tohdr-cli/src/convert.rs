@@ -271,7 +271,7 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
                 eprintln!(
                     "tohdr: warning: the {engine_name} engine writes only Apple's MakerNote — \
                      ImageIO has no property key for another vendor's — so the grafted block \
-                     would not have reached the output and was left out. `--engine portable` \
+                     would not have reached the output and was left out. `--engine videotoolbox` \
                      writes the Exif block whole and keeps it"
                 );
                 withdrawn = Some(format!("dropped-{engine_name}"));
@@ -282,7 +282,7 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
                     "tohdr: warning: the grafted MakerNote makes the Exif block {} bytes, past \
                      the {} a {engine_name} carrier can hold, and an oversize block yields no \
                      metadata at all — so it was left out and the rest of the Exif kept. \
-                     `--engine portable` writes the block whole and keeps both",
+                     `--engine videotoolbox` writes the block whole and keeps both",
                     found.tiff.len(),
                     nominal.max_exif_block.unwrap_or(0),
                 );
@@ -486,10 +486,9 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         tohdr_portable::AppleHeadroom::Absent => {}
     }
 
-    // Now the base is in hand, so Engine B can pick its plane codec. The
-    // hardware path is the default for `--engine portable`; when it cannot serve
-    // this particular job the software codec takes over and says so, because the
-    // two produce different files.
+    // Now the base is in hand, so Engine B can pick its plane codec. When the
+    // media block cannot serve this particular job the software codec takes over
+    // and says so, because the two produce different files.
     let (engine, downgraded) = Engine::for_job(args.engine, &base, args.quality);
     if let Some(why) = downgraded {
         eprintln!(
@@ -513,8 +512,9 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
                 found.origin
             ),
             None => eprintln!(
-                "tohdr: warning: {} carries {} Exif tags but the {} engine writes no Exif item, \
-                 so camera, lens, exposure and date are dropped. `--engine portable` keeps them",
+                "tohdr: warning: {} carries {} Exif tags but the {} engine writes no Exif \
+                 item, so camera, lens, exposure and date are dropped. \
+                 `--engine videotoolbox` keeps them",
                 args.input.display(),
                 found.tag_count,
                 engine.name()
@@ -555,7 +555,8 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         if carried_items.is_empty() {
             eprintln!(
                 "tohdr: warning: {} carries {} describing item(s) ({labels}) that the {} engine \
-                 cannot write — ImageIO exposes no way to add one. `--engine portable` keeps them",
+                 cannot write — ImageIO exposes no way to add one. \
+                 `--engine videotoolbox` keeps them",
                 args.input.display(),
                 sidecar.items.len(),
                 engine.name()
@@ -577,7 +578,7 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         eprintln!(
             "tohdr: warning: {} carries an IPTC-IIM block that the {} engine's writer emits no \
              IPTC for, so creator, rights and keywords survive only where the source also put \
-             them in XMP. `--engine portable` keeps the block itself",
+             them in XMP. `--engine videotoolbox` keeps the block itself",
             args.input.display(),
             engine.name()
         );

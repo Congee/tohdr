@@ -27,7 +27,7 @@ pub enum Command {
     Inspect(InspectArgs),
     /// Check a file's gain map against the invariants a correct capture holds.
     Verify(VerifyArgs),
-    /// Compare the Apple and portable engines on one input.
+    /// Compare the available engines on one input.
     Bench(BenchArgs),
 }
 
@@ -204,7 +204,7 @@ pub struct BatchArgs {
 
     /// Give every file its own `VTCompressionSession` instead of reusing one.
     ///
-    /// Only affects `--engine portable` on a machine with a media block. Reuse
+    /// Only affects `--engine videotoolbox` on a machine with a media block. Reuse
     /// is worth about 20% of a batch's wall time and is byte-transparent — every
     /// output is identical either way, which is checked by a test and by
     /// `tohdr-apple/examples/probe_vt_session_reuse.rs`. This flag exists so
@@ -275,7 +275,7 @@ pub struct BenchArgs {
     #[arg(long, default_value_t = 3)]
     pub iterations: u32,
 
-    /// Restrict the comparison to one engine. Default is both.
+    /// Restrict the comparison to one engine. Default is all three.
     #[arg(long, value_parser = parse_engine)]
     pub engine: Option<EngineKind>,
 
@@ -372,14 +372,14 @@ mod tests {
             "--flavor",
             "ios",
             "--engine",
-            "portable",
+            "videotoolbox",
         ])
         .unwrap();
         match cli.command {
             Command::Convert(a) => {
                 assert_eq!(a.max_size, Some(4_000_000));
                 assert_eq!(a.flavor, Flavor::Iso);
-                assert_eq!(a.engine, EngineKind::Portable);
+                assert_eq!(a.engine, EngineKind::VideoToolbox);
             }
             _ => panic!("expected Convert"),
         }
