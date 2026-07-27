@@ -5,6 +5,7 @@ use serde::Serialize;
 use tohdr_core::derive::DeriveOptions;
 use tohdr_core::encode::{encode_within_budget, EncodeOptions, GainMapEncoder};
 use tohdr_core::hdr::{derive_consistent, ToneMap};
+use tohdr_portable::MakerNoteGraft;
 
 use crate::cli::{ConvertArgs, ToneMapKind};
 use crate::engine::Engine;
@@ -83,6 +84,17 @@ pub struct ConvertReport {
     /// formula cannot express it. Reported because it is the one place a
     /// conversion rewrites a vendor's bytes rather than copying them.
     pub maker_apple_headroom: String,
+    /// What became of the companion `MakerNote` named by `--maker-note-from`:
+    /// `"not-offered"`, `"carried"`, or the name of the check that refused it —
+    /// `"source-has-own"`, `"byte-order-differs"`, `"unreachable-offset"`,
+    /// `"no-exif-ifd"`, `"dropped-<engine>"` (the backend writes no foreign
+    /// `MakerNote`), `"dropped-oversize"`. Reported rather than inferred from the
+    /// tag count, because a refusal and a companion that simply had no
+    /// `MakerNote` look identical from outside.
+    pub maker_note_graft: String,
+    /// Bytes of vendor `MakerNote` taken from the companion file. `0` unless
+    /// `maker_note_graft` is `"carried"`.
+    pub maker_note_bytes: usize,
     /// Whether the source's XMP packet — keywords, caption, rating, rights —
     /// reached the output.
     pub xmp_carried: bool,
@@ -144,6 +156,21 @@ pub fn run(args: ConvertArgs) -> anyhow::Result<i32> {
                 s => format!("{} tags carried from the source ({s})", report.exif_tags),
             }
         );
+        // Only when a companion was named. Silence otherwise, since "no MakerNote
+        // was grafted" is the answer for every conversion that never asked for one.
+        if report.maker_note_graft != "not-offered" {
+            println!(
+                "  maker note: {}",
+                if report.maker_note_bytes > 0 {
+                    format!(
+                        "{} bytes grafted from the camera file",
+                        report.maker_note_bytes
+                    )
+                } else {
+                    format!("not grafted ({})", report.maker_note_graft)
+                }
+            );
+        }
         if let Some(max) = report.max_size {
             println!(
                 "  budget: <= {max} bytes, {} attempt(s), within budget: {}",
@@ -182,16 +209,125 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     // The source is read a second time for this, which is a few ms against a
     // decode, and buys a reader that does not have to thread through two loaders
     // and three image formats.
-    let mut source_exif = match tohdr_portable::read_source_exif(&args.input) {
-        Ok(found) => found,
-        Err(e) => {
-            eprintln!(
-                "tohdr: warning: could not read Exif from {}: {e}; converting without it",
-                args.input.display()
-            );
-            None
+    // The one tag a renderer cannot forward, read out of the original camera file
+    // when the caller names one. Non-fatal like everything else on this road: a
+    // companion that cannot be read is a reason to convert without its
+    // `MakerNote`, not to refuse the photograph.
+    let companion = match &args.maker_note_from {
+        Some(path) => match tohdr_portable::read_maker_note(path) {
+            Ok(found) => {
+                if found.is_none() {
+                    eprintln!(
+                        "tohdr: warning: {} has no MakerNote to take, so none was grafted",
+                        path.display()
+                    );
+                }
+                found
+            }
+            Err(e) => {
+                eprintln!(
+                    "tohdr: warning: could not read a MakerNote from {}: {e}; \
+                     converting without it",
+                    path.display()
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    let read_exif = |companion: Option<&tohdr_portable::ForeignMakerNote>| {
+        match tohdr_portable::read_source_exif_with_maker_note(&args.input, companion) {
+            Ok(found) => found,
+            Err(e) => {
+                eprintln!(
+                    "tohdr: warning: could not read Exif from {}: {e}; converting without it",
+                    args.input.display()
+                );
+                None
+            }
         }
     };
+    let mut source_exif = read_exif(companion.as_ref());
+
+    // Two reasons a graft that *worked* still has to be taken back out, both
+    // decided from the backend rather than from the block.
+    //
+    // Read off `--engine` rather than the engine chosen below, which is not yet
+    // knowable — the base image does not exist. Sound because `Engine::for_job`
+    // only ever swaps Engine B's plane codec, never the backend writing metadata.
+    let nominal = Engine::new(args.engine).metadata_support();
+    let mut withdrawn: Option<String> = None;
+    if let Some(found) = &source_exif {
+        if matches!(found.maker_note_graft, MakerNoteGraft::Carried { .. }) {
+            let apple = companion
+                .as_ref()
+                .is_some_and(tohdr_portable::ForeignMakerNote::is_apple);
+            let engine_name = Engine::new(args.engine).name();
+            if !nominal.maker_note && !apple {
+                // Engine A rebuilds its metadata from parsed properties, and
+                // ImageIO parses no vendor block but Apple's. Leaving the tag in
+                // would report a graft the output does not contain.
+                eprintln!(
+                    "tohdr: warning: the {engine_name} engine writes only Apple's MakerNote — \
+                     ImageIO has no property key for another vendor's — so the grafted block \
+                     would not have reached the output and was left out. `--engine portable` \
+                     writes the Exif block whole and keeps it"
+                );
+                withdrawn = Some(format!("dropped-{engine_name}"));
+            } else if nominal.max_exif_block.is_some_and(|m| found.tiff.len() > m) {
+                // An oversize block gets ImageIO to return no properties at all,
+                // so the choice is one vendor block or every standard tag.
+                eprintln!(
+                    "tohdr: warning: the grafted MakerNote makes the Exif block {} bytes, past \
+                     the {} a {engine_name} carrier can hold, and an oversize block yields no \
+                     metadata at all — so it was left out and the rest of the Exif kept. \
+                     `--engine portable` writes the block whole and keeps both",
+                    found.tiff.len(),
+                    nominal.max_exif_block.unwrap_or(0),
+                );
+                withdrawn = Some("dropped-oversize".to_string());
+            }
+        }
+    }
+    if withdrawn.is_some() {
+        source_exif = read_exif(None);
+    }
+
+    let maker_note_graft = source_exif
+        .as_ref()
+        .map_or(MakerNoteGraft::NotOffered, |e| e.maker_note_graft);
+    match maker_note_graft {
+        MakerNoteGraft::Carried { bytes } => step!(
+            "tohdr: grafted a {bytes}-byte MakerNote from the source camera file, \
+             pinned at offset {}",
+            companion.as_ref().map_or(0, tohdr_portable::ForeignMakerNote::offset)
+        ),
+        // Each refusal names the check that stopped it, because "the MakerNote is
+        // missing" has six causes and only some are worth acting on.
+        MakerNoteGraft::HostHasOwn => eprintln!(
+            "tohdr: note: {} carries a MakerNote of its own, which was kept in preference to the \
+             companion file's",
+            args.input.display()
+        ),
+        MakerNoteGraft::ByteOrderDiffers => eprintln!(
+            "tohdr: warning: the companion file's Exif is the opposite byte order to {}'s, and a \
+             MakerNote carries no byte-order mark of its own, so grafting it would have \
+             transposed every value it holds. It was left out",
+            args.input.display()
+        ),
+        MakerNoteGraft::Unreachable => eprintln!(
+            "tohdr: warning: the companion's MakerNote sits at an offset the rebuilt Exif block's \
+             own IFDs occupy, and its contents are addressed against that offset, so it could \
+             not be placed where it would still parse. It was left out"
+        ),
+        MakerNoteGraft::NoExifIfd => eprintln!(
+            "tohdr: warning: {} has no Exif IFD to hold a MakerNote, so the companion file's was \
+             left out",
+            args.input.display()
+        ),
+        MakerNoteGraft::NotOffered => {}
+    }
 
     // The other half of the source's metadata: its XMP packet and any item that
     // `cdsc`-describes the photograph, e.g. Apple's Photographic Styles plist.
@@ -525,6 +661,13 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
             tohdr_portable::AppleHeadroom::Removed => "removed",
         }
         .to_string(),
+        // `withdrawn` outranks the block's own answer: after the re-read the block
+        // honestly says no graft was offered, which is not what happened.
+        maker_note_graft: withdrawn.unwrap_or_else(|| maker_note_graft.to_string()),
+        maker_note_bytes: match maker_note_graft {
+            MakerNoteGraft::Carried { bytes } => bytes,
+            _ => 0,
+        },
         xmp_carried: carried_xmp.is_some(),
         items_carried: carried_items.iter().map(|i| i.label()).collect(),
         items_dropped: if carried_items.is_empty() {

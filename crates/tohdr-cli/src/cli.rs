@@ -141,6 +141,28 @@ pub struct ConvertArgs {
     #[arg(long)]
     pub headroom: Option<f32>,
 
+    /// The original camera file this input was rendered from, to take its
+    /// `MakerNote` from.
+    ///
+    /// One tag, and nothing else. A renderer carries most of what the raw states
+    /// about the photograph — measured on `DSC07746.ARW`, 42 of its 60 standard
+    /// Exif tags reach Lightroom's export TIFF — and none of the vendor block,
+    /// because that block is opaque and addressed with file-absolute offsets. So
+    /// this reads it out of the original and pins it back at the offset those
+    /// offsets expect, without rewriting a byte of it.
+    ///
+    /// Reads roughly the first 43 KB of the file, not the whole thing. Refused
+    /// rather than forced when it cannot be done safely; `--json`'s
+    /// `maker_note_graft` says which check stopped it.
+    ///
+    /// Worth knowing what you are copying: a `MakerNote` describes the
+    /// *capture*, not the render. `CreativeStyle`, as-shot white balance and DRO
+    /// are the camera's, and a file developed in Lightroom no longer matches
+    /// them. That is what every exiftool user copying one already accepts, and
+    /// it is genuine provenance — but it is not a description of these pixels.
+    #[arg(long = "maker-note-from", value_name = "FILE")]
+    pub maker_note_from: Option<PathBuf>,
+
     /// Emit a machine-readable JSON result on stdout instead of text.
     #[arg(long)]
     pub json: bool,
@@ -224,6 +246,11 @@ impl BatchArgs {
             gain_subsample: self.gain_subsample,
             colour_space: self.colour_space,
             headroom: None,
+            // Deliberately absent from `batch` for the same reason `--headroom`
+            // is: it names one companion file, and one companion forced across a
+            // folder would graft the wrong camera's `MakerNote` into every photo
+            // but the first.
+            maker_note_from: None,
             json: false,
         }
     }

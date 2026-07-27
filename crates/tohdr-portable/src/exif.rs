@@ -39,6 +39,23 @@
 //! the two tags left out for a different reason: neither is dropped from the
 //! *output*, they are simply carried by a part of it better suited to the job —
 //! the `colr` box and the XMP item respectively.
+//!
+//! ## Grafting a `MakerNote` from the original camera file
+//!
+//! A rendered intermediate has no `MakerNote` to keep. Measured on
+//! `DSC07746.ARW` and the TIFF Lightroom Classic exports from it: 42 of the
+//! raw's 60 standard Exif tags reach the TIFF and none of Sony's 124 vendor
+//! ones, because the block is opaque to a renderer and an opaque block addressed
+//! with file-absolute offsets is not something a renderer can forward.
+//!
+//! So the original is read a second time for that one tag.
+//! [`read_maker_note`] lifts it out and [`read_with_maker_note`] grafts it into
+//! the intermediate's block — using the same pinning, which is what makes this
+//! safe: the blob is placed at the offset it occupied *in the raw*, so its own
+//! pointers address the right bytes again without one of them being rewritten.
+//! On `DSC07746.ARW` that offset is 5,222 and the blob is 38,332 bytes, and all
+//! 114 of its entries address values inside their own span, so pinning is
+//! sufficient as well as necessary.
 
 use std::path::Path;
 
@@ -98,6 +115,101 @@ pub struct SourceExif {
     /// measured here; reported rather than hidden because the alternative to
     /// dropping it is emitting bytes that no longer parse.
     pub dropped_maker_note: bool,
+    /// What became of a companion file's `MakerNote`, when one was offered.
+    /// [`MakerNoteGraft::NotOffered`] from [`read`], which offers none.
+    pub maker_note_graft: MakerNoteGraft,
+}
+
+/// A `MakerNote` lifted out of one file so it can be grafted into another's Exif
+/// block. See the module docs for why a rendered intermediate needs this.
+#[derive(Clone, Debug)]
+pub struct ForeignMakerNote {
+    bytes: Vec<u8>,
+    /// The entry's declared type and count, carried rather than assumed: a
+    /// vendor that writes something other than `UNDEFINED` keeps its own claim.
+    typ: u16,
+    count: u32,
+    /// Where it sat, measured from the TIFF header of the block it came out of —
+    /// the file's first byte, for a raw. Kept because the blob's own contents
+    /// are addressed against it, and pinning is what makes them true again.
+    offset: usize,
+    /// Byte order of the block it came out of.
+    ///
+    /// Most vendor `MakerNote`s carry no byte-order mark of their own — Sony's
+    /// begins with its entry count and nothing else — so a reader takes the
+    /// order from the enclosing block. Grafting one into a block of the opposite
+    /// order would transpose every value it holds while parsing cleanly, which
+    /// is why [`MakerNoteGraft::ByteOrderDiffers`] refuses instead.
+    little_endian: bool,
+}
+
+impl ForeignMakerNote {
+    /// Size of the blob.
+    ///
+    /// The only honest measure of it here: how many tags a reader finds inside
+    /// depends on vendor layout this module deliberately does not interpret.
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// The offset the blob's own pointers are written against.
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// Whether this is Apple's `MakerNote`.
+    ///
+    /// The one vendor's block a backend writing through macOS ImageIO can still
+    /// carry, since ImageIO has a property key for it and none for anyone
+    /// else's — so a caller checking
+    /// [`tohdr_core::MetadataSupport::maker_note`] needs this to tell "the
+    /// engine will drop this" from "the engine will drop everything but this".
+    pub fn is_apple(&self) -> bool {
+        self.bytes.starts_with(APPLE_MAKER_SIG)
+    }
+}
+
+/// What [`read_with_maker_note`] did with the companion `MakerNote` it was given.
+///
+/// Every refusal is a distinct reason, and each is reported rather than folded
+/// into a single "no": grafting the wrong bytes produces a file that parses and
+/// lies, so which check stopped it is the useful half of the answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MakerNoteGraft {
+    /// No companion `MakerNote` was supplied.
+    NotOffered,
+    /// Grafted, pinned at the offset its contents are addressed against.
+    Carried { bytes: usize },
+    /// The source block has a `MakerNote` of its own, which wins — it is the one
+    /// the rest of that block was written alongside.
+    HostHasOwn,
+    /// The two blocks disagree about byte order. See
+    /// [`ForeignMakerNote::little_endian`].
+    ByteOrderDiffers,
+    /// Its offset falls inside the rebuilt block's IFD region, or so far past it
+    /// that [`MAX_PIN_PADDING`] of padding would not reach.
+    Unreachable,
+    /// The source block has no Exif IFD, which is the only IFD a `MakerNote`
+    /// belongs in. Inventing one to hold a foreign tag would put a sub-IFD in a
+    /// file whose source never had one.
+    NoExifIfd,
+}
+
+impl core::fmt::Display for MakerNoteGraft {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            MakerNoteGraft::NotOffered => "not-offered",
+            MakerNoteGraft::Carried { .. } => "carried",
+            MakerNoteGraft::HostHasOwn => "source-has-own",
+            MakerNoteGraft::ByteOrderDiffers => "byte-order-differs",
+            MakerNoteGraft::Unreachable => "unreachable-offset",
+            MakerNoteGraft::NoExifIfd => "no-exif-ifd",
+        })
+    }
 }
 
 /// `0x0112`.
@@ -397,12 +509,33 @@ fn remove_apple_entries(block: &mut [u8], start: usize, le: bool, tags: &[u16]) 
 /// `Ok(None)` covers both "this format carries no Exif" and "this file's Exif
 /// is empty", neither of which is a reason to fail a conversion.
 pub fn read(path: &Path) -> Result<Option<SourceExif>> {
+    read_with_maker_note(path, None)
+}
+
+/// [`read`], with `companion`'s `MakerNote` grafted into the block.
+///
+/// `companion` comes from [`read_maker_note`] on the original camera file. The
+/// graft is attempted, not assumed: [`SourceExif::maker_note_graft`] says what
+/// happened, and every refusal leaves the rest of the block exactly as [`read`]
+/// would have produced it.
+pub fn read_with_maker_note(
+    path: &Path,
+    companion: Option<&ForeignMakerNote>,
+) -> Result<Option<SourceExif>> {
     let bytes = std::fs::read(path)?;
-    read_bytes(&bytes)
+    read_bytes_with_maker_note(&bytes, companion)
 }
 
 /// [`read`] on an in-memory file, so tests need no filesystem.
 pub fn read_bytes(bytes: &[u8]) -> Result<Option<SourceExif>> {
+    read_bytes_with_maker_note(bytes, None)
+}
+
+/// [`read_with_maker_note`] on an in-memory file.
+pub fn read_bytes_with_maker_note(
+    bytes: &[u8],
+    companion: Option<&ForeignMakerNote>,
+) -> Result<Option<SourceExif>> {
     let Some((block, origin)) = locate(bytes)? else {
         return Ok(None);
     };
@@ -413,7 +546,7 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Option<SourceExif>> {
     let external_iptc = tohdr_core::exif::app13_iptc_payload(bytes);
     // A source can carry an Exif item that holds nothing we keep, which is not
     // an error — it is the same outcome as carrying none.
-    match rebuild(block, external_iptc)? {
+    match rebuild(block, external_iptc, companion)? {
         Some(r) => Ok(Some(SourceExif {
             tiff: r.tiff,
             origin,
@@ -421,9 +554,113 @@ pub fn read_bytes(bytes: &[u8]) -> Result<Option<SourceExif>> {
             iptc: r.iptc,
             orientation: r.orientation,
             dropped_maker_note: r.dropped_maker_note,
+            maker_note_graft: r.maker_note_graft,
         })),
         None => Ok(None),
     }
+}
+
+/// How much of a companion file's head is read looking for its `MakerNote`.
+///
+/// The point of reading the original at all is to *not* read the whole thing:
+/// `DSC07746.ARW` is 71,708,672 bytes and holds `IFD0` at 8, its Exif IFD at
+/// 4,544 and the `MakerNote` at 5,222 — a targeted read of that range measures
+/// 0.00 ms. A camera writes its IFDs ahead of its image data because the image
+/// data is the part that is big, so this ceiling clears the real thing by three
+/// orders of magnitude and still bounds the read.
+const COMPANION_HEAD: u64 = 1 << 20;
+
+/// The `MakerNote` of `path`, for grafting into another file's Exif block.
+///
+/// `Ok(None)` when the file has none, which is not an error: a JPEG out of
+/// Lightroom, a scan, a synthetic image all legitimately have none.
+///
+/// Reads [`COMPANION_HEAD`] bytes and falls back to the whole file only when
+/// that head says a `MakerNote` exists somewhere it cannot reach — so the fast
+/// path is bounded and the unusual one is still right, rather than one of the two
+/// at the other's expense.
+pub fn read_maker_note(path: &Path) -> Result<Option<ForeignMakerNote>> {
+    use std::io::Read;
+
+    let mut head = Vec::new();
+    std::fs::File::open(path)?
+        .take(COMPANION_HEAD)
+        .read_to_end(&mut head)?;
+    let whole_file = (head.len() as u64) < COMPANION_HEAD;
+
+    match maker_note_in(&head) {
+        Located::Found(note) => Ok(Some(note)),
+        Located::Absent => Ok(None),
+        // Already had every byte there is, so re-reading would ask the same
+        // question of the same bytes.
+        Located::Beyond if whole_file => Ok(None),
+        Located::Beyond => Ok(match maker_note_in(&std::fs::read(path)?) {
+            Located::Found(note) => Some(note),
+            Located::Absent | Located::Beyond => None,
+        }),
+    }
+}
+
+/// [`read_maker_note`] on an in-memory file, so a caller that already has the
+/// bytes — or a test — needs no filesystem.
+///
+/// `None` covers both "no `MakerNote`" and "these bytes do not reach it"; use
+/// [`read_maker_note`] to have the second one resolved by reading more.
+pub fn maker_note_from_bytes(bytes: &[u8]) -> Option<ForeignMakerNote> {
+    match maker_note_in(bytes) {
+        Located::Found(note) => Some(note),
+        Located::Absent | Located::Beyond => None,
+    }
+}
+
+/// Whether a slice holds a `MakerNote`, or why the answer is not in this slice.
+enum Located {
+    Found(ForeignMakerNote),
+    /// The block was read and states no `MakerNote`. A real answer.
+    Absent,
+    /// Something ran past the end of this slice. Undecided, not negative — which
+    /// is the distinction that keeps [`read_maker_note`] from paying for a
+    /// whole-file read on every source that simply has no `MakerNote`.
+    Beyond,
+}
+
+fn maker_note_in(bytes: &[u8]) -> Located {
+    let Ok(Some((block, _))) = locate(bytes) else {
+        return Located::Beyond;
+    };
+    let Ok(Some(tiff)) = Tiff::open(block) else {
+        return Located::Beyond;
+    };
+    let Ok(ifd0) = tiff.read_ifd(tiff.first_ifd) else {
+        return Located::Beyond;
+    };
+    let Some(off) = sub_ifd_offset(&tiff, &ifd0, TAG_EXIF_IFD) else {
+        return Located::Absent;
+    };
+    let Ok(exif_ifd) = tiff.read_ifd(off) else {
+        return Located::Beyond;
+    };
+    let Some(e) = exif_ifd.get(TAG_MAKER_NOTE) else {
+        return Located::Absent;
+    };
+    // An unrecognized type has no element size, so the value's length is
+    // unknowable — the same reason `plan` drops one rather than guessing.
+    if type_size(e.typ) == 0 {
+        return Located::Absent;
+    }
+    let Ok(blob) = tiff.bytes_of(&e) else {
+        return Located::Beyond;
+    };
+    if blob.is_empty() {
+        return Located::Absent;
+    }
+    Located::Found(ForeignMakerNote {
+        bytes: blob.to_vec(),
+        typ: e.typ,
+        count: e.count,
+        offset: e.value_off,
+        little_endian: tiff.little_endian,
+    })
 }
 
 /// Find the source's Exif TIFF structure without interpreting it.
@@ -508,6 +745,7 @@ struct Rebuilt {
     iptc: Option<Vec<u8>>,
     orientation: u8,
     dropped_maker_note: bool,
+    maker_note_graft: MakerNoteGraft,
 }
 
 /// A LONG-typed pointer entry, which fits in the entry itself and so needs no
@@ -533,7 +771,11 @@ fn sub_ifd_offset(tiff: &Tiff, ifd: &Ifd, tag: u16) -> Option<usize> {
 ///
 /// `Ok(None)` when nothing survived, which is the same outcome for the caller as
 /// a source with no Exif at all.
-fn rebuild<'a>(block: &'a [u8], external_iptc: Option<&'a [u8]>) -> Result<Option<Rebuilt>> {
+fn rebuild<'a>(
+    block: &'a [u8],
+    external_iptc: Option<&'a [u8]>,
+    companion: Option<&'a ForeignMakerNote>,
+) -> Result<Option<Rebuilt>> {
     let Some(tiff) = Tiff::open(block)? else {
         return Ok(None);
     };
@@ -568,8 +810,12 @@ fn rebuild<'a>(block: &'a [u8], external_iptc: Option<&'a [u8]>) -> Result<Optio
         }
     }
     // Where the tentative `MakerNote` entry ended up, so it can be withdrawn if
-    // its offset turns out to be unreachable.
+    // its offset turns out to be unreachable, and whether that entry is the
+    // source's own or a graft — withdrawing them means reporting two different
+    // things.
     let mut maker_at: Option<(usize, usize)> = None;
+    let mut maker_is_graft = false;
+    let mut graft = MakerNoteGraft::NotOffered;
 
     if let Some(off) = sub_ifd_offset(&tiff, &ifd0, TAG_EXIF_IFD) {
         if let Ok(exif_ifd) = tiff.read_ifd(off) {
@@ -590,19 +836,43 @@ fn rebuild<'a>(block: &'a [u8], external_iptc: Option<&'a [u8]>) -> Result<Optio
                     }
                 }
             }
-            let has_maker = if let Some(m) = maker_note(&tiff, &exif_ifd) {
+            let pushed = if let Some(m) = maker_note(&tiff, &exif_ifd) {
+                // The source's own tag wins, for the same reason it does for
+                // IPTC: it is the one the rest of this block was written
+                // alongside, and two `MakerNote`s cannot both be tag `0x927C`.
+                if companion.is_some() {
+                    graft = MakerNoteGraft::HostHasOwn;
+                }
                 entries.push(m);
                 true
+            } else if let Some(c) = companion {
+                match graft_maker_note(c, tiff.little_endian) {
+                    Ok(entry) => {
+                        entries.push(entry);
+                        maker_is_graft = true;
+                        graft = MakerNoteGraft::Carried { bytes: c.len() };
+                        true
+                    }
+                    Err(why) => {
+                        graft = why;
+                        false
+                    }
+                }
             } else {
                 false
             };
+            // Only a *pinned* entry is a candidate for withdrawal, and only a
+            // `MakerNote` over four bytes long gets pinned — a shorter one lives
+            // inside its entry, where there is no offset to be unreachable.
+            let withdrawable =
+                pushed && matches!(entries.last().map(|e| &e.value), Some(Value::Pinned { .. }));
             if !entries.is_empty() {
                 ifds.push(PlannedIfd {
                     entries,
                     next: None,
                 });
                 let idx = ifds.len() - 1;
-                if has_maker {
+                if withdrawable {
                     maker_at = Some((idx, ifds[idx].entries.len() - 1));
                 }
                 root.push(pointer(TAG_EXIF_IFD, idx));
@@ -646,7 +916,11 @@ fn rebuild<'a>(block: &'a [u8], external_iptc: Option<&'a [u8]>) -> Result<Optio
         };
         if offset < region_end || offset - region_end > MAX_PIN_PADDING {
             ifds[i].entries.remove(k);
-            dropped_maker_note = true;
+            if maker_is_graft {
+                graft = MakerNoteGraft::Unreachable;
+            } else {
+                dropped_maker_note = true;
+            }
             // An IFD holding nothing is worse than no IFD: drop the pointer to
             // it too, so the block never names an empty sub-IFD.
             if ifds[i].entries.is_empty() {
@@ -655,6 +929,11 @@ fn rebuild<'a>(block: &'a [u8], external_iptc: Option<&'a [u8]>) -> Result<Optio
                     .retain(|e| !matches!(e.value, Value::IfdPointer(t) if t == i));
             }
         }
+    }
+    // A graft that never reached a decision had nowhere to go: this block states
+    // no Exif IFD, or the one it states could not be read.
+    if companion.is_some() && graft == MakerNoteGraft::NotOffered {
+        graft = MakerNoteGraft::NoExifIfd;
     }
 
     let tag_count = ifds
@@ -677,6 +956,7 @@ fn rebuild<'a>(block: &'a [u8], external_iptc: Option<&'a [u8]>) -> Result<Optio
         iptc,
         orientation,
         dropped_maker_note,
+        maker_note_graft: graft,
     }))
 }
 
@@ -708,6 +988,37 @@ fn maker_note<'a>(tiff: &Tiff<'a>, exif_ifd: &Ifd) -> Option<PlanEntry<'a>> {
             }
         } else {
             Value::Bytes(bytes)
+        },
+    })
+}
+
+/// A companion file's `MakerNote` as an entry for *this* block, or the reason it
+/// cannot be one.
+///
+/// The blob is not touched. Every offset inside a vendor `MakerNote` is written
+/// against the position it occupied in the file it came from, so the entry claims
+/// that same position here and [`serialize`] pads the block out to reach it. That
+/// costs the padding — 5,222 bytes for a Sony ARW — and buys a block where the
+/// vendor's own pointers are correct by construction rather than by our arithmetic
+/// being right about a layout no vendor documents.
+fn graft_maker_note(
+    c: &ForeignMakerNote,
+    little_endian: bool,
+) -> core::result::Result<PlanEntry<'_>, MakerNoteGraft> {
+    if c.little_endian != little_endian {
+        return Err(MakerNoteGraft::ByteOrderDiffers);
+    }
+    Ok(PlanEntry {
+        tag: TAG_MAKER_NOTE,
+        typ: c.typ,
+        count: c.count,
+        value: if c.bytes.len() > 4 {
+            Value::Pinned {
+                bytes: &c.bytes,
+                offset: c.offset,
+            }
+        } else {
+            Value::Bytes(&c.bytes)
         },
     })
 }
@@ -1326,6 +1637,213 @@ mod tests {
         // than naming an empty IFD.
         assert!(ifd0.get(TAG_EXIF_IFD).is_none());
         assert!(ifd0.get(271).is_some());
+    }
+
+    // ===================================================================
+    // Grafting a `MakerNote` out of the original camera file
+    // ===================================================================
+
+    /// A camera file: an Exif IFD whose only interesting tag is the `MakerNote`,
+    /// plus enough around it to be a real block.
+    fn raw_with_maker_note(le: bool, note: &[u8]) -> Vec<u8> {
+        Build::new(le)
+            .ascii(271, "SONY")
+            .ascii(272, "ILCE-7RM5")
+            .sub(
+                TAG_EXIF_IFD,
+                vec![
+                    (36867, 2, 20, b"2026:06:13 08:29:00\0".to_vec()),
+                    (TAG_MAKER_NOTE, 7, note.len() as u32, note.to_vec()),
+                ],
+            )
+            .build()
+    }
+
+    /// A rendered intermediate: what Lightroom hands us, which is to say the same
+    /// photograph's Exif with the vendor block gone.
+    fn rendered_without_maker_note() -> Vec<u8> {
+        Build::new(true)
+            .ascii(271, "SONY")
+            .ascii(272, "ILCE-7RM5")
+            .ascii(305, "Adobe Photoshop Lightroom Classic 15.3")
+            .short(274, 1)
+            .sub(TAG_EXIF_IFD, exif_ifd())
+            .build()
+    }
+
+    fn maker_note_of(block: &[u8]) -> Option<(crate::gainmap_tiff::Entry, Vec<u8>)> {
+        let tiff = Tiff::open(block).unwrap()?;
+        let ifd0 = tiff.read_ifd(tiff.first_ifd).unwrap();
+        let sub = tiff
+            .read_ifd(tiff.integers(&ifd0.get(TAG_EXIF_IFD)?).unwrap()[0] as usize)
+            .unwrap();
+        let e = sub.get(TAG_MAKER_NOTE)?;
+        Some((e, tiff.bytes_of(&e).unwrap().to_vec()))
+    }
+
+    /// The whole point: the blob lands at the offset it had in the raw, byte for
+    /// byte, so the file-absolute pointers inside it address the same bytes they
+    /// were written to address. Nothing is rebased, because nothing has to be.
+    #[test]
+    fn a_companion_maker_note_lands_at_the_offset_it_came_from() {
+        // Long enough to be pinned rather than stored inside its entry.
+        let note = b"\x72\x00sony-vendor-block".repeat(8);
+        let raw = raw_with_maker_note(true, &note);
+        let companion = maker_note_from_bytes(&raw).expect("the raw has one");
+        assert_eq!(companion.len(), note.len());
+        assert_eq!(
+            companion.offset(),
+            maker_note_of(&raw).unwrap().0.value_off,
+            "the offset carried is the one the raw used"
+        );
+
+        let out = read_bytes_with_maker_note(&rendered_without_maker_note(), Some(&companion))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out.maker_note_graft,
+            MakerNoteGraft::Carried { bytes: note.len() }
+        );
+        let (entry, bytes) = maker_note_of(&out.tiff).expect("grafted");
+        assert_eq!(entry.value_off, companion.offset(), "the blob moved");
+        assert_eq!(bytes, note, "the blob was altered");
+        assert_eq!(entry.typ, 7, "the raw's own type claim is kept");
+
+        // And the tags that were already there are still there, so the graft
+        // added rather than replaced.
+        let tiff = Tiff::open(&out.tiff).unwrap().unwrap();
+        let ifd0 = tiff.read_ifd(tiff.first_ifd).unwrap();
+        assert_eq!(tiff.bytes_of(&ifd0.get(271).unwrap()).unwrap(), b"SONY\0");
+        assert_eq!(
+            tiff.bytes_of(&ifd0.get(305).unwrap()).unwrap(),
+            b"Adobe Photoshop Lightroom Classic 15.3\0"
+        );
+    }
+
+    /// A grafted block has to survive our own reader, and survive it *unmoved* —
+    /// a second pass that relocated the blob would break it just as thoroughly as
+    /// never pinning it in the first place.
+    #[test]
+    fn a_grafted_block_rebuilds_to_itself() {
+        let note = b"\x72\x00sony-vendor-block".repeat(8);
+        let companion = maker_note_from_bytes(&raw_with_maker_note(true, &note)).unwrap();
+        let first = read_bytes_with_maker_note(&rendered_without_maker_note(), Some(&companion))
+            .unwrap()
+            .unwrap();
+
+        let again = read_bytes(&first.tiff).unwrap().unwrap();
+        assert_eq!(again.tiff, first.tiff, "rebuilding it again changed it");
+        // Now it is the block's *own* MakerNote, so that is what is reported.
+        assert_eq!(again.maker_note_graft, MakerNoteGraft::NotOffered);
+        assert!(!again.dropped_maker_note);
+        assert_eq!(maker_note_of(&again.tiff).unwrap().1, note);
+    }
+
+    /// Offered one when the block already has its own: the block's own wins. Its
+    /// neighbours were written alongside *that* one, and tag `0x927C` can only be
+    /// there once.
+    #[test]
+    fn the_blocks_own_maker_note_beats_a_companions() {
+        let mine = b"\x72\x00my-own-vendor-block".repeat(8);
+        let theirs = b"\x72\x00someone-elses-block".repeat(8);
+        let host = raw_with_maker_note(true, &mine);
+        let companion = maker_note_from_bytes(&raw_with_maker_note(true, &theirs)).unwrap();
+
+        let out = read_bytes_with_maker_note(&host, Some(&companion))
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.maker_note_graft, MakerNoteGraft::HostHasOwn);
+        assert_eq!(maker_note_of(&out.tiff).unwrap().1, mine);
+        // Byte-identical to what no companion at all would have produced.
+        assert_eq!(out.tiff, read_bytes(&host).unwrap().unwrap().tiff);
+    }
+
+    /// Sony's `MakerNote` opens with its entry count and carries no byte-order
+    /// mark, so a reader takes the order from the enclosing block. Grafted across
+    /// a byte-order boundary it would parse cleanly and report transposed
+    /// nonsense — the one failure mode worse than losing the tag.
+    #[test]
+    fn a_companion_of_the_other_byte_order_is_refused() {
+        let note = b"\x00\x72sony-vendor-block".repeat(8);
+        let companion = maker_note_from_bytes(&raw_with_maker_note(false, &note)).unwrap();
+        let host = rendered_without_maker_note(); // little-endian
+
+        let out = read_bytes_with_maker_note(&host, Some(&companion))
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.maker_note_graft, MakerNoteGraft::ByteOrderDiffers);
+        assert!(maker_note_of(&out.tiff).is_none());
+        assert_eq!(out.tiff, read_bytes(&host).unwrap().unwrap().tiff);
+    }
+
+    /// Nowhere to put it: a `MakerNote` belongs in the Exif IFD, and inventing
+    /// one to hold a foreign tag would add a sub-IFD the source never had.
+    #[test]
+    fn a_block_with_no_exif_ifd_takes_no_graft() {
+        let note = b"\x72\x00sony-vendor-block".repeat(8);
+        let companion = maker_note_from_bytes(&raw_with_maker_note(true, &note)).unwrap();
+        let host = Build::new(true).ascii(271, "SONY").short(274, 1).build();
+
+        let out = read_bytes_with_maker_note(&host, Some(&companion))
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.maker_note_graft, MakerNoteGraft::NoExifIfd);
+        assert_eq!(out.tiff, read_bytes(&host).unwrap().unwrap().tiff);
+    }
+
+    /// A companion whose offset the host's own IFDs already occupy. Padding only
+    /// ever moves the cursor forward, so this one cannot be honored — and a graft
+    /// withdrawn is reported as such rather than as the host having dropped a
+    /// `MakerNote` it never had.
+    #[test]
+    fn a_companion_offset_the_ifds_already_claim_is_refused() {
+        // Nothing but the Exif IFD, so the blob sits at a very low offset.
+        let raw = Build::new(true)
+            .sub(TAG_EXIF_IFD, vec![(TAG_MAKER_NOTE, 7, 8, b"vendor!!".to_vec())])
+            .build();
+        let companion = maker_note_from_bytes(&raw).unwrap();
+        let host = rendered_without_maker_note();
+        assert!(
+            companion.offset() < 8 + 2 + 12 * 5 + 4,
+            "the fixture must collide with the host's IFD0 alone, got {}",
+            companion.offset()
+        );
+
+        let out = read_bytes_with_maker_note(&host, Some(&companion))
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.maker_note_graft, MakerNoteGraft::Unreachable);
+        assert!(
+            !out.dropped_maker_note,
+            "the host had no MakerNote of its own to drop"
+        );
+        assert!(maker_note_of(&out.tiff).is_none());
+        // The Exif IFD keeps its other tags, so its pointer stays.
+        let tiff = Tiff::open(&out.tiff).unwrap().unwrap();
+        let ifd0 = tiff.read_ifd(tiff.first_ifd).unwrap();
+        assert!(ifd0.get(TAG_EXIF_IFD).is_some());
+    }
+
+    /// The distinction that keeps the bounded read honest: a slice that stops
+    /// short of the blob must say "not here", not "there is none". Only the first
+    /// answer is worth re-reading the file for, and `read_maker_note` re-reads on
+    /// exactly that one.
+    #[test]
+    fn a_truncated_head_is_undecided_rather_than_negative() {
+        let note = b"\x72\x00sony-vendor-block".repeat(8);
+        let raw = raw_with_maker_note(true, &note);
+        let at = maker_note_of(&raw).unwrap().0.value_off;
+
+        assert!(matches!(maker_note_in(&raw), Located::Found(_)));
+        // Cut inside the blob: the IFDs still parse and name bytes that are gone.
+        assert!(matches!(maker_note_in(&raw[..at + 4]), Located::Beyond));
+        // Cut before the IFDs even resolve.
+        assert!(matches!(maker_note_in(&raw[..10]), Located::Beyond));
+        // A block that genuinely has none is a real answer, not a short read.
+        let bare = Build::new(true).ascii(271, "SONY").build();
+        assert!(matches!(maker_note_in(&bare), Located::Absent));
+        let no_tag = Build::new(true).sub(TAG_EXIF_IFD, exif_ifd()).build();
+        assert!(matches!(maker_note_in(&no_tag), Located::Absent));
     }
 
     #[test]

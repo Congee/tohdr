@@ -22,7 +22,9 @@ pub mod sidecar;
 
 pub use codec::{HpvcaCodec, YUV444_QUALITY_THRESHOLD};
 pub use exif::{
-    align_apple_headroom, read as read_source_exif, AppleHeadroom, Origin as ExifOrigin, SourceExif,
+    align_apple_headroom, read as read_source_exif, read_maker_note,
+    read_with_maker_note as read_source_exif_with_maker_note, AppleHeadroom, ForeignMakerNote,
+    MakerNoteGraft, Origin as ExifOrigin, SourceExif,
 };
 pub use sidecar::{read as read_sidecar, Sidecar};
 pub use gainmap_tiff::{read as read_gainmap_tiff, GainMapTiff};

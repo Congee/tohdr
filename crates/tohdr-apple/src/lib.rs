@@ -104,6 +104,17 @@ impl GainMapEncoder for AppleEngine {
             xmp: true,
             iptc: false,
             opaque_items: false,
+            // ImageIO's property model has `kCGImagePropertyMakerAppleDictionary`
+            // and no key for a raw vendor blob, so an iPhone's `MakerNote`
+            // round-trips and a Sony one does not survive being turned into
+            // properties and back. Measured: a block carrying the byte-identical
+            // 38,332-byte Sony blob out of `DSC07746.ARW` yields 0 `MakerNote`
+            // tags here and 124 through Engine B.
+            maker_note: false,
+            // The block reaches ImageIO inside a JPEG carrier, whose `APP1`
+            // length is 16 bits — see `write::exif_property_pairs`, which gets
+            // no properties back at all from a block that will not fit one.
+            max_exif_block: Some(tohdr_core::exif::MAX_BLOCK),
         }
     }
 

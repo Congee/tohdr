@@ -69,6 +69,27 @@ pub struct MetadataSupport {
     pub iptc: bool,
     /// Writes [`crate::EncodeOptions::opaque_items`].
     pub opaque_items: bool,
+    /// Writes a `MakerNote` of any vendor, not just Apple's.
+    ///
+    /// False for a backend that reaches its writer through *parsed* metadata
+    /// rather than the block's bytes. macOS ImageIO has a property key for
+    /// Apple's `MakerNote` and none for a raw vendor blob, so Engine A carries
+    /// Apple's 25 tags and loses everyone else's in translation. Measured on a
+    /// HEIC whose Exif block holds a byte-identical 38,332-byte Sony blob:
+    /// `exiftool -MakerNotes:all` reports 0 tags out of Engine A and 124 out of
+    /// Engine B. Separate from `exif` for the same reason `iptc` is — the block
+    /// arrives complete and part of it still does not reach the file.
+    pub maker_note: bool,
+    /// Largest Exif block this backend can write, when it has a limit.
+    ///
+    /// `None` means the block goes into the output whole, at any size — a HEIF
+    /// `Exif` item's length is a 32-bit box size. A backend that hands the block
+    /// to a JPEG carrier is capped by that carrier's 16-bit `APP1` length
+    /// instead, and answers an oversize block by writing *no* metadata at all,
+    /// so the caller has to know the ceiling to keep that from happening
+    /// silently. Only a grafted vendor `MakerNote` makes a photograph's block
+    /// approach it; see `tohdr_portable::exif`.
+    pub max_exif_block: Option<usize>,
 }
 
 impl MetadataSupport {
@@ -78,14 +99,18 @@ impl MetadataSupport {
         xmp: false,
         iptc: false,
         opaque_items: false,
+        maker_note: false,
+        max_exif_block: None,
     };
 
-    /// Carries everything this pipeline can hand it.
+    /// Carries everything this pipeline can hand it, at any size.
     pub const ALL: Self = Self {
         exif: true,
         xmp: true,
         iptc: true,
         opaque_items: true,
+        maker_note: true,
+        max_exif_block: None,
     };
 }
 
