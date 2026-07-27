@@ -207,6 +207,81 @@ function M.summarizeFailure(status, output)
 	return "tohdr failed (exit " .. tostring(status) .. ") with no output"
 end
 
+--- Pull the advisory lines out of a *successful* run's output.
+---
+--- `tohdr` prints `note:` when it did something the user did not ask for but
+--- which is defensible, and `warning:` when it had to guess or drop something.
+--- The colour-space report is the case that matters most here: the plugin asks
+--- Lightroom for `p3_hdr` and asks `tohdr` for `--colour-space p3`, and if
+--- Lightroom ignores that request `tohdr` says so -- either
+---
+---   note: <file> is srgb by its own ICC profile, so the output declares ...
+---   warning: <file> embeds no ICC profile this build recognises ...
+---
+--- Until this function existed, both lines were captured and then thrown away on
+--- the success path, so a Lightroom that quietly exported the wrong colour space
+--- produced a HEIC labelled from a default instead of from the file, and nothing
+--- told anybody. Silence from an export now means the request was honoured.
+---
+--- Deduplicated with counts, because a 200-photo export hits the same condition
+--- 200 times and one dialog listing it once is the readable form. Returns a list
+--- of `{ text = <line>, count = <n> }` in first-seen order, empty when the run
+--- had nothing to say.
+function M.advisories(output)
+	local order, seen = {}, {}
+	for line in tostring(output or ""):gmatch("[^\r\n]+") do
+		-- Match the CLI's own prefix rather than a bare "note:", so a filename
+		-- or an Exif string containing the word cannot fake an advisory.
+		local text = line:match("^%s*tohdr:%s*(note:.*)$") or line:match("^%s*tohdr:%s*(warning:.*)$")
+		if text then
+			if seen[text] then
+				seen[text].count = seen[text].count + 1
+			else
+				seen[text] = { text = text, count = 1 }
+				order[#order + 1] = seen[text]
+			end
+		end
+	end
+	return order
+end
+
+--- Render what `advisories` collected across a whole export into one message.
+---
+--- Returns nil when there is nothing to report, so the caller can skip showing a
+--- dialog at all -- an export that went exactly as asked must stay silent, or the
+--- dialog becomes noise that gets clicked away without reading.
+function M.summarizeAdvisories(list)
+	if not list or #list == 0 then
+		return nil
+	end
+	local lines = {}
+	for _, item in ipairs(list) do
+		lines[#lines + 1] = (item.count > 1)
+			and ("- " .. item.text .. " (" .. tostring(item.count) .. " photos)")
+			or ("- " .. item.text)
+	end
+	return "The conversion succeeded, with notes:\n\n" .. table.concat(lines, "\n")
+end
+
+--- Merge one run's advisories into a running list, preserving order and counts.
+function M.mergeAdvisories(into, list)
+	for _, item in ipairs(list or {}) do
+		local found
+		for _, existing in ipairs(into) do
+			if existing.text == item.text then
+				found = existing
+				break
+			end
+		end
+		if found then
+			found.count = found.count + item.count
+		else
+			into[#into + 1] = { text = item.text, count = item.count }
+		end
+	end
+	return into
+end
+
 --- Decide which `tohdr` binary to run, in priority order:
 ---   1. explicit user-configured path (settings dialog "Custom tohdr path")
 ---   2. the bundled binary beside the plugin (pluginBinaryPath)

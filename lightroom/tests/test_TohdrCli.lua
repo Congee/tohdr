@@ -269,5 +269,65 @@ do
 end
 
 -- ===========================================================================
+-- advisories: what a *successful* run said about how it succeeded.
+-- ===========================================================================
+print("success advisories")
+
+do
+	local out = table.concat({
+		"tohdr: loading /tmp/x.tiff",
+		"tohdr: note: /tmp/x.tiff is srgb by its own ICC profile, so the output declares srgb",
+		"tohdr: wrote /tmp/x.heic (srgb base)",
+	}, "\n")
+	local list = Cli.advisories(out)
+	eq(#list, 1, "one advisory found in a successful run")
+	check(list[1].text:match("^note:"), "the tohdr: prefix is stripped, the kind is kept")
+	check(list[1].text:match("is srgb by its own ICC profile"),
+		"the colour-space report survives intact")
+	eq(list[1].count, 1, "counted once")
+
+	-- The case this exists for: silence when the request was honoured.
+	eq(#Cli.advisories("tohdr: loading x\ntohdr: wrote y (p3 base)\n"), 0,
+		"a run with nothing to say produces no advisories")
+	eq(#Cli.advisories(""), 0, "empty output is silent")
+	eq(#Cli.advisories(nil), 0, "nil output is silent")
+	eq(Cli.summarizeAdvisories({}), nil, "no advisories means no dialog at all")
+	eq(Cli.summarizeAdvisories(nil), nil, "nil list means no dialog at all")
+end
+
+do
+	-- A filename or Exif string containing the word must not fake an advisory;
+	-- only the CLI's own line prefix counts.
+	local list = Cli.advisories(table.concat({
+		"tohdr: loading /tmp/note: not really.tiff",
+		"note: this line has no tohdr prefix",
+		"tohdr: warning: /tmp/x.tiff embeds no ICC profile this build recognises",
+	}, "\n"))
+	eq(#list, 1, "only prefixed advisory lines match")
+	check(list[1].text:match("^warning:"), "and it is the warning")
+end
+
+do
+	-- 200 photos hitting the same condition is one line with a count, not 200.
+	local one = Cli.advisories("tohdr: note: dropped the carried MakerApple headroom tags\n")
+	local all = {}
+	for _ = 1, 3 do
+		Cli.mergeAdvisories(all, one)
+	end
+	eq(#all, 1, "the same advisory from many photos collapses to one entry")
+	eq(all[1].count, 3, "with a count of how many photos hit it")
+	local msg = Cli.summarizeAdvisories(all) or ""
+	check(msg:match("3 photos"), "the count reaches the message")
+	check(msg:match("succeeded"), "and the message says the conversion still succeeded")
+
+	Cli.mergeAdvisories(all, Cli.advisories("tohdr: warning: something else entirely\n"))
+	eq(#all, 2, "a different advisory is kept separately")
+	check((Cli.summarizeAdvisories(all) or ""):match("something else entirely"), "and is listed")
+	-- Merging a run that said nothing must not invent an entry.
+	Cli.mergeAdvisories(all, Cli.advisories("tohdr: wrote /tmp/x.heic (p3 base)"))
+	eq(#all, 2, "a silent run adds nothing")
+end
+
+-- ===========================================================================
 print(string.format("\n%d checks, %d failures", checks, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -16,6 +16,7 @@ exact failure docs/acceptance-criteria.md criterion 13 exists to catch.
 ------------------------------------------------------------------------]]
 
 local LrDate = import 'LrDate'
+local LrDialogs = import 'LrDialogs'
 local LrFileUtils = import 'LrFileUtils'
 local LrPathUtils = import 'LrPathUtils'
 local LrTasks = import 'LrTasks'
@@ -194,6 +195,11 @@ function exportServiceProvider.processRenderedPhotos(_functionContext, exportCon
 
 	local binary, locateErr = findBinary(propertyTable)
 
+	-- Advisories from every photo, collected rather than reported one at a time:
+	-- Lightroom has no per-photo channel for "succeeded, but you should know
+	-- something", and 200 modal dialogs is not a design.
+	local advisories = {}
+
 	for _, rendition in exportContext:renditions { stopIfCanceled = true } do
 		-- Fail every rendition individually rather than aborting the export:
 		-- Lightroom shows the message per photo, which is what the user needs
@@ -243,6 +249,11 @@ function exportServiceProvider.processRenderedPhotos(_functionContext, exportCon
 							.. 'mode in Develop; if it is, this Lightroom version may not accept '
 							.. 'the HDR export settings the plugin requests.'
 					)
+				else
+					-- Succeeded. Keep anything `tohdr` said about how, so a
+					-- silent fallback (most importantly a colour space it had to
+					-- guess at) reaches the user instead of the bit bucket.
+					TohdrCli.mergeAdvisories(advisories, TohdrCli.advisories(output))
 				end
 
 				-- Delete the intermediate on EVERY path, not just success. It
@@ -259,6 +270,15 @@ function exportServiceProvider.processRenderedPhotos(_functionContext, exportCon
 
 	if progress then
 		progress:done()
+	end
+
+	-- Shown only when there is something to show. An export that got exactly
+	-- what it asked for must stay silent: a dialog that always appears is one
+	-- that always gets dismissed unread, which would defeat the point of
+	-- collecting these at all.
+	local summary = TohdrCli.summarizeAdvisories(advisories)
+	if summary then
+		LrDialogs.message('tohdr', summary, 'info')
 	end
 end
 

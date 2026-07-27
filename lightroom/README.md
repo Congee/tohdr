@@ -133,14 +133,17 @@ Be clear about which half of this is proven.
 **Verified here, by running it:**
 
 - All four plugin files and the test file parse: `luajit -bl` on each, 5/5 OK.
-- `lua lightroom/tests/test_TohdrCli.lua` — **65 checks, 0 failures**. Covers
+- `lua lightroom/tests/test_TohdrCli.lua` — **87 checks, 0 failures**. Covers
   command-line construction and, most importantly, shell quoting: spaces,
   embedded single quotes, `$(...)`, backticks, semicolons, backslashes, double
   quotes and unicode all survive as literals. Also binary-location precedence,
   failure summarising, exit-status decoding (`LrTasks.execute` returns the
-  shell's wait status, so exit 1 arrives as 256), that the removed PATH-guessing
-  helpers stay removed, and that `locateBinary` is unaffected by a sandbox with
-  `os.getenv` deleted.
+  shell's wait status, so exit 1 arrives as 256), success advisories (that a run
+  with nothing to say produces no dialog at all, that only the CLI's own
+  `tohdr: note:`/`tohdr: warning:` prefix counts so a filename cannot fake one,
+  and that the same condition across many photos collapses to one line with a
+  count), that the removed PATH-guessing helpers stay removed, and that
+  `locateBinary` is unaffected by a sandbox with `os.getenv` deleted.
 
   The count is environment-independent by design — verified identical under
   `PATH` empty, `PATH` long, and `HOME` unset. It used to be 172 only because a
@@ -175,33 +178,46 @@ Be clear about which half of this is proven.
   became `LrDate.currentTime()`, since which other `os` members survive the
   sandbox is undocumented, and one demonstrated absence is enough to stop
   guessing.
+- **A full export of a real photo, through to a HEIC that passes `tohdr
+  verify`.** `DSC07746.ARW` (60.2 MP) exported to a 3.8 MB gain-map HEIC:
+  9202x6135 base, 4601x3068 gain plane, both flavors present, 2.524 declared
+  stops, every invariant `ok`. So `waitForRender` and `configureProgress` behave
+  as assumed across a session — and `uploadFailed` does too, from the export
+  before it, which reported `tohdr failed (exit 1)` in the Export Results dialog:
+  the real exit code, so `decodeExitStatus` unpacks a real wait status correctly
+  in a real Lightroom, not just in the test.
+- **That `LR_enableHDRDisplay` and `LR_export_bitDepthOthers` are accepted under
+  those names by an export service**, which was previously inferred from the
+  `AgExport_` spellings the dialog stores. The intermediate arrived with a gain
+  map in it: had it not, the plugin would have deleted the output and failed the
+  photo with "Lightroom rendered an SDR intermediate", and instead the export
+  succeeded with 2.524 stops of real headroom. A 16-bit HDR TIFF is what
+  Lightroom actually wrote.
 
-**Still not verified:**
+**Partly verified — the export was not sRGB, but which wide space is not yet
+pinned down:**
 
-- Any end-to-end export of an actual photo through to a written HEIC.
-- That `waitForRender`, `uploadFailed` and `configureProgress` behave as expected
-  across a full export session.
 - **That Lightroom honours `LR_export_colorSpaceNonJPEG = 'p3_hdr'`.** The token
   is LrC's own — it is what LrC writes into `EditInPs_hdr_colorSpace` for its
   Edit-in-Photoshop HDR path, and the export keys take the same `<space>_hdr`
-  spellings — but no export has been driven through it yet, and Adobe documents
-  none of these values. If it is ignored, the intermediate arrives in some other
-  space; `tohdr` then reports the mismatch from the embedded ICC profile rather
-  than mislabelling the output, so the failure is loud rather than silent. The
-  thing to check on the first P3 export is that `tohdr` prints no `note:` line
-  about the source's profile disagreeing with the requested space.
-- That `LR_enableHDRDisplay` / `LR_export_colorSpaceNonJPEG` /
-  `LR_export_bitDepthOthers` are accepted under those names by an export
-  service. The names and values are confirmed to be what the *dialog* stores
-  (`AgExport_enableHDRDisplay`, `AgExport_export_colorSpaceNonJPEG`,
-  `AgExport_export_bitDepthOthers`), and a hand-driven export with exactly
-  those settings does produce a gain-map TIFF — but the `AgExport_` to `LR_`
-  mapping is a convention read off the documented keys, not something Adobe
-  states for these three. If Lightroom ignores them the plugin now fails the
-  photo with an explanation instead of shipping an SDR file.
+  spellings — but Adobe documents none of these values.
+
+  What the delivered file settles: its base declares `SMPTE EG 432-1` with EXIF
+  `ColorSpace: Uncalibrated`, and `primaries_from_icc` is verified to recognise
+  the real 3144-byte `sRGB IEC61966-2.1` profile Lightroom embeds (see
+  `cargo run --example probe_icc -p tohdr-core`). Had Lightroom ignored the token
+  and fallen back to sRGB, the base would have been labelled `srgb` from that
+  profile. It was not, so it did not.
+
+  What it does not settle: a *recognised* Display P3 profile and an
+  *unrecognised* wide one (ProPhoto, say) both yield a P3-labelled base — the
+  first because the source said so, the second because `--colour-space p3` is the
+  fallback. They differ only in that the second prints `warning:`, and the plugin
+  discarded the CLI's output on success, so that line went nowhere. It is now
+  collected and shown (see "success advisories" above). **Silence from the next
+  export is the proof**; a dialog naming ProPhoto or Adobe RGB is the disproof.
 
 The plugin is installed in the `Modules` folder on this machine, so the first
-two lists reflect a real Lightroom, not inference. Treat the third as
-written-but-untested — and note that every item in the second list was found by
-someone clicking Export, not by reading the code, which is a fair guide to how
-much confidence the third deserves.
+two lists reflect a real Lightroom, not inference. Every item that moved out of
+"not verified" got there by someone clicking Export rather than by reading the
+code, which is a fair guide to how much confidence the remaining item deserves.
