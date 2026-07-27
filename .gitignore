@@ -5,3 +5,13 @@
 *.jpg
 *.png
 !assets/**
+
+# Adobe's Lightroom SDK and its two guides, kept in docs/ because every
+# undocumented export key in lightroom/README.md was found by reading them --
+# `LR_export_colorSpaceNonJPEG`, `LR_enableHDRDisplay`, `getRawMetadata('path')`
+# and the `LrExportRendition.photo` field are all documented there and nowhere
+# else. Ignored rather than committed: 27 MB of Adobe's material, not ours to
+# redistribute.
+/docs/LrC_*_SDK/
+/docs/Lightroom Classic SDK Guide_*.pdf
+/docs/Lightroom Controller SDK Guide_*.pdf
