@@ -1,5 +1,7 @@
 /target
 /out
+/.direnv
+/.claude
 *.heic
 *.HEIC
 *.jpg
