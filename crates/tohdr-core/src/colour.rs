@@ -1,37 +1,19 @@
 //! Which primaries the pixels are in, conversion between them, and reading the
 //! answer out of an embedded ICC profile.
 //!
-//! # Why this exists
+//! Exists because the pipeline used to render everything into Rec.709 and clamp
+//! what fell outside, which is where wide-gamut colour died -- 12.33% of a real
+//! Lightroom P3 export, in a coherent yellow region rather than scattered
+//! outliers. See docs/gamut.md.
 //!
-//! Because the pipeline used to render everything into Rec.709 primaries and
-//! clamp what fell outside, and that clamp is where wide-gamut colour died. An
-//! extended-range linear space *can* carry a colour outside its primaries — as a
-//! negative component — so the colour survives the colour-space conversion and
-//! dies at `.max(0.0)`. `tohdr-apple/examples/probe_gamut.rs` measured the cost
-//! on real files:
+//! Rec.709's primaries sit strictly inside Display P3's, so 709 -> P3 is an exact
+//! 3x3 matrix on linear light that cannot clip. The reverse is not, which is why
+//! nothing here narrows on its own -- [`Primaries::narrower_than`] lets a caller
+//! warn instead.
 //!
-//! ```text
-//!                                  outside    dE>=1     dE>=3    worst
-//!                                  Rec.709   of image  of image     dE
-//!   IMG_4913.HEIC (iPhone P3)        0.18%     0.01%     0.00%    2.63
-//!   DSC07746, LrC HDR Display P3    12.33%     5.10%     1.37%    5.35
-//! ```
-//!
-//! and found the affected pixels to be a coherent yellow/yellow-green region of
-//! the photograph rather than scattered outliers.
-//!
-//! # Why P3 output is free
-//!
-//! Rec.709's primaries sit strictly inside Display P3's, so 709 → P3 is an exact
-//! 3×3 matrix on linear light that cannot clip: every representable 709 colour is
-//! a representable P3 colour. The reverse is not free, which is why nothing here
-//! narrows on its own — [`Primaries::narrower_than`] exists so a caller can warn
-//! rather than silently discard.
-//!
-//! All three primaries sets here are defined against D65, so no chromatic
-//! adaptation is involved in converting between them. Adaptation appears in
-//! exactly one place: ICC profiles store their colorants adapted to the D50
-//! profile connection space, so recognising one means undoing that first.
+//! All three sets are D65, so no chromatic adaptation is involved. It appears in
+//! one place only: ICC profiles store colorants adapted to the D50 connection
+//! space, so recognising one means undoing that first.
 
 /// Which primaries a linear RGB buffer is expressed in.
 ///
@@ -278,20 +260,13 @@ fn icc_tag<'a>(icc: &'a [u8], sig: &[u8; 4]) -> Option<&'a [u8]> {
 /// The primaries an ICC profile describes, or `None` if it describes something
 /// this crate has no matrix for.
 ///
-/// Two routes, tried in that order:
+/// Two routes, in order: a `cicp` tag stating the ISO/IEC 23091-2 code (ICC v4.4+,
+/// which Apple writes), then the `rXYZ`/`gXYZ`/`bXYZ` colorants compared against
+/// each known set after Bradford-adapting the reference to D50. The second is what
+/// works on the 1998 sRGB profile Lightroom embeds, which predates `cicp`.
 ///
-/// 1. A `cicp` tag, which states the ISO/IEC 23091-2 code directly. ICC v4.4 and
-///    newer; Apple writes it, which is why `exiftool` reports "Color Primaries"
-///    groups on an iPhone HEIC.
-/// 2. The `rXYZ`/`gXYZ`/`bXYZ` colorants, compared against each known set after
-///    Bradford-adapting the reference to D50. This is the route that works on the
-///    1998 HP-authored sRGB profile Lightroom embeds, which predates `cicp` by
-///    two decades.
-///
-/// Deliberately returns `None` rather than a guess for an unrecognised profile.
-/// An Adobe RGB or ProPhoto export read as sRGB would be wrong in a way nothing
-/// downstream could detect — the pixels would simply be desaturated — so the
-/// caller has to be able to refuse.
+/// `None` rather than a guess: an Adobe RGB export read as sRGB is undetectably
+/// wrong downstream -- just desaturated -- so the caller must be able to refuse.
 pub fn primaries_from_icc(icc: &[u8]) -> Option<Primaries> {
     if let Some(cicp) = icc_tag(icc, b"cicp") {
         // 4-byte type signature, 4 reserved, then primaries/transfer/matrix/range.

@@ -1,18 +1,11 @@
 //! Exif `Orientation` as a HEIF container transform.
 //!
-//! Nothing in this pipeline rotates pixels: a decoded image is handed to an
-//! encoder and comes back the same way up. So a rotated source can only stay
-//! correct if the *container* says how to display it, and that has to agree with
-//! the Exif tag the same file carries — an Exif reader and a HEIF reader consult
-//! different fields, and a file where those disagree is a file where two
-//! conformant viewers show the photo different ways up.
+//! Nothing here rotates pixels, so a rotated source stays correct only if the
+//! container says how to display it -- and that must agree with the Exif tag in
+//! the same file, or two conformant viewers show the photo different ways up.
 //!
-//! # The derivation
-//!
-//! Exif defines each orientation by where the stored data's 0th row and 0th
-//! column land in the displayed image (Exif 2.32, tag `0x0112`). Writing that as
-//! a coordinate map on a stored `W x H` image, with `x` rightward and `y`
-//! downward:
+//! Exif defines each value by where the stored 0th row and column land (tag
+//! `0x0112`), which as a coordinate map on a stored `W x H` image is:
 //!
 //! | value | Exif's words | maps `(x, y)` to |
 //! |---|---|---|
@@ -25,34 +18,16 @@
 //! | 7 | right/bottom | `(H-1-y, W-1-x)` |
 //! | 8 | left/bottom | `(y, W-1-x)` |
 //!
-//! HEIF offers `irot` (anti-clockwise, in quarter turns) and `imir` (a mirror),
-//! applied rotation-then-mirror. Composing those two and solving for each row
-//! above gives [`heif_transform`]; the interesting cases are 5 and 7, which are
-//! reflections about a diagonal and so need both boxes.
-//! `every_orientation_composes_to_the_exif_mapping` checks all eight by applying
-//! both definitions to actual coordinates rather than trusting the arithmetic
-//! above.
+//! HEIF gives `irot` (anti-clockwise quarter turns) and `imir`, applied
+//! rotation-then-mirror; solving for each row gives [`heif_transform`]. 5 and 7
+//! are diagonal reflections and need both boxes.
 //!
-//! # What the algebra could not settle
-//!
-//! Two things: the order the boxes compose in, and which way round `imir`'s
-//! `axis` field reads. Both were measured rather than reasoned, by
-//! `tohdr-cli/examples/probe_orientation.rs`, which writes all eight
-//! orientations through both engines and has ImageIO resolve each file's boxes
-//! back to a number.
-//!
-//! The first reading of the spec's "a vertical (axis = 0) or horizontal
-//! (axis = 1) axis for the mirroring operation" was that `axis = 0` reflects
-//! *about* a vertical axis, i.e. swaps left and right. It does not: the probe
-//! reported every mirrored orientation coming back as its opposite — 2 read as 4,
-//! 4 as 2, 5 as 7, 7 as 5 — with the four pure rotations already correct. The
-//! field names the *direction the image is flipped in*, so `axis = 0` swaps top
-//! and bottom. Four of eight orientations were wrong in a way no amount of
-//! re-reading the sentence would have shown.
-//!
-//! Engine A agreed with the source on all eight throughout, because it hands
-//! ImageIO the orientation number and lets ImageIO write the boxes. That is what
-//! makes it a usable oracle here: the disagreement could only be in our muxer.
+//! **`imir`'s `axis` names the direction the image is flipped in, so `axis = 0`
+//! swaps top and bottom** -- not, as the spec's wording suggests, a reflection
+//! about a vertical axis. Reading it the other way had four of eight orientations
+//! coming back as their opposite. Measured with
+//! `tohdr-cli/examples/probe_orientation.rs`, using Engine A as the oracle since
+//! it delegates the boxes to ImageIO.
 
 /// A HEIF rotation-and-mirror pair.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

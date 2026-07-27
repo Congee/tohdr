@@ -392,36 +392,21 @@ Be clear about which half of this is proven.
   call to `LrTasks.yield()` to occur inside it" — and a source scan in the test
   suite now rejects the built-in outright.
 
-  Everything measurable had pointed the other way, which is worth recording
-  because it is why the reason string was built instead of another guess:
+  Everything measurable had pointed the other way -- prefs confirmed
+  `tohdr_engine = "portable"` with the box checked, the catalog gave the master as
+  an existing `RAW` file, every documented key name was right, and replaying the
+  real Exif through the CLI carried all **124** Sony tags (38,332 bytes pinned at
+  5,222). Every one of those was true and the feature still did nothing, because
+  the fault was in the wrapper rather than in anything it wrapped. Only the plugin
+  reporting the error text verbatim found it.
 
-  - the prefs plist records `tohdr_engine = "portable"` and
-    `tohdr_makerNote = true`, so Engine B ran with the box checked, and Engine B
-    is the engine that *can* carry a foreign blob;
-  - the catalog (read `immutable=1`) gives the master as `fileFormat = RAW`,
-    `masterImage` null, path `…/7.19/DSC07746.ARW`, a file that exists — so
-    `original_path`'s format, virtual-copy, path and existence gates all pass;
-  - both files' Exif is little-endian, so `byte-order-differs` cannot fire;
-  - `exportRendition.photo` is documented, as are `isVirtualCopy`, `masterPhoto`,
-    `fileFormat` and `path` as raw-metadata keys, so no name is wrong;
-  - and replaying the *real* Exif through the CLI carries it: feeding the exported
-    HEIC back as the source with `--engine portable --maker-note-from` the ARW
-    reports `"maker_note_graft":"carried"`, 38,332 bytes pinned at 5,222, and the
-    result holds all **124** Sony tags, the same count as the ARW.
-
-  Every one of those was true and the feature still did nothing, because the fault
-  was in the wrapper rather than in anything it wrapped. No amount of further
-  reading would have found it: it took the plugin reporting the error text
-  verbatim. Which is the lesson worth keeping — the fix that mattered was making
-  the failure *speak*, and the one-line repair followed from what it said.
-
-  That reporting is now permanent, because the underlying gap was real: `tohdr`
-  warns about every `MakerNote` it refuses, but it cannot warn about a companion
-  file it was never handed, so a failed lookup was silent and indistinguishable
-  from success. `original_path` returns a reason with its nil and the plugin
-  raises it as an advisory, worded identically across photos so 200 renditions
-  collapse to one line with a count. Same shape as the `gain_map_source` gate
-  before it: a check that cannot report is a check that does not exist.
+  That reporting is now permanent: `tohdr` warns about every `MakerNote` it
+  refuses, but cannot warn about a companion file it was never handed, so a failed
+  lookup was silent and indistinguishable from success. `original_path` returns a
+  reason with its nil and the plugin raises it as an advisory, worded identically
+  across photos so 200 renditions collapse to one line with a count. Same shape as
+  the `gain_map_source` gate: a check that cannot report is a check that does not
+  exist.
 
 - **The whole chain, in one export.** With `LrTasks.pcall` in place, the same
   photo through the same preset — engine `portable`, box checked, 4 MB budget —

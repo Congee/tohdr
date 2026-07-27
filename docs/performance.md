@@ -183,8 +183,7 @@ warm does not move a wall clock that is waiting on `draw_image`.
 
 ## Memory: what one conversion actually holds
 
-Peak RSS was the metric this file used to quote (4.25 GB → 2.47 GB). Two things
-learned since are worth writing down, because both change how to read it.
+Peak RSS (4.25 GB → 2.47 GB) needs two caveats to read correctly.
 
 **The full-resolution `log2_gain` intermediate is gone.** `derive_from_luma` used
 to store one `f32` per *input* pixel between its two passes — 230 MiB at 60 MP,
@@ -201,10 +200,9 @@ after derive, so dropping it before the allocating encode phase looks like free
 savings. It is not: measured with `task_info(MACH_TASK_BASIC_INFO)` — a gauge
 that can fall, unlike `getrusage`'s high-water mark — live RSS does not move at
 all across the drop, and `malloc_zone_pressure_relief` releases nothing. macOS
-libmalloc marks the span `MADV_FREE_REUSABLE` and the pages stay counted until
-the kernel wants them. So **RSS overstates real pressure here**, and the
-`--jobs` ceiling this file used to attribute to memory does not bind on a 64 GB
-machine. Eight 60 MP raws, best of one:
+libmalloc marks the span `MADV_FREE_REUSABLE` and the pages stay counted until the
+kernel wants them. So **RSS overstates real pressure here**, and memory does not
+bind `--jobs` on a 64 GB machine. Eight 60 MP raws, best of one:
 
 | jobs | wall s | peak RSS | peak footprint |
 |---|---|---|---|

@@ -1,17 +1,14 @@
 //! Where does Engine B's time actually go at 60 MP?
 //!
-//! `docs/engine-comparison.md` reports Engine B at 9403.8 ms / 6.4 MP/s for the
-//! 60.22 MP source, against Engine A's 572.3 ms — and concludes Engine B "falls
-//! off a cliff". But `spikes/hpvca-probe 9504` shows raw hpvca doing the same
-//! pixel count in 1.55 s with `TilesWpp` (38.85 MP/s), and 9.82 s only with
-//! `ParallelismStrategy::Single`. Those two facts cannot both describe a codec
-//! at its limit, so the cost has to be somewhere in how we call it.
+//! docs/engine-comparison.md had Engine B at 9403.8 ms against Engine A's 572.3,
+//! but `spikes/hpvca-probe 9504` does the same pixel count in 1.55 s with
+//! `TilesWpp`. Both cannot describe a codec at its limit, so the cost is in how we
+//! call it.
 //!
-//! This times the four stages of `PortableEngine::encode` separately, plus the
-//! two buffer conversions that `codec.rs` performs before handing anything to
-//! hpvca. It replicates `codec.rs`'s calls rather than going through
-//! `PortableEngine` so each hpvca invocation can be timed on its own; keep the
-//! configs here in sync with `config_for`.
+//! Times the four stages of `PortableEngine::encode` plus the two buffer
+//! conversions `codec.rs` does first. It replicates `codec.rs`'s calls rather than
+//! going through `PortableEngine` so each hpvca invocation can be timed alone --
+//! keep the configs here in sync with `config_for`.
 //!
 //! Run: `cargo run --release --example probe_engine_b_stages -p tohdr-portable`
 

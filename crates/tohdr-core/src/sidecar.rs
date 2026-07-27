@@ -1,19 +1,14 @@
 //! Metadata a source carried that this pipeline copies through without
 //! understanding it, and the declaration of which backend can carry what.
 //!
-//! # Why an opaque blob is the right model
+//! An opaque blob is the right model because there is nothing to read: an iPhone
+//! capture's `uri ` item holds a 110-key undocumented binary plist of
+//! Photographic Styles state, and this pipeline only needs to *not lose* it. So an
+//! item is its four `infe` fields plus its bytes.
 //!
-//! An iPhone capture carries a `uri ` item named `metadata`, typed
-//! `tag:apple.com,2023:photo:metadata:styles`, holding a 110-key binary plist of
-//! Photographic Styles state and per-channel scene statistics. None of it is
-//! documented, exiftool names half its keys `Tag6...`, and nothing here needs to
-//! read any of it — it only needs to *not lose* it. So the item is modelled as
-//! its four `infe` fields plus its bytes, and copied.
-//!
-//! The fields are HEIF's because HEIF is the only container this project writes.
-//! They live in core rather than in `tohdr_heif` so that the encode options both
-//! engines share can name them, and so an engine that cannot write them can say
-//! so instead of dropping them quietly.
+//! Those fields are HEIF's because HEIF is the only container written here. They
+//! live in core so the shared encode options can name them, and so an engine that
+//! cannot write them says so instead of dropping them quietly.
 
 /// One non-image item, copied byte for byte.
 #[derive(Clone, Debug, PartialEq, Eq)]

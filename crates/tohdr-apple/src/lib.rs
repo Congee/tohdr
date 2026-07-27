@@ -81,23 +81,19 @@ impl GainMapEncoder for AppleEngine {
 
     /// Exif and XMP, but not opaque items.
     ///
-    /// Not by writing the boxes directly — ImageIO owns the container here, and
-    /// takes metadata only as property dictionaries and a `CGImageMetadata`. The
-    /// Exif block is re-parsed by ImageIO and handed back to it, so what lands in
-    /// the file is ImageIO's re-serialization rather than the source's bytes; see
-    /// `write::exif_property_pairs`.
+    /// Not by writing boxes -- ImageIO owns the container and takes metadata only
+    /// as property dictionaries and a `CGImageMetadata`, so what lands in the file
+    /// is ImageIO's re-serialisation of the Exif block, not the source's bytes.
     ///
-    /// `opaque_items` is `false` because there is no ImageIO call that adds an
-    /// arbitrary `infe`/`iloc` item to a HEIF file. Apple's Photographic Styles
-    /// plist can therefore only be carried by our own muxer, which is a real
-    /// difference between the engines and reported as one rather than silently
-    /// dropped.
+    /// `opaque_items` is `false` because no ImageIO call adds an arbitrary
+    /// `infe`/`iloc` item, so Apple's Photographic Styles plist survives only
+    /// through our own muxer -- a real difference between the engines, reported
+    /// rather than silently dropped.
     ///
-    /// `iptc` is `false` on measurement, not on inspection of an API: ImageIO
-    /// *reads* the IIM block back out of the carrier — 8 entries, confirmed by
-    /// `examples/probe_exif_props.rs` — and its HEIC writer then emits no IPTC at
-    /// all. Handing it the dictionary is necessary and not sufficient, so the
-    /// claim is false and the CLI says so.
+    /// `iptc` is `false` on measurement, not on API inspection: ImageIO *reads* the
+    /// IIM block back (8 entries, `examples/probe_exif_props.rs`) and its HEIC
+    /// writer then emits none. Handing it the dictionary is necessary, not
+    /// sufficient.
     fn metadata_support(&self) -> tohdr_core::MetadataSupport {
         tohdr_core::MetadataSupport {
             exif: true,

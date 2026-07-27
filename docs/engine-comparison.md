@@ -102,20 +102,15 @@ Fixtures: `out/tiny.tiff`, `out/small.tiff`, `out/scene.tiff`, and a 60 MP expor
 of `DSC07746.ARW`. The last is 722 MB and is not kept in the tree; regenerate it
 with `cargo run --release --example export_hdr_tiff -p tohdr-apple -- <raw>
 out/big60.tiff`, which verifies the round trip is bit-identical before returning.
-(An earlier version of this table used fixtures that no longer exist, which is
-why the exporter exists at all. Its absolute numbers differed — the sources were
-different photographs — so the whole table was re-measured rather than patched.)
 
 Reading it:
 
 - **The media block wins at every size, once its session is reused** — 0.08x
   Engine A at 0.20 MP, 0.13x at 12 MP, 0.41x at 60 MP.
 - **Give it a fresh session per file and it wins only above ~1 MP.** That is the
-  cold column, and it is what a single `tohdr convert` in a fresh process gets:
-  0.52x Engine A at 0.79 MP but *slower* than hpvca there, 20.4 ms against 36.6.
-  This document used to state flatly that "below ~1 MP the software codec wins
-  outright". That was true of the code as it stood and is now true only of the
-  cold column: reuse moves the crossover below the smallest size measured.
+  cold column, and what a single `tohdr convert` in a fresh process gets: 0.52x
+  Engine A at 0.79 MP but *slower* than hpvca there, 20.4 ms against 36.6. Reuse
+  moves the crossover below the smallest size measured.
 - **The software codec collapses at scale**, 5.8 s at 60 MP against Engine A's
   0.55. That is not a parallelism failure; it is profiled below.
 - **Engine A has its own warm-up** and it is not small — 629 ms first against
@@ -142,21 +137,17 @@ Per base plane at 12.19 MP (`examples/probe_vt_session_reuse.rs`):
 ```
 
 Only 25.7 ms of the 70 ms saved is session creation. The rest hides inside
-`encode_ms`, because VideoToolbox brings the encoder up lazily on the first
-frame — so it presents as the cost of encoding rather than the cost of starting,
-and an earlier note here that put the whole overhead at "30–45 ms, roughly 15% of
-a 60 MP conversion" was `session_ms` mistaken for the total.
+`encode_ms`, because VideoToolbox brings the encoder up lazily on the first frame,
+so it presents as the cost of encoding rather than of starting. Do not read the
+overhead off `session_ms`.
 
-**It is byte-transparent.** A cold single `convert` and all 24 outputs of a pooled
-batch share one SHA-256 (`d02e83e1…`), and `bench` reports identical output sizes
-cold and warm at all four sizes above. That was the thing worth checking before
-the milliseconds: an encoder carrying state between frames could easily have made
-a file's bytes depend on its position in the batch, which is a worse property than
-the speed is worth. What makes it hold is that every frame is an IDR with
-`MaxKeyFrameInterval = 1` and no reordering, and an IDR slice header carries no
-`pic_order_cnt_lsb` at all (H.265 §7.3.6.1) — so not even the frame's index can
-reach the bitstream. Presentation timestamps do advance per frame, and are
-container metadata that never enters it.
+**It is byte-transparent**, which was worth checking before the milliseconds: a
+stateful encoder could have made a file's bytes depend on its position in the
+batch. A cold single `convert` and all 24 outputs of a pooled batch share one
+SHA-256 (`d02e83e1…`), and `bench` reports identical sizes cold and warm at all
+four sizes. It holds because every frame is an IDR with `MaxKeyFrameInterval = 1`
+and no reordering, and an IDR slice header carries no `pic_order_cnt_lsb` (H.265
+§7.3.6.1), so not even the frame index can reach the bitstream.
 
 Peak RSS is unchanged to within 0.4%. The sessions exist during the encode
 either way; the pool only keeps them alive between encodes.
@@ -354,15 +345,12 @@ Three things that had to be measured rather than assumed:
   is one shared unit: 328.2 ms sequential (base 171.9 + gain 156.3) against
   261.8 ms concurrent *including* the mux, because one plane's CPU-side session
   setup and pixel fill overlap the other's hardware encode.
-- **`RealTime=true` is the faster setting**, which is not the obvious choice for
-  a still-image encoder. At 60 MP q85 it was 415.4 ms / 15,979,461 B against
-  465.8 / 17,096,568 with it off. For a single all-intra frame the
-  quality-oriented path spends its extra analysis on multi-frame decisions that
-  cannot pay off. **Correction to an earlier reading of this:** it was recorded
-  here as "faster *and* smaller, so no trade to make". Fewer bytes at the same
-  requested quality is not free by itself — it is also what lower fidelity looks
-  like. See the next subsection; the *reason* the file was smaller turned out not
-  to be `RealTime` at all.
+- **`RealTime=true` is the faster setting**, not the obvious choice for a still
+  encoder: 415.4 ms / 15,979,461 B against 465.8 / 17,096,568 at 60 MP q85, because
+  a single all-intra frame cannot pay off multi-frame analysis. Do not read the
+  smaller file as a bonus — fewer bytes at the same requested quality is also what
+  lower fidelity looks like, and the size difference traced to the colour matrix
+  in the next subsection, not to `RealTime`.
 
 Letting VideoToolbox do the colour conversion — feeding it BGRA rather than
 converting to 4:2:0 in Rust first — was worth 1050 → 867 ms and is the more
@@ -448,14 +436,10 @@ This matters because byte equality is how this project checks that a refactor di
 not change output. A file that differs run to run for reasons unrelated to its
 pixels makes that check useless.
 
-Two smaller items remain, neither pulled:
-
-- **`fill_bgra` is a whole extra pass.** `tone_map` writes `Rgb` as u16 (345 MiB),
-  then the fill reads it and writes BGRA (241 MiB). Having the tone map emit a
-  VT-ready buffer directly would delete a 345 MiB write and a 345 MiB read.
-- **A fresh `VTCompressionSession` per plane per call**, 30–45 ms each and the
-  reason the software codec still wins below a megapixel. Reusing one across
-  planes and across files should matter most to `batch`.
+One item remains, not pulled: **`fill_bgra` is a whole extra pass.** `tone_map`
+writes `Rgb` as u16 (345 MiB), then the fill reads it and writes BGRA (241 MiB).
+Having the tone map emit a VT-ready buffer directly would delete a 345 MiB write
+and a 345 MiB read.
 
 ### Cross-platform, which is the actual goal
 
@@ -494,7 +478,7 @@ lie; and the engine *name* then reports the codec that actually ran, which is wh
 | base is not 8-bit | `PF_BGRA` and `PF_L008` are 8-bit; truncating silently would be worse |
 | `--quality >= 95` | that asks for 4:4:4 chroma, and the BGRA path is 4:2:0 only |
 
-Two things in the profile *are* worth pursuing, neither of them large:
+Three things in the profile are worth pursuing, none of them large:
 
 - `intra::is_available` costs **1.15 s (3.73%)** — more than
   `predict_angular_into` (1.13 s), the function that does the actual prediction.
@@ -539,13 +523,11 @@ rejected 345 MiB of samples plus the decoder's working set.
 
 ### What load+derive used to cost
 
-That column was 46.7 / 706.5 ms before the pipeline was profiled against a
-61 MP raw, and the conclusion drawn from it — that derivation, not the codec,
-was the bottleneck on large images — is no longer true. The shared stages are
-now roughly 6x faster and Engine A's *encoder* is the larger cost at every size
-above a megapixel. What changed, in descending order of effect: the transfer
-functions became exact lookup tables instead of a few hundred million `powf`
-calls, and every full-frame pass became row-parallel. See `crates/tohdr-core/src/par.rs`.
+46.7 / 706.5 ms, from which this file once concluded that derivation rather than
+the codec was the bottleneck on large images. No longer true: the shared stages are
+~6x faster and Engine A's encoder is the larger cost above a megapixel. Exact
+lookup tables replaced a few hundred million `powf` calls, and every full-frame
+pass became row-parallel. See `crates/tohdr-core/src/par.rs`.
 
 ## Output size, and why the raw number misleads
 

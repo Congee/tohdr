@@ -1,45 +1,24 @@
 //! HEVC plane encoding on the Apple Silicon media block, via VideoToolbox.
 //!
-//! # Why this exists
+//! Engine B's whole deficit is its plane encoder -- 23.3 of 30.8 CPU-seconds of a
+//! 60 MP conversion sit in hpvca against ~0.1 ms in the muxer -- and tuning does
+//! not close 8x against fixed-function silicon. So this replaces the encoder and
+//! keeps the muxer. See docs/engine-comparison.md.
 //!
-//! Engine B's deficit is entirely in its plane encoder. Profiling a 60 MP
-//! conversion put 23.3 of 30.8 CPU-seconds inside hpvca and roughly 0.1 ms in
-//! `tohdr_heif` — our muxer is free, the software codec is not, and no amount of
-//! tuning closes an 8x gap against fixed-function silicon (see
-//! `docs/engine-comparison.md`). So this replaces the *encoder* and keeps the
-//! muxer.
+//! Not via ImageIO: it tiles a 60 MP HEIC into a HEIF `grid`, and reassembling
+//! tiles is a re-encode, not a remux, so `coded_image` refuses it
+//! (`examples/probe_hw_planes.rs` fails on exactly that). VideoToolbox instead
+//! hands back one coded frame plus parameter sets, which is what
+//! [`tohdr_heif::CodedImage`] wants -- and the same shape Vulkan Video and D3D12
+//! produce, so other backends slot in beside this one. Metal is not an option:
+//! Apple exposes no encode API through it.
 //!
-//! # Why not ImageIO
+//! The C entry points are declared here rather than taking three crates for
+//! partial coverage: `objc2-core-video` 0.3.2 lacks
+//! `CVPixelBufferGetBaseAddressOfPlane` and friends.
 //!
-//! The obvious shortcut — ask ImageIO for a one-image HEIC per plane and pull the
-//! coded bytes back out, exactly as the hpvca path does — does not work at camera
-//! resolutions. ImageIO tiles a 60 MP HEIC into a HEIF `grid`, and
-//! `tohdr_heif::HeifFile::coded_image` refuses a grid because reassembling tiles
-//! is a re-encode rather than a remux. Measured, not assumed:
-//! `examples/probe_hw_planes.rs` fails on exactly that.
-//!
-//! Going straight to VideoToolbox avoids the container round-trip: it hands back
-//! one coded frame plus its parameter sets, which is what `tohdr_heif::CodedImage`
-//! wants. It is also the right shape for the other platforms — Vulkan Video
-//! (`VK_KHR_video_encode_h265`) and D3D12 Video Encode both produce a raw
-//! bitstream the same way, so a Linux or Windows backend slots in beside this one
-//! without the muxer changing. (Metal is *not* an option: Apple exposes no video
-//! encode API through it, and MoltenVK does not implement Vulkan Video encode.)
-//!
-//! # Bindings
-//!
-//! CoreVideo, CoreMedia and VideoToolbox are plain C APIs, and the accessors this
-//! needs — `CVPixelBufferGetBaseAddressOfPlane` and friends — are not exposed by
-//! `objc2-core-video` 0.3.2. Rather than take three crates for partial coverage,
-//! the handful of C entry points are declared here directly. `objc2-core-foundation`
-//! still provides the CF types, which it covers well.
-//!
-//! # Bitstream form
-//!
-//! VideoToolbox emits length-prefixed NAL units (4-byte big-endian lengths), not
-//! Annex-B start codes, and exposes the `hvcC` atom verbatim through the format
-//! description's sample-description extensions. Both are already the form HEIF
-//! stores, so neither is rewritten here.
+//! VideoToolbox emits length-prefixed NALs and the `hvcC` atom verbatim, both
+//! already the form HEIF stores, so neither is rewritten here.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -192,29 +171,12 @@ const PF_L008: u32 = u32::from_be_bytes(*b"L008");
 
 /// Whether to ask VideoToolbox for the low-latency path.
 ///
-/// `true`, which is not the obvious choice — the property reads like a
-/// latency-vs-quality hint, so a still-image encoder would naively want it off.
-/// Measured on a real 60 MP frame at q85 (`examples/probe_vt_tuning.rs`), it is
-/// faster *and* smaller on both planes:
+/// `true`: a single all-intra frame cannot pay off the quality path's multi-frame
+/// analysis, so the 13-24% it saves is nearly free -- 0.17 dB at q85, nothing at
+/// q100 (`examples/probe_vt_quality.rs`).
 ///
-/// ```text
-///              base ms   base bytes  |  gain ms   gain bytes
-///   false        465.8     17096568  |    206.0      8806880
-///   true         415.4     15979461  |    104.0      6976204
-/// ```
-///
-/// For a single all-intra frame the quality-oriented path spends its extra
-/// analysis on multi-frame decisions that cannot pay off, so the speed is free.
-///
-/// The byte counts above were once read here as "faster *and* smaller, so there
-/// is no trade to make". That inference was wrong, and worth leaving on the
-/// record: fewer bytes at the same requested quality is also what *lower
-/// fidelity* looks like, and bytes alone cannot tell the two apart. Measured
-/// against the reconstruction instead (`examples/probe_vt_quality.rs`), this flag
-/// is worth 0.17 dB at q85 (69.35 against 69.52) and nothing at all at q100
-/// (70.23 either way), for 13–24% less time. The genuinely smaller file traced to
-/// a colour-matrix mismatch in the container, not to `RealTime`. See
-/// [`tohdr_heif::PlaneCodec::base_colour`].
+/// Judge this against the reconstruction, never against file size: fewer bytes at
+/// the same requested quality is also what lower fidelity looks like.
 const DEFAULT_REALTIME: bool = true;
 
 /// One coded frame, in the form `tohdr_heif` stores it.
@@ -310,26 +272,14 @@ const SEI_USER_DATA_UNREGISTERED: u8 = 5;
 /// Drop VideoToolbox's private `user_data_unregistered` SEI from a
 /// length-prefixed NAL stream.
 ///
-/// # Why
+/// Without this, identical pixels encode to different files: one byte per plane,
+/// inside a 59-byte prefix SEI carrying what looks like an encode-time counter.
+/// The coded slices are already byte-identical. Byte equality is how this project
+/// checks a change did not alter output, so a run-to-run difference unrelated to
+/// pixels makes that check useless.
 ///
-/// Without this, two encodes of *identical* pixels produce different files.
-/// Measured on a 60 MP frame: exactly two bytes of a 16.5 MB output differ
-/// between runs, one per plane, and both sit inside a 59-byte prefix SEI whose
-/// UUID is `4756 4adc 5c4c 433f 94ef c511 3cd1 43a8` — VideoToolbox's own
-/// encoder blob, carrying what looks like an encode-time counter. The coded
-/// slices (`IDR_N_LP`) are byte-identical, so the *image* was already
-/// reproducible; only this vendor payload was not.
-///
-/// That matters because byte equality is how this project checks that a change
-/// did not alter output (see the hashes in `docs/engine-comparison.md`). A file
-/// that differs run to run for reasons unrelated to its pixels makes that check
-/// useless, and makes content-addressed caching or dedup downstream see every
-/// re-encode as new bytes.
-///
-/// Dropping it is safe by definition: `user_data_unregistered` carries no
-/// normative decoding information — a decoder that does not recognise the UUID
-/// must ignore the message (H.265 §D.3.1). Nothing else is touched, so any SEI
-/// that *does* matter (mastering display, content light level) survives.
+/// Safe by definition -- `user_data_unregistered` carries no normative decoding
+/// information (H.265 D.3.1). SEIs that do matter survive.
 fn strip_unregistered_sei(data: Vec<u8>) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut off = 0usize;
@@ -464,19 +414,14 @@ extern "C-unwind" fn on_output(
 
 /// Everything about a `VTCompressionSession` that is fixed once it exists.
 ///
-/// Width, height and codec are arguments to `VTCompressionSessionCreate` and
-/// genuinely cannot change. Quality, `RealTime` and the profile are *properties*
-/// and could in principle be re-set on a live session, but they are in the key
-/// anyway, deliberately: a session taken from the pool is then configured
-/// identically to one created fresh, so reuse cannot quietly change what the
-/// encoder does. `examples/probe_vt_session_reuse.rs` checks that the bytes come
-/// out the same either way; keeping the configuration out of the reuse question
-/// is what makes that check meaningful rather than lucky.
+/// Width, height and codec genuinely cannot change. Quality, `RealTime` and the
+/// profile *could* be re-set on a live session, but are in the key deliberately:
+/// a pooled session is then configured identically to a fresh one, so reuse cannot
+/// quietly change what the encoder does. That is what makes
+/// `examples/probe_vt_session_reuse.rs`'s byte-equality check meaningful.
 ///
-/// The cost is that `--max-size`'s quality search misses the pool on each new
-/// quality it tries — which is exactly today's behaviour, not a regression, and
-/// those sessions stay pooled, so a batch that searches the same qualities file
-/// after file starts hitting from the second file on.
+/// The cost is that `--max-size`'s search misses the pool on each new quality it
+/// tries; those sessions stay pooled, so a batch hits from the second file on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct SessionKey {
     width: u32,
@@ -509,29 +454,13 @@ impl SessionKey {
 
 /// A live `VTCompressionSession` and the sink its callback writes into.
 ///
-/// # Why this is worth pooling
+/// Worth pooling because nothing about a session depends on the pixels, only on
+/// [`SessionKey`]. At 12.19 MP the first base plane costs 97.1 ms and a pooled one
+/// 27.0 (`examples/probe_vt_session_reuse.rs`).
 ///
-/// Because nothing about a session depends on the *pixels* — only on
-/// [`SessionKey`] — so a folder of same-sized files can share two of them, and
-/// every file after the first pays nothing. What that is worth turned out to be
-/// about three times what `session_ms` suggested. Per base plane at 12.19 MP
-/// (`examples/probe_vt_session_reuse.rs`):
-///
-/// ```text
-///           session      fill    encode     total
-///   #0         25.7       5.1      66.4      97.1   <- created here
-///   #1          0.0       5.4      24.8      30.1   <- from the pool
-///   #2          0.0       4.7      22.4      27.0
-/// ```
-///
-/// `session_ms` sees the 25.7 ms of `Create` plus property-setting. It does not
-/// see the other ~44 ms, because VideoToolbox brings the encoder up lazily on the
-/// *first frame* — so it hides inside `encode_ms` and looks like the cost of
-/// encoding rather than the cost of starting. Both go away together on reuse:
-/// 97.1 ms becomes 27.0.
-///
-/// This was previously written down here as "30–45 ms, roughly 15% of a 60 MP
-/// conversion", which was `session_ms` mistaken for the whole one-time cost.
+/// Do not read that saving off `session_ms`: it sees only the 25.7 ms `Create`.
+/// VideoToolbox brings the encoder up lazily on the first frame, so the other
+/// ~44 ms hides inside `encode_ms` and looks like encoding.
 struct Session {
     key: SessionKey,
     session: *mut OpaqueVTCompressionSession,
@@ -725,49 +654,26 @@ static POOL_FREED: Condvar = Condvar::new();
 
 /// Upper bound on *idle* sessions kept.
 ///
-/// This is a leak guard, not a memory budget — [`MAX_LIVE_PIXELS`] is the memory
-/// budget. What the count stops is a long batch over many distinct *small* sizes
-/// accumulating a session for every one of them, which no pixel budget would
-/// notice. 16 covers the realistic worst case — two orientations × two planes ×
-/// four concurrent jobs — and beyond it the oldest idle session is dropped, which
-/// degrades to create-per-call rather than failing.
+/// A leak guard, not a memory budget ([`MAX_LIVE_PIXELS`] is that): it stops a long
+/// batch over many distinct *small* sizes accumulating one session each, which no
+/// pixel budget would notice. 16 covers two orientations x two planes x four jobs;
+/// beyond it the oldest idle session is dropped, degrading to create-per-call.
 const MAX_IDLE_SESSIONS: usize = 16;
 
 /// Pixels' worth of live `VTCompressionSession`s to permit at once.
 ///
-/// # Why there has to be a limit at all
+/// The media block runs out and says so only *after* submission -- a negative
+/// callback status, nothing to check up front -- so this gate is the only
+/// defence. Not about one frame's size: 103.8 MP encodes fine, but at 60.2 MP the
+/// 4th live session fails. Idle and in-flight count alike, hence a gate on
+/// sessions that exist rather than a pool cap (`examples/probe_vt_limits.rs`).
 ///
-/// Because the media block runs out, and says so only *after* the frame is
-/// submitted: `EncodeFrame` and `CompleteFrames` both return 0 and the output
-/// callback then reports a negative status (-17691 here), so there is nothing to
-/// check up front the way [`VideoToolboxCodec::supports`] checks bit depth.
-/// Measured with `examples/probe_vt_limits.rs`, and the limit is emphatically not
-/// about one frame's size — a single 103.8 MP frame encodes fine:
+/// 160 MP is 88% of the largest total verified good on the worst geometry
+/// (3 x 60.2), margin against a boundary that is not exactly proportional to
+/// pixels. It costs nothing real: one 60 MP file's two planes are 75 MP.
 ///
-/// ```text
-///   9504x6336 (60.2 MP)    3 live sessions ok, the 4th fails
-///   8064x6048 (48.8 MP)    5 live sessions ok, the 6th fails
-///   4032x3024 (12.2 MP)   15 live sessions ok (the probe's cap, no failure)
-/// ```
-///
-/// Idle and in-flight sessions are interchangeable here: 4 *concurrent* 60 MP
-/// encodes against an empty pool fail at exactly the same point as 4 pooled ones.
-/// So this is a gate on sessions that exist, not a cap on the pool — bounding
-/// only the pool would have left `tohdr batch --jobs 4` broken at 60 MP.
-///
-/// # Why 160 MP
-///
-/// It is 88% of the largest total verified good on the worst geometry (3 × 60.2 =
-/// 180.7 MP), and the failure boundary is not exactly proportional to pixels —
-/// 48.8 MP reached 243.9 MP live while 60.2 MP failed at 240.9 — so the margin is
-/// against a model that is only approximately right. What it costs is nothing on
-/// the case pooling exists for: one 60 MP file's base and gain plane are 75 MP
-/// together, so two concurrent conversions still fit, and a `--max-size` search
-/// keeps two sessions rather than fourteen.
-///
-/// A frame larger than the whole budget is admitted anyway when nothing else is
-/// live — a limit that refused to encode at all would be worse than one the
-/// hardware might refuse.
+/// A frame larger than the whole budget is admitted when nothing else is live --
+/// refusing to encode at all would be worse than letting the hardware refuse.
 const MAX_LIVE_PIXELS: u64 = 160_000_000;
 
 /// Whether to pool at all. On by default; `false` restores create-per-call, so

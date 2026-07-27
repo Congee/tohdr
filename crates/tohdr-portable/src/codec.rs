@@ -1,26 +1,16 @@
 //! hpvca configuration and pixel packing for [`crate::PortableEngine`].
 //!
-//! Both the base and the gain plane are encoded with
-//! `ParallelismStrategy::TilesWpp`: per `spikes/hpvca-probe`, it is the
-//! strategy that saturates cores exactly like the gridded default while still
-//! producing exactly one coded image item (no HEIF `grid`, no `iref`).
-//! [`tohdr_heif::HeifFile::coded_image`] explicitly refuses a `grid` item,
-//! because reassembling tiles into one coded image is a re-encode, not a
-//! remux — so any strategy that grids here would make the whole engine
-//! unusable, not merely slower to remux.
+//! Both planes use `ParallelismStrategy::TilesWpp`: it saturates cores like the
+//! gridded default while still producing exactly one coded image item.
+//! [`tohdr_heif::HeifFile::coded_image`] refuses a `grid`, since reassembling
+//! tiles is a re-encode rather than a remux, so a gridding strategy would make
+//! the engine unusable and not merely slow.
 //!
-//! # The `encode_gray` pitfall
-//!
-//! hpvca's `encode_gray` (and friends) forces a HEIF grid for any plane wider
-//! or taller than 512px **regardless of `ParallelismStrategy`**:
-//! `encode_gray_wide` tiles unconditionally, unlike `encode_rgb_wide`, which
-//! only grids when the strategy actually asks for one
-//! (`needs_tiling(..) && cfg.parallelism.uses_grid()`). A full-resolution gain
-//! plane on a real photo is almost always >512px on one side, so calling
-//! `encode_gray` here would silently defeat the single-item requirement
-//! above. We route the gain plane through `encode_yuv` with a hand-built
-//! monochrome [`hpvca::Yuv`] instead — that path *does* respect
-//! `cfg.parallelism`, the same as the RGB path.
+//! **Do not call `encode_gray` here.** It forces a grid above 512px on either
+//! side *regardless of `ParallelismStrategy`* -- `encode_gray_wide` tiles
+//! unconditionally, unlike `encode_rgb_wide` -- and a full-res gain plane is
+//! always over that. The gain plane goes through `encode_yuv` with a hand-built
+//! monochrome [`hpvca::Yuv`], which does respect `cfg.parallelism`.
 
 use hpvca::{BitDepth, ChromaFormat, EncodeConfig, EncodeError, ParallelismStrategy, Yuv};
 use tohdr_core::{GainPlane, Rgb};
@@ -47,30 +37,13 @@ pub(crate) fn choose_base_chroma(base_quality: u8) -> ChromaFormat {
     }
 }
 
-/// Shared config: quality plus the [`ParallelismStrategy::TilesWpp`]
-/// requirement from the module docs. `chroma` is only meaningful for the RGB
-/// path; the gray path below ignores whatever is set here (see
-/// [`encode_gain_heic`]).
+/// Shared config: quality plus the `TilesWpp` requirement from the module docs.
+/// `chroma` matters only on the RGB path; the gray path ignores it.
 ///
-/// # Why SAO is off
-///
-/// hpvca implements Sample Adaptive Offset with an analysis encode *before* the
-/// real one, so leaving it on roughly doubles the transform/RDO work — its own
-/// docs say as much. It is on by default, and it was the single largest cost in
-/// this engine. `examples/probe_engine_b_speed.rs` at 60 MP, q85:
-///
-/// ```text
-///                          base ms   gain ms      bytes
-///   sao on (the default)     1714.1     970.0     215148
-///   sao off                   643.3     431.1     202559
-/// ```
-///
-/// 2.5x faster *and* 6% smaller — SAO was not paying for its bits here, so this
-/// is not the usual speed-for-quality trade. The same holds on a real 60 MP
-/// photograph, where it is what takes this engine from 15x Engine A to
-/// competitive; see `docs/engine-comparison.md`. Variance boost was measured at
-/// the same time and left alone: it costs ~25% of the base encode with SAO on,
-/// nothing with SAO off, and changes no bytes either way.
+/// SAO is off because hpvca runs an analysis encode before the real one, roughly
+/// doubling transform/RDO work -- it was this engine's single largest cost, and
+/// turning it off is 2.5x faster *and* 6% smaller, so not the usual
+/// speed-for-quality trade. See docs/engine-comparison.md.
 pub(crate) fn config_for(quality: u8, chroma: ChromaFormat) -> EncodeConfig {
     EncodeConfig::default()
         .with_quality(quality.clamp(1, 100))

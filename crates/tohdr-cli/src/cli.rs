@@ -115,17 +115,12 @@ pub struct ConvertArgs {
     /// Colour primaries for the output's SDR base: `p3` or `srgb` (`rec2020`
     /// is accepted for a Rec.2020 source).
     ///
-    /// Display P3 by default, because that is what the hardware and the
-    /// reference file both do: every iPhone capture since 2020 ships a P3 base,
-    /// so it is the compatibility-proven choice rather than the adventurous one.
-    /// It is also not free to give up — rendering into Rec.709 instead discards
-    /// every colour outside it, measured at 12.33% of the pixels of a Lightroom
-    /// P3 export with a worst error of dE 5.35
-    /// (`tohdr-apple/examples/probe_gamut.rs`).
+    /// P3 by default: every iPhone capture since 2020 ships a P3 base, and
+    /// rendering into Rec.709 instead discards 12.33% of a real Lightroom export's
+    /// pixels (docs/gamut.md).
     ///
-    /// This selects the space the source is *rendered into* as well as the one
-    /// the output declares; the two are one decision on purpose, since a file
-    /// whose pixels and label disagree is wrong in a way no consumer can detect.
+    /// One flag for both the space rendered *into* and the one declared, on
+    /// purpose -- a file whose pixels and label disagree is undetectably wrong.
     #[arg(long = "colour-space", alias = "color-space", default_value = "p3",
           value_parser = tohdr_core::Primaries::parse)]
     pub colour_space: tohdr_core::Primaries,
@@ -144,22 +139,18 @@ pub struct ConvertArgs {
     /// The original camera file this input was rendered from, to take its
     /// `MakerNote` from.
     ///
-    /// One tag, and nothing else. A renderer carries most of what the raw states
-    /// about the photograph — measured on `DSC07746.ARW`, 42 of its 60 standard
-    /// Exif tags reach Lightroom's export TIFF — and none of the vendor block,
-    /// because that block is opaque and addressed with file-absolute offsets. So
-    /// this reads it out of the original and pins it back at the offset those
-    /// offsets expect, without rewriting a byte of it.
+    /// One tag, and nothing else. A renderer forwards most standard Exif but never
+    /// the vendor block, which is opaque and addressed with file-absolute offsets --
+    /// so this reads it from the original and pins it back at the offset those
+    /// offsets expect, rewriting no byte of it. Roughly the first 43 KB is read.
     ///
-    /// Reads roughly the first 43 KB of the file, not the whole thing. Refused
-    /// rather than forced when it cannot be done safely; `--json`'s
-    /// `maker_note_graft` says which check stopped it.
+    /// Refused rather than forced when unsafe; `--json`'s `maker_note_graft` names
+    /// the check that stopped it.
     ///
-    /// Worth knowing what you are copying: a `MakerNote` describes the
-    /// *capture*, not the render. `CreativeStyle`, as-shot white balance and DRO
-    /// are the camera's, and a file developed in Lightroom no longer matches
-    /// them. That is what every exiftool user copying one already accepts, and
-    /// it is genuine provenance — but it is not a description of these pixels.
+    /// Note what you are copying: a `MakerNote` describes the *capture*, not the
+    /// render, so `CreativeStyle` and as-shot white balance no longer match a file
+    /// developed in Lightroom. Genuine provenance, but not a description of these
+    /// pixels.
     #[arg(long = "maker-note-from", value_name = "FILE")]
     pub maker_note_from: Option<PathBuf>,
 

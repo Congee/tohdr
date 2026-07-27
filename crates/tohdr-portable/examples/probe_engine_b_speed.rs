@@ -1,20 +1,12 @@
 //! Can Engine B reach Engine A's encode time at 60 MP?
 //!
-//! Engine A encodes the 60.22 MP base + gain in ~590 ms (VideoToolbox, i.e. the
-//! Apple Silicon media block). `probe_engine_b_stages` established that ~98% of
-//! Engine B's time is inside hpvca and essentially none of it is our muxer, so
-//! the only levers that matter are the ones we hand hpvca.
+//! `probe_engine_b_stages` put ~98% of Engine B's time inside hpvca and almost
+//! none in our muxer, so the only levers are the ones we hand hpvca: `sao` (an
+//! analysis encode before the final one), `variance_boost` (per-CTU analysis), and
+//! running the base and gain encodes concurrently.
 //!
-//! This sweeps them:
-//!   * `sao` — hpvca's own docs say SAO "requires an analysis encode before the
-//!     final encode, so disabling it nearly halves the transform/RDO work at a
-//!     small compression-efficiency cost". Default is on.
-//!   * `variance_boost` — extra per-CTU analysis, on by default.
-//!   * base and gain concurrently — they are independent encodes run
-//!     back-to-back today, and neither saturates ten cores on its own.
-//!
-//! Sizes are printed alongside every timing because the first two levers buy
-//! speed with bits, and a speed win that quietly doubles the file is not a win.
+//! Sizes print beside every timing, because the first two levers buy speed with
+//! bits and a win that doubles the file is not one.
 //!
 //! Run: `cargo run --release --example probe_engine_b_speed -p tohdr-portable`
 

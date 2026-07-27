@@ -1,23 +1,19 @@
 //! Extended-range HDR pixels, tone mapping to an SDR base, and the
 //! headroom-consistent derivation that [`crate::derive`] alone cannot express.
 //!
-//! [`crate::Rgb`] is fixed-range: its samples encode `0..=max_value`, so linear
-//! light above SDR diffuse white is unrepresentable ([`crate::derive`] module
-//! docs, "Transfer function"). A gain map's entire purpose is to carry that
-//! above-white light, so the encode pipeline starts from [`HdrRgb`] instead:
-//! linear, `f32`, `1.0` at SDR diffuse white, unbounded above.
+//! [`crate::Rgb`] encodes `0..=max_value`, so above-white light is
+//! unrepresentable. Since carrying that light is a gain map's whole purpose, the
+//! encode pipeline starts from [`HdrRgb`]: linear `f32`, `1.0` at diffuse white,
+//! unbounded above.
 //!
-//! # Why derivation lives here and not in [`crate::derive`]
-//!
-//! [`crate::derive`] takes `alt_headroom` verbatim from its options and computes
-//! `min_log2`/`max_log2` from pixel data, so nothing stops a caller from
-//! declaring more headroom than the plane encodes. That mismatch is exactly the
-//! defect diagnosed in `docs/heic-gainmap-structure.md`: a conformant renderer
-//! weights the map by `(display - base) / (alt - base)` (libavif
-//! `src/gainmap.c:61`), so over-declaring makes it *under-apply* the map and the
-//! flat SDR base shows through. [`derive_consistent`] closes that hole by
-//! deriving the declared headroom from the plane itself, the invariant
-//! `IMG_4913.HEIC` holds and both washed-out exports break.
+//! Derivation lives here rather than in [`crate::derive`] because that module
+//! takes `alt_headroom` verbatim from its options while computing
+//! `min_log2`/`max_log2` from pixels -- so a caller can declare more headroom than
+//! the plane encodes. A conformant renderer weights the map by
+//! `(display - base) / (alt - base)`, so over-declaring makes it *under-apply* and
+//! the flat base shows through. [`derive_consistent`] derives the declared
+//! headroom from the plane itself, the invariant `IMG_4913.HEIC` holds and both
+//! washed-out exports break.
 
 use crate::derive::{self, sample_gain_bilinear, DeriveOptions, EPS, LUMA};
 use crate::par;
@@ -214,31 +210,16 @@ pub fn derive_consistent(
         },
         opts,
     );
-    // The plane can deliver at most max_log2 stops, so that is the honest
-    // declaration — floored at zero, because the ISO field is unsigned.
+    // The plane delivers at most max_log2 stops, floored at zero because the ISO
+    // headroom fields are *unsigned* (only min/max_log2 and the offsets are
+    // signed -- ISO 21496-1 C.2.2, and libavif's types agree). Without the floor a
+    // negative headroom serialised as 0 while `max_log2` stayed negative, breaking
+    // the `max_log2 == alt_headroom` invariant and switching the map off.
     //
-    // An earlier revision of this line set `alt_headroom = max_log2[0]`
-    // unconditionally, on the belief that "the ISO field is signed". It is not:
-    // libavif declares `avifUnsignedFraction baseHdrHeadroom` /
-    // `alternateHdrHeadroom` (`include/avif/avif.h:692-693`) against
-    // `avifSignedFraction gainMapMin[3]` / `gainMapMax[3]` (`:655-657`), and
-    // ISO 21496-1 C.2.2 agrees — only min/max_log2 and the offsets are signed.
-    // So a negative `alt_headroom` cannot survive being written: it round-tripped
-    // through `iso21496::serialize` as 0 while `max_log2` stayed negative,
-    // breaking criterion 5 by the full magnitude (measured: -0.9 in, delta
-    // 0.8999939 out) and switching the map off on every display.
-    //
-    // Flooring costs nothing, which is the part that makes this the right fix
-    // rather than a lossy compromise. A darkening map delivers no gain under
-    // libavif's rules either way: with `alt < base` it takes the sign-flip
-    // branch, `w = -clamp((H - 0) / (alt - 0), 0, 1)`, and for every display
-    // headroom `H >= 0` that ratio is non-positive and clamps to 0. Declaring
-    // 0 loses no achievable gain and keeps `max_log2 == alt_headroom` true
-    // after a write, which the signed version did not.
-    //
-    // `min_log2` is left alone — it is signed, and a map that darkens some
-    // pixels is legal and meaningful; it is only the *headroom* that cannot go
-    // below zero.
+    // The floor is not a lossy compromise: a darkening map delivers no gain under
+    // libavif's rules anyway, since the sign-flip branch clamps its weight to 0
+    // for every display headroom. `min_log2` is left alone -- darkening some pixels
+    // is legal; it is only the headroom that cannot go below zero.
     meta.alt_headroom = meta.max_log2[0].max(0.0);
     (plane, meta)
 }
@@ -289,20 +270,16 @@ pub fn apply_hdr(base: &Rgb, gain: &GainPlane, meta: &GainMapMeta) -> HdrRgb {
 
 /// How much of the gain map a display with `display_headroom_stops` applies.
 ///
-/// Port of libavif's `avifGetGainMapWeight` (`src/gainmap.c:52-63`): linear
-/// interpolation in log2 stops between the base and alternate headrooms, then
-/// `AVIF_CLAMP(.., 0, 1)`, and only *after* the clamp a sign flip when the
-/// alternate is darker than the base. Returns `0.0` when the two headrooms are
-/// equal — libavif calls that case unspecified and declines to apply the map.
+/// Port of libavif's `avifGetGainMapWeight`: interpolate in log2 stops between the
+/// base and alternate headrooms, clamp to `0..=1`, and only *after* the clamp flip
+/// sign when the alternate is darker. `0.0` when the two headrooms are equal, which
+/// libavif leaves unspecified.
 ///
-/// Order matters: clamping first means a negative result is reachable only when
-/// `alt < base` *and* the display sits below the base headroom (both numerator
-/// and denominator negative, so the ratio is positive before the flip).
-/// Returning `-w` there is why the range is `[-1, 1]`, not `[0, 1]`.
+/// Clamp-then-flip is why the range is `[-1, 1]`: a negative result needs
+/// `alt < base` *and* a display below the base headroom.
 ///
-/// This is the function that punishes an over-declared `alt_headroom`: raising
-/// it while the plane's `max_log2` stays put shrinks the weight, so less of the
-/// map is applied and the flat SDR base shows through.
+/// This is what punishes an over-declared `alt_headroom` -- raising it while
+/// `max_log2` stays put shrinks the weight, so the flat SDR base shows through.
 pub fn gain_weight(meta: &GainMapMeta, display_headroom_stops: f32) -> f32 {
     let base = meta.base_headroom;
     let alt = meta.alt_headroom;

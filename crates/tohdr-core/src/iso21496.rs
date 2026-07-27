@@ -1,19 +1,15 @@
 //! ISO 21496-1 gain-map metadata serialization (clause C.2.2).
 //!
-//! Owned by the ISO serializer workstream — see the crate docs. The emitted
-//! payload is container-agnostic: HEIC and AVIF both carry these exact bytes as
-//! a `tmap` item property, and JXL carries them inside its `jhgm` box.
+//! Container-agnostic: HEIC and AVIF carry these exact bytes as a `tmap` item
+//! property, JXL inside its `jhgm` box.
 //!
-//! Layout and bit widths are taken from libavif (ground truth for C.2.2):
-//! - field order/widths: `avifWriteGainmapMetadata` in `src/write.c:983-1023`
-//! - inverse: `avifParseGainMapMetadata` in `src/read.c:2162-2197`
-//! - bit packing is MSB-first, and multi-byte ints are big-endian:
-//!   `avifRWStreamWriteBits` in `src/stream.c:495-524`
-//! - fraction structs (`n`/`d` pairs): `include/avif/avif.h:443-453`
+//! Layout and bit widths follow libavif as ground truth for C.2.2 --
+//! `avifWriteGainmapMetadata` and `avifParseGainMapMetadata`. Bit packing is
+//! MSB-first and multi-byte ints big-endian.
 //!
-//! All fields below happen to be byte-aligned (the only sub-byte packing is a
-//! single flags byte with 2 used bits + 6 reserved), so this is implemented as
-//! plain big-endian byte reads/writes rather than a general bitstream.
+//! Every field here happens to be byte-aligned (the only sub-byte packing is one
+//! flags byte, 2 bits used), so this is plain big-endian byte access rather than a
+//! general bitstream.
 
 use crate::GainMapMeta;
 

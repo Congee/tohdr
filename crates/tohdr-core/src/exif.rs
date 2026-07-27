@@ -1,19 +1,16 @@
 //! JPEG's `APP1` envelope for an Exif block, read and written.
 //!
-//! Only the container is here — nothing in this module knows what a TIFF tag
-//! is. `tohdr_portable::exif` does the parsing and rebuilding; this is the byte
-//! frame around it, in `tohdr-core` because both engines need it and neither
-//! should depend on the other.
+//! Only the container: nothing here knows what a TIFF tag is.
+//! `tohdr_portable::exif` parses and rebuilds; this is the byte frame, in core
+//! because both engines need it and neither should depend on the other.
 //!
-//! Writing an `APP1` looks like a JPEG encoder's job until you see why Engine A
-//! needs it: ImageIO authors that engine's whole file, and the only way to give
-//! it Exif is `CGImageDestinationAddImage`'s properties dictionary — keyed by
-//! `kCGImagePropertyExifDictionary` and friends, not by raw bytes. Rather than
-//! hand-map every tag number onto a CF string key, Engine A wraps the block in
-//! [`SMALLEST_JPEG`] and lets ImageIO parse its own way in. Measured on
-//! `IMG_4913.HEIC`: a bare block yields `count=0` and no properties at all,
-//! while the same block wrapped this way yields 32 Exif, 9 TIFF and 15 GPS
-//! entries. See `crates/tohdr-apple/examples/probe_exif_props.rs`.
+//! This looks like a JPEG encoder's job until you see why Engine A needs it:
+//! ImageIO authors that engine's file and takes Exif only through a properties
+//! dictionary, never as raw bytes. Rather than hand-map every tag number to a CF
+//! key, Engine A wraps the block in [`SMALLEST_JPEG`] and lets ImageIO parse its
+//! own way in. Measured on `IMG_4913.HEIC`: bare gives `count=0` and no
+//! properties, wrapped gives 32 Exif, 9 TIFF and 15 GPS entries. See
+//! `crates/tohdr-apple/examples/probe_exif_props.rs`.
 
 /// A valid 1x1 grayscale baseline JPEG, used only as a carrier.
 ///

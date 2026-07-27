@@ -1,76 +1,29 @@
 //! Reading the gain map out of a Lightroom Classic "HDR Output" TIFF.
 //!
-//! With *HDR Output* checked, LrC 15.4.1 does not write a single HDR image. It
-//! writes a **pair**, in one TIFF. The structure below was read off an export
-//! made with Color Space "HDR sRGB (Rec. 709)"; the colour space changes only
-//! IFD0's embedded ICC profile, which [`read`] now reads to decide what the
-//! output should declare (the plugin asks for "HDR Display P3").
+//! LrC writes a *pair* in one TIFF, not a single HDR image:
 //!
-//! - `IFD0` — the SDR rendition, 16-bit integer, with the export's primaries and
-//!   the sRGB transfer (ICC `sRGB IEC61966-2.1`, 3144 bytes, on that export).
-//! - a SubIFD referenced by tag 330, with `PhotometricInterpretation = 52553`
-//!   and `NewSubfileType = 32` — a full-resolution **3-channel 16-bit gain
-//!   map**, and a 145-byte tag **52557** holding ISO 21496-1 clause C.2.2
-//!   metadata behind a 4-byte zero prefix.
+//! - `IFD0` — the SDR rendition, 16-bit, with the export's ICC profile. [`read`]
+//!   reads that profile to decide what the output declares.
+//! - a SubIFD via tag 330, `PhotometricInterpretation = 52553`,
+//!   `NewSubfileType = 32` — a full-res 3-channel 16-bit gain map, plus tag
+//!   52557 holding ISO 21496-1 C.2.2 metadata behind a 4-byte zero prefix.
 //!
-//! None of those three numbers is in any Adobe documentation we have: not the
-//! LrC 15.3 SDK Guide (in which the string "HDR" does not occur), not
-//! exiftool 13.59, which reports 52553 as `Unknown` and does not name 52557 at
-//! all. They were read off a real export and then confirmed by decoding: the
-//! 141 bytes after the prefix parse as C.2.2 with nothing left over, and the
-//! per-channel unity-gain points the metadata implies (encoded 0.4903 / 0.4873
-//! / 0.4964) land on the measured mode of the plane's own histogram. Metadata
-//! and pixels corroborate each other, which is a stronger check than either
-//! alone.
+//! Those tag numbers are in no Adobe documentation and exiftool 13.59 does not
+//! name 52557; they were read off a real export. See lightroom/README.md.
 //!
-//! ## Why this exists rather than a tone-map
+//! Nothing is tone-mapped here: the headroom is Adobe's and the base is
+//! Lightroom's own rendition, so this just hands [`crate::convert`] a
+//! `(hdr, base)` pair for [`tohdr_core::hdr::derive_consistent`].
 //!
-//! Everything the pipeline usually has to *infer* is already stated in the
-//! file. The declared headroom is Adobe's, not ours. The SDR base is
-//! Lightroom's own rendition of the photographer's edit — which is what most
-//! viewers will actually see — rather than our Reinhard curve applied to a
-//! reconstruction. So this module's job is to hand [`crate::convert`]'s caller
-//! a `(hdr, base)` pair and let the existing, tested
-//! [`tohdr_core::hdr::derive_consistent`] do the rest.
+//! The HDR is reconstructed per channel rather than the map being copied,
+//! because [`GainPlane`] is single-channel and the three channels disagree by up
+//! to 3.43 stops -- picking one visibly shifts saturated highlights. The collapse
+//! to mono then happens once, in the code that owns `max_log2 == alt_headroom`.
 //!
-//! ## Why the HDR is reconstructed instead of the map being copied
-//!
-//! Adobe's map is 3-channel; [`GainPlane`] is single-channel, as is Apple's
-//! own map and every file this project validates against. Collapsing three
-//! channels to one is therefore required by the target format, not optional —
-//! but *how* matters. Measured on a real 60 MP export, the three channels'
-//! decoded log2 gains disagree by 0.043 stops at the median, 0.71 stops at the
-//! 99th percentile and 3.43 stops at the worst pixel, so a careless collapse
-//! (say, taking the green channel) visibly shifts saturated highlights.
-//!
-//! Instead this reconstructs the HDR image *exactly*, per channel, with the
-//! formula `derive`'s module docs already state:
-//!
-//! ```text
-//! alt_linear = (base_linear + base_offset) * exp2(decoded_log2) - alt_offset
-//! ```
-//!
-//! and then lets `derive_consistent` reduce that to a luminance-based mono
-//! plane. The collapse still happens, but it happens once, in the code that
-//! already owns the invariant `max_log2 == alt_headroom`, and against the same
-//! base image the encoder will ship.
-//!
-//! ## What is deliberately not supported
-//!
-//! The 32-bit float variant of the same export is the mirror image of this
-//! one: `IFD0` becomes linear (ICC `sRGB IEC61966-2.1 (Linear RGB Profile)`,
-//! TRC gamma 1.0) carrying the *HDR* side normalized so 1.0 is peak white, the
-//! gain map is byte-for-byte the same, and the metadata swaps roles —
-//! `base_hdr_headroom = 2.8211`, `alternate_hdr_headroom = 0`. Reconstructing
-//! from that direction is the same arithmetic run backwards, but it would
-//! produce the SDR base by *our* application of Adobe's map, which is exactly
-//! the class of claim this project refuses to ship unverified. It is rejected
-//! with a message naming the fix, which costs the user nothing: the 32-bit
-//! export carries no information the 16-bit one lacks, at 1.5x the bytes.
-//!
-//! Compression other than none is also rejected. The plugin forces
-//! `compressionMethod_None`, and hand-inflating LZW/ZIP strips here to support
-//! a combination no caller produces would be untested code.
+//! Two inputs are rejected rather than guessed at: the 32-bit float variant
+//! (same map, roles reversed -- reconstructing the SDR base would mean shipping
+//! *our* application of Adobe's map, and it carries nothing the 16-bit lacks at
+//! 1.5x the bytes), and any compression, which the plugin never emits.
 
 use std::path::Path;
 

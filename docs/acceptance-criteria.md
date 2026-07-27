@@ -118,21 +118,19 @@ This is where both broken exports actually fail, and the failure is shared:
    over-declaring makes it *under-apply* the map and the flat SDR base shows
    through. Enforced in code by `tohdr_core::hdr::derive_consistent`.
 
-   Stated precisely, the invariant is `alt_headroom == max(0, max_log2)`. The
-   floor is not slack — it is forced by the wire format. The two headroom fields
-   are **unsigned** (libavif `include/avif/avif.h:692-693`) while `gain_map_max`
-   is signed (`:655-657`), so a plane that only darkens, `max_log2 < 0`, can
-   declare nothing but zero. `derive_consistent` briefly set
-   `alt_headroom = max_log2` unclamped on the belief the field was signed; that
-   wrote 0 while `max_log2` stayed negative and broke this criterion by the full
-   magnitude on round trip. Flooring costs no achievable gain: under libavif's
-   `alt < base` branch the weight is `-clamp((H - base)/(alt - base), 0, 1)`,
-   which is 0 for every display headroom `H >= 0`, so a darkening map delivers
-   nothing either way. The encoding that *would* apply one —
-   `base_headroom > alt_headroom`, `avif.h:678-681` — makes the base the
-   high-headroom rendition, contradicting criterion 6. A darkening map with an
-   SDR base is inexpressible here, and declaring zero is the honest encoding.
-   Pinned by `iso21496_round_trip_holds_criterion_5_for_a_darkening_map`.
+   Precisely: `alt_headroom == max(0, max_log2)`. The floor is forced by the wire
+   format, not slack — the headroom fields are **unsigned** while `gain_map_max` is
+   signed, so a darkening plane can declare nothing but zero. Setting it unclamped
+   wrote 0 while `max_log2` stayed negative, breaking this criterion by the full
+   magnitude on round trip.
+
+   Flooring costs no achievable gain: libavif's `alt < base` branch weights the map
+   `-clamp((H - base)/(alt - base), 0, 1)`, which is 0 for every display headroom
+   `H >= 0`. The encoding that *would* apply a darkening map needs
+   `base_headroom > alt_headroom`, making the base the high-headroom rendition and
+   contradicting criterion 6. So a darkening map with an SDR base is inexpressible
+   here and zero is the honest encoding. Pinned by
+   `iso21496_round_trip_holds_criterion_5_for_a_darkening_map`.
 6. **[verify]** `base_headroom == 0` for an SDR base.
 7. **[verify]** Passes libavif's own validation (`avifGainMapValidateMetadata`,
    `src/gainmap.c:431-448`): all denominators nonzero, `max >= min`, gamma
@@ -140,20 +138,19 @@ This is where both broken exports actually fail, and the failure is shared:
    — which is why `DSC07752_iso`'s redundant `is_multichannel=1` is survivable
    and not on this list as a defect.
 8. **[verify]** MakerApple tag 48 (`HDRGain`) is **non-negative**, and tag 33
-   (`HDRHeadroom`) is present when tag 48 is — and is itself non-negative, since
-   it selects which branch of Apple's headroom formula applies (`>= 1.0` vs
-   `< 1.0`), so a negative value selects nothing. That last clause went
-   unwritten for a while and only `tohdr verify` enforced it, making the two
-   checkers silently disagree on a file neither had. It is unreachable through
-   our own writers — `tags_from_headroom` hardcodes tag33 to `1.0` and
-   `align_apple_headroom` raises anything below `1.0` to `1.0` — so it guards
-   third-party and hand-corrupted input, not our output. `DSC07752` carries
-   `-0.008120966145`, which `chemharuka/toGainMapHDR`'s unclamped
-   `(3.0 - stops) / 70` branch produces for any headroom above 8x — reproduced
-   to ~2e-10. `tohdr_core::apple::tags_from_headroom` clamps instead.
-   *Caveat, stated because it matters:* that negative value still decodes back
-   to 11.86x through Skia's parser, so it is a symptom of the same
-   over-declaration as #5, **not** independently proven to cause the washout.
+   (`HDRHeadroom`) is present when tag 48 is and is itself non-negative — it selects
+   which branch of Apple's headroom formula applies (`>= 1.0` vs `< 1.0`), so a
+   negative value selects nothing.
+
+   Unreachable through our own writers (`tags_from_headroom` hardcodes tag33 to
+   `1.0`, `align_apple_headroom` raises anything below it), so this guards
+   third-party and hand-corrupted input. `DSC07752` carries `-0.008120966145`, which
+   `chemharuka/toGainMapHDR`'s unclamped `(3.0 - stops) / 70` branch produces for
+   any headroom above 8x — reproduced to ~2e-10.
+
+   *Caveat:* that negative value still decodes back to 11.86x through Skia's parser,
+   so it is a symptom of the same over-declaration as #5, **not** independently
+   proven to cause the washout.
 
    **When our engines write these tags.** Never from nothing — but a conversion
    of a source that *has* an Apple MakerNote now carries it (see

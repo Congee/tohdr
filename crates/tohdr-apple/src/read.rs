@@ -1,22 +1,18 @@
 //! Asking ImageIO what it sees in a file.
 //!
-//! This is the oracle half of Engine A. Every value here comes from Apple's own
-//! decoder rather than our parser, so a bug shared between `tohdr-heif`'s reader
-//! and its writer cannot hide behind it.
+//! The oracle half of Engine A: every value comes from Apple's decoder rather
+//! than our parser, so a bug shared between `tohdr-heif`'s reader and writer
+//! cannot hide behind it.
 //!
-//! # Where the numbers live
+//! ImageIO does not hand back the raw ISO 21496-1 struct. It re-exposes the
+//! parsed `tmap` as a `CGImageMetadata` under the aux dictionary's
+//! `kCGImageAuxiliaryDataInfoMetadata` key, tags in the
+//! `http://ns.apple.com/HDRToneMap/1.0/` namespace -- verified field for field
+//! against `assets/fixtures/img4913_reference.json`.
 //!
-//! ImageIO does not hand back the raw ISO 21496-1 struct. It parses the `tmap`
-//! payload and re-exposes it as a `CGImageMetadata` under the aux dictionary's
-//! `kCGImageAuxiliaryDataInfoMetadata` key, with tags in the
-//! `http://ns.apple.com/HDRToneMap/1.0/` namespace. Verified against
-//! `IMG_4913.HEIC`, whose tags match `assets/fixtures/img4913_reference.json`
-//! field for field — two independent decoders agreeing on the same bytes.
-//!
-//! The per-channel parameters (`GainMapMin`, `GainMapMax`, `Gamma`, and the two
-//! offsets) are nested one level down, inside a `ChannelMetadata` array whose
-//! elements are themselves tags holding a dictionary. Apple writes one element
-//! for a monochrome map.
+//! The per-channel parameters (`GainMapMin`, `GainMapMax`, `Gamma`, both offsets)
+//! are nested inside a `ChannelMetadata` array whose elements are tags holding a
+//! dictionary. Apple writes one element for a monochrome map.
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -435,18 +431,14 @@ fn draw_band(sh: &SharedImage, f: BandFmt, buf: &mut [u8], y0: usize, rows: usiz
 
 /// Render into `out` in horizontal bands, converting each with `convert`.
 ///
-/// Two things fall out of banding. The full-frame target used to be the largest
-/// allocation in the program — 918 MiB of RGBA f32 at 60 Mpx, alive only long
-/// enough to be de-interleaved and dropped — and bands cap it at `BAND_BUDGET`.
-/// More importantly the bands are independent: the render splits into a ~1150 ms
-/// one-off decode charged to the first draw and ~2020 ms of area-proportional
-/// conversion, and only the second part is on the critical path once threads
-/// divide it. Measured on a 60 Mpx raw, total render 3165 ms serial against
-/// 1585 ms across ten threads.
+/// Two things fall out of banding. It caps what was the program's largest
+/// allocation (918 MiB of RGBA f32 at 60 Mpx) at `BAND_BUDGET`. More importantly
+/// the bands are independent, and a render is a ~1150 ms one-off decode charged to
+/// the first draw plus ~2020 ms of area-proportional conversion -- only the second
+/// part divides across threads. 3165 ms serial against 1585 ms on ten threads.
 ///
-/// `convert` receives one band's destination rows and the raw bytes behind
-/// them, and runs on the thread that drew the band, while other threads are
-/// still drawing theirs.
+/// `convert` gets one band's destination rows and the raw bytes behind them, and
+/// runs on the thread that drew the band while others are still drawing.
 fn render_banded_into<T, F>(
     d: &Decoded,
     hdr: bool,

@@ -1,26 +1,15 @@
-//! Everything a source says about the photograph that is neither pixels nor
-//! Exif: its XMP packet, and any opaque item that describes it.
+//! Everything a source says about the photograph that is neither pixels nor Exif:
+//! its XMP packet, and any opaque item that describes it.
 //!
-//! # What counts as "about the photograph"
+//! HEIF answers "about the photograph" in the file itself: a `cdsc` reference
+//! means *this item describes that one*. In `IMG_4913.HEIC` the Exif item and the
+//! Photographic Styles plist point at the primary image and its `tmap`, while four
+//! XMP items point at auxiliary images (sky, skin and portrait mattes, and the
+//! gain map). Carrying those four forward would claim mattes the output does not
+//! have, so the `cdsc` target *is* the filter -- an item is carried only if it
+//! describes the primary.
 //!
-//! HEIF answers this in the file itself. A `cdsc` reference means *this item
-//! describes that one*, and `IMG_4913.HEIC` uses it to draw exactly the
-//! distinction we need:
-//!
-//! ```text
-//! cdsc: 64->[63]  116->[115]  118->[117]  120->[62]  123->[46, 122]  124->[46, 122]
-//! ```
-//!
-//! Items 46 and 122 are the primary image and its `tmap`. So the Exif item (124)
-//! and the Photographic Styles plist (123) describe the photograph, while four
-//! XMP items (64, 116, 118, 120) describe auxiliary images — a sky matte, a skin
-//! matte, a portrait-effects matte, and the gain map. Copying those four forward
-//! would state that this file contains mattes it does not, so the `cdsc` target
-//! *is* the filter: an item is carried only if it describes the primary.
-//!
-//! That is not a heuristic standing in for a missing rule; it is the rule the
-//! container defines, and it happens to be the reason the seven XMP tags missing
-//! from a converted `IMG_4913.HEIC` are missing correctly.
+//! Not a heuristic for a missing rule; it is the rule the container defines.
 
 use std::path::Path;
 

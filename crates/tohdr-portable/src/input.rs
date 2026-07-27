@@ -1,55 +1,29 @@
-//! Pure-Rust decoders for HDR and SDR sources (no Apple frameworks, `image`
-//! crate only).
+//! Pure-Rust decoders for HDR and SDR sources (`image` crate only, no Apple
+//! frameworks).
 //!
-//! # Colour-space assumptions
+//! An unmanaged file carries no answer for "what is linear light here", so each
+//! format gets one stated assumption:
 //!
-//! An unmanaged image file carries no single right answer for "what is
-//! linear light here" — that's a property of a colour profile this crate does
-//! not read. We pick one assumption per format and name it here rather than
-//! pretend otherwise:
+//! - **Float TIFF** — scene-linear, `1.0` at diffuse white, above-white samples
+//!   real. Applying a transfer function would be inventing one.
+//! - **Integer TIFF** — PQ (ST 2084): `code / 65535` through the EOTF, divided by
+//!   [`DEFAULT_REFERENCE_WHITE_NITS`] (203, per BT.2408). That white point is the
+//!   one free parameter -- call [`load_hdr_tiff_pq`] directly to change it.
+//! - **PNG / JPEG** via [`load_hdr`] — plain sRGB SDR with no headroom, since
+//!   neither format has a convention for above-white samples.
+//! - [`load_sdr`] — always sRGB; display-referred files raise no headroom question.
 //!
-//! - **Floating-point TIFF** — assumed **scene-linear** with `1.0` at SDR
-//!   diffuse white and samples above it carrying real headroom. A float file
-//!   can represent above-white light directly, so applying a transfer function
-//!   to it would be inventing one; taking the samples as-is is the only
-//!   reading that preserves what the file already says.
-//! - **Integer TIFF** — assumed **PQ (ST 2084) encoded**: the
-//!   16-bit code value is treated as the PQ signal linearly rescaled to
-//!   `0..=65535` (`code / 65535`), decoded to nits via the ST 2084 EOTF, then
-//!   divided by a reference white so `1.0` lands at SDR diffuse white. That
-//!   reference white — [`DEFAULT_REFERENCE_WHITE_NITS`], 203 nits per ITU-R
-//!   BT.2408 — is this assumption's one free parameter; call
-//!   [`load_hdr_tiff_pq`] directly with a different value if your pipeline
-//!   uses another convention (e.g. Apple's 100 nits).
+//! Splitting TIFF on sample format is load-bearing, not tidiness: a float TIFF
+//! down the integer path gets clamped by `to_rgb16` and then read back as 10000
+//! nits, turning a true 8x peak into a uniform 49.26x plateau.
 //!
-//! Splitting TIFF on sample format is not a nicety. Routing a float TIFF
-//! through the integer path costs the image twice over: `to_rgb16` clamps
-//! every above-white sample to full code, erasing the headroom, and the PQ
-//! EOTF then reads that full code back as 10000 nits. A source with a true
-//! 8x peak decodes to a uniform 49.26x plateau — the highlights are gone and
-//! the declared headroom is 2.6 stops too high.
-//! - **PNG / JPEG** passed to [`load_hdr`]: assumed plain sRGB-encoded SDR
-//!   with *no* headroom (`1.0` is also the maximum representable value).
-//!   Neither format has a widely-used convention for encoding above-white
-//!   samples, so "no headroom" is the honest floor rather than a guess.
-//! - [`load_sdr`] always assumes sRGB, for all three formats — SDR files are
-//!   display-referred by definition, so there is no headroom question there.
+//! Not the right reader for a Lightroom "HDR Output" TIFF: its `IFD0` is
+//! sRGB-encoded, so the PQ assumption invents 5.6 stops, and the HDR lives in a
+//! SubIFD neither `image` nor `tiff` will walk to. [`crate::gainmap_tiff`] owns
+//! that format and `convert` tries it first.
 //!
-//! # What this module is *not* the right reader for
-//!
-//! A Lightroom Classic "HDR Output" TIFF does not need any of these
-//! assumptions, and the integer one is actively wrong for it: its `IFD0` is
-//! **sRGB-encoded, not PQ**, and read as PQ at 203 nits it decodes to a
-//! fictional 5.6 stops of headroom. It is also not a single image — the HDR
-//! lives in a gain map in a SubIFD that neither the `image` crate nor the
-//! `tiff` crate's IFD-chain walk can reach. [`crate::gainmap_tiff`] handles
-//! that format, and `tohdr convert` tries it first; this module sees such a
-//! file only if that reader declined it.
-//!
-//! Get the assumption wrong for a given file and the image decodes without
-//! error but is simply wrong — too flat (an sRGB source read as PQ headroom)
-//! or blown out (the reverse). No amount of pixel-data inspection can catch
-//! that; only knowing how the file was produced can.
+//! A wrong assumption decodes without error and is simply wrong -- too flat or
+//! blown out. Only knowing how the file was produced catches it.
 
 use std::path::Path;
 

@@ -1,18 +1,13 @@
 //! Can ImageIO be handed a bare Exif block, or must Engine A map every tag?
 //!
-//! Engine B carries Exif for free: our muxer already writes the `Exif` item, so
-//! the block passes through as opaque bytes. Engine A has no such door. ImageIO
-//! authors the whole file, and a `CGImage` built from raw pixels carries no
-//! metadata for it to copy — so the only way in is
-//! `CGImageDestinationAddImage`'s properties dictionary, keyed by
-//! `kCGImagePropertyExifDictionary` and friends. Building those by hand means
-//! mapping ~55 tags from TIFF numbers onto CF string keys, per tag, with a
-//! type conversion each: a large amount of code that ages badly.
+//! Engine B carries Exif as opaque bytes through its own `Exif` item. Engine A has
+//! no such door: ImageIO authors the file, and a `CGImage` from raw pixels carries
+//! no metadata, so the only way in is the properties dictionary -- which means
+//! mapping ~55 tags from TIFF numbers onto CF keys with a type conversion each.
 //!
 //! The shortcut worth testing first: an Exif block *is* a TIFF structure, and
 //! ImageIO parses TIFF. If `CGImageSource` will read properties out of a block
-//! that has no pixel data, then Engine A's Exif support is "parse with ImageIO,
-//! hand the dictionaries straight back to ImageIO" — no tag table at all.
+//! with no pixel data, Engine A's Exif support needs no tag table at all.
 //!
 //! Run: `cargo run --release --example probe_exif_props -p tohdr-apple -- <src.heic>`
 

@@ -109,33 +109,19 @@ pub fn checks_for(rb: &ReadBack) -> Vec<Check> {
         }
     }
 
-    // Absent tags are a *skip*, not a failure, even with an Apple aux image
-    // present. `docs/acceptance-criteria.md` §8 settles this: writing no tags
-    // is the one option that never lies, so it is what we do both when the
-    // source had no MakerNote to carry and when the headroom exceeds the 3.0
-    // stops Apple's formula can express. `tools/verify_gainmap.py:587` skips
-    // the same case; failing it here made every TIFF and JPEG conversion exit
-    // non-zero for doing the right thing.
+    // Absent tags are a *skip*, not a failure: writing none is the one option
+    // that never lies, and it is what we do both when the source had no MakerNote
+    // and when the headroom exceeds the 3.0 stops Apple can express
+    // (docs/acceptance-criteria.md 8). Failing here made every TIFF and JPEG
+    // conversion exit non-zero for doing the right thing.
     //
-    // What this check *cannot* currently do is say which of those two happened,
-    // and the reason is a gap in `ReadBack` rather than a fact about the file.
-    // `read::maker_apple_tags` returns `(None, None)` both when the MakerApple
-    // dictionary is absent entirely and when it is present without keys 33/48,
-    // so the two collapse. They are distinguishable in the bytes: above the
-    // ceiling `align_apple_headroom` removes only the pair and leaves the
-    // note's other ~23 tags in place (`tohdr_portable::exif`,
-    // `an_inexpressible_headroom_removes_the_pair_and_keeps_the_rest`), so an
-    // output whose note survives minus the pair proves its source had one.
-    // With dict-presence in `ReadBack` this arm could fail the one case that
-    // is a genuine defect — note present, pair gone, declared headroom at or
-    // under 3.0 stops, meaning the tags were expressible and got dropped
-    // anyway. Until then it must stay silent, because failing on absence is
-    // what broke every TIFF conversion.
+    // It cannot say which of the two happened, because `read::maker_apple_tags`
+    // returns `(None, None)` for both an absent MakerApple dict and one without
+    // keys 33/48. The bytes do distinguish them -- above the ceiling only the pair
+    // is removed, ~23 tags survive -- so with dict-presence in `ReadBack` this arm
+    // could fail the one real defect: note present, pair gone, headroom under 3.0.
     //
-    // A skip is modeled as pass-with-reason, matching `headroom_consistent`
-    // above, rather than adding a third state to `Check`. Note that nothing
-    // consumes that JSON today — the Lightroom plugin shells out only to
-    // `tohdr convert` — so a third state is cheap if a consumer ever wants it.
+    // Skip is modelled as pass-with-reason rather than a third `Check` state.
     let (tags_ok, tags_detail) = match (rb.tag33, rb.tag48) {
         (Some(t33), Some(t48)) => (
             t33 >= 0.0 && t48 >= 0.0,
@@ -231,18 +217,12 @@ fn print_human(label: &str, checks: &[Check]) {
 /// Criterion 11: no display in 1.0..=4.0 stops receives *less* gain from this
 /// file than from the reference, at the same declared headroom.
 ///
-/// "At the same declared headroom" is the condition, not decoration. Comparing
-/// delivered gain between files that declare different headroom measures the two
-/// *scenes*, not the two encoders — a dimmer scene legitimately needs less gain —
-/// so the check applies only when the declarations match and skips otherwise.
-/// What survives is the thing worth catching: identical metadata that we
-/// nonetheless under-apply relative to Apple.
+/// "At the same declared headroom" is a condition, not decoration: comparing
+/// delivered gain across different declarations measures the two *scenes* rather
+/// than the two encoders, so this skips unless the declarations match. What
+/// survives is worth catching -- identical metadata that we under-apply.
 ///
 /// Pure, so it is testable without ImageIO; [`run`] folds it into the verdict.
-/// It previously was not folded in at all — `passed` was computed before the
-/// reference was even inspected, and the reference's checks were printed and
-/// discarded, so this criterion was enforced nowhere despite `--against`
-/// existing to serve it.
 pub fn reference_comparison(rb: &ReadBack, reference: &ReadBack) -> Check {
     let name = "no_worse_than_reference".into();
     let (Some(m), Some(r)) = (&rb.iso_meta, &reference.iso_meta) else {

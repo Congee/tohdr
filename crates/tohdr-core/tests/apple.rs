@@ -80,21 +80,10 @@ fn tags_from_headroom_is_monotonic_non_increasing() {
     }
 }
 
-// --- Real-file anchors -----------------------------------------------------
+// --- Real-file anchors, via `exiftool -MakerNotes:all -HDRGainMapHeadroom` ---
 //
-// ~/Downloads/IMG_4913.HEIC (iPhone, renders correctly):
-//   MakerApple HDR Headroom (tag33) = 1.00999999
-//   MakerApple HDR Gain     (tag48) = 0.05253907666
-//   HDRGainMapHeadroom (exiftool)   = 4.880772
-//
-// ~/Desktop/DSC07752.heic (broken export, washed out):
-//   MakerApple HDR Headroom (tag33) = 1
-//   MakerApple HDR Gain     (tag48) = -0.008120966145
-//   HDRGainMapHeadroom (exiftool)   = 11.863581
-//
-// Measured via:
-//   nix run nixpkgs#exiftool -- -MakerNotes:all -HDRGainMapHeadroom -HDRGainMapVersion <file>
-// Both files are read-only and were not modified to produce these numbers.
+//   IMG_4913.HEIC   (iPhone, correct)  tag33 1.00999999  tag48  0.05253907666  headroom  4.880772
+//   DSC07752.heic   (washed out)       tag33 1           tag48 -0.008120966145 headroom 11.863581
 
 #[test]
 fn reproduces_iphone_reference_headroom() {

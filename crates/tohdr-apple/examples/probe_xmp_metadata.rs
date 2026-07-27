@@ -1,13 +1,13 @@
 //! Can ImageIO carry a source's XMP through `CGImageMetadata`?
 //!
-//! Engine A cannot write an XMP item directly — ImageIO authors the container and
-//! takes XMP only as a `CGImageMetadata`. So carrying a photographer's keywords
-//! depends on two ImageIO behaviours this measures rather than assumes:
+//! Engine A cannot write an XMP item directly -- ImageIO authors the container and
+//! takes XMP only as a `CGImageMetadata` -- so carrying a photographer's keywords
+//! rests on two behaviours this measures rather than assumes:
 //!
 //! 1. does `CGImageMetadataCreateFromXMPData` parse a real packet, and does the
 //!    mutable copy still hold its tags?
-//! 2. does `CGImageDestinationAddImageAndMetadata` then *write* those tags into a
-//!    HEIC, or only the ones in namespaces it recognizes?
+//! 2. does `CGImageDestinationAddImageAndMetadata` write those tags into a HEIC,
+//!    or only the ones in namespaces it recognises?
 //!
 //! ```text
 //! cargo run --release -p tohdr-apple --example probe_xmp_metadata

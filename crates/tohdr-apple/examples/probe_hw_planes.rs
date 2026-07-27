@@ -1,18 +1,13 @@
-//! Does hardware plane encoding + our own muxer reach Engine A's speed?
+//! Does hardware plane encoding plus our own muxer reach Engine A's speed?
 //!
-//! Engine B's deficit is entirely in its plane encoder, not its muxer —
-//! profiling put 23.3 of 30.8 CPU-seconds inside hpvca and ~0.1 ms in
-//! `tohdr_heif`. So this swaps the encoder for the platform media block
-//! (ImageIO → VideoToolbox on Apple Silicon) and keeps `tohdr_heif::mux`,
-//! measuring each stage separately.
+//! Engine B's deficit is its plane encoder, not its muxer (23.3 of 30.8
+//! CPU-seconds inside hpvca, ~0.1 ms in `tohdr_heif`), so this swaps in the
+//! platform media block and keeps `tohdr_heif::mux`, timing each stage.
 //!
-//! Two things have to hold for the approach to be viable at all, and both are
-//! checked here rather than assumed:
-//!   1. each plane must come back as a *single* coded image item, no HEIF
-//!      `grid` — otherwise `coded_image` refuses it and remuxing would mean
-//!      re-encoding;
-//!   2. the gain plane must survive as one channel, since ISO 21496-1 and every
-//!      Apple gain plane measured are `L008` monochrome.
+//! Two preconditions are checked rather than assumed: each plane must come back as
+//! a *single* coded item (a HEIF `grid` would make remuxing a re-encode), and the
+//! gain plane must survive as one channel, since ISO 21496-1 and every Apple gain
+//! plane measured are `L008` monochrome.
 //!
 //! Run: `cargo run --release --example probe_hw_planes -p tohdr-apple -- <file>`
 

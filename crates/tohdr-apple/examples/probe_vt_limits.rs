@@ -1,45 +1,20 @@
 //! Where does the media block stop accepting a still, and does the `--max-size`
 //! search make it worse?
 //!
-//! A Lightroom export of a 60 MP Sony ARW through `--engine portable` with a size
-//! budget failed with
+//! Not geometry -- a single frame encodes fine up to an absurd 103.8 MP. What
+//! fails is the number of sessions alive at once, and idle pooled sessions count
+//! as much as in-flight ones: at 60.2 MP the 4th live session fails, at 48.8 MP
+//! the 6th. `--max-size` hit it because every quality it tries is a distinct
+//! `SessionKey`, leaving three 60 MP sessions idle in the pool. Failure is
+//! asynchronous (`-17691` via the callback), so nothing at the call site refuses.
 //!
-//! ```text
-//!   tohdr: error: encoding within budget: hardware-videotoolbox:
-//!   VideoToolbox encode callback reported -17691
-//! ```
+//! Hence the gate is on *live* sessions ([`MAX_LIVE_PIXELS`](../src/vtenc.rs)),
+//! not on pool size: bounding only the pool would still break
+//! `batch --jobs 4` at 60 MP.
 //!
-//! asynchronously — `EncodeFrame` and `CompleteFrames` both returned 0, so nothing
-//! at the call site refused the job.
-//!
-//! # What this measured
-//!
-//! Not geometry. A single frame of any realistic size encodes fine, up to a
-//! deliberately absurd 103.8 MP. What fails is the *number of sessions alive at
-//! once*, and idle pooled sessions count exactly as much as in-flight ones:
-//!
-//! ```text
-//!   9504x6336 (60.2 MP)    3 live ok, 4th fails      4 concurrent: 1 of 4 failed
-//!   8064x6048 (48.8 MP)    5 live ok, 6th fails      6 concurrent: 3 of 6 failed
-//!   4032x3024 (12.2 MP)   15 live ok (probe's cap)
-//! ```
-//!
-//! The `--max-size` search reached it because every quality it tries is a distinct
-//! `SessionKey`: at 60 MP it failed on the *fourth* of seven attempts, having left
-//! three 60 MP sessions idle in the pool. That is the export the user saw.
-//!
-//! The concurrency column is why the fix is a gate on live sessions
-//! ([`MAX_LIVE_PIXELS`](../src/vtenc.rs)) rather than a smaller pool: bounding
-//! only the pool would have left `tohdr batch --jobs 4` broken at 60 MP with an
-//! empty pool.
-//!
-//! # What it does now
-//!
-//! Re-run it as a regression check — with the gate in place every section should
-//! report zero failures, and the byte counts should be unchanged (the gate decides
-//! *when* a session exists, never how it is configured). The pre-fix numbers above
-//! are what this printed before; there is no switch to turn the gate off, so
-//! reproducing them means reverting it.
+//! Now a regression check -- every section should report zero failures, with byte
+//! counts unchanged, since the gate decides when a session exists and never how it
+//! is configured. There is no switch to turn it off.
 //!
 //! Run: `cargo run --release --example probe_vt_limits -p tohdr-apple`
 

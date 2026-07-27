@@ -69,16 +69,10 @@ function M.sections_for_top_of_dialog(f, property_table)
 					alignment = "right",
 					width = label_width,
 				},
-				-- Two engines, three values. Engine A is ImageIO. Engine B is our
-				-- muxer over a plane codec, and it has two codecs:
-				-- `portable` picks the fastest this machine has -- VideoToolbox,
-				-- the hardware media block, ~6x the software codec -- while
-				-- `hpvca` pins the pure-Rust one, which is the reference path.
-				--
-				-- "Portable (pure Rust)" used to be the label on `portable`,
-				-- which actually runs Apple's hardware encoder: it reports
-				-- itself as `hardware-videotoolbox`. That named the one option
-				-- the menu did not offer.
+				-- Two engines, three values: `portable` picks the fastest codec
+				-- this machine has (VideoToolbox, ~6x software), `hpvca` pins
+				-- the pure-Rust reference path. Do not label `portable` "pure
+				-- Rust" -- it runs Apple's hardware encoder.
 				f:popup_menu {
 					value = bind 'tohdr_engine',
 					items = {
@@ -172,12 +166,9 @@ function M.sections_for_top_of_dialog(f, property_table)
 			},
 			f:row {
 				f:spacer { width = label_width },
-				-- Two caveats, both measured, and neither guessable from the
-				-- checkbox. The engine one is the practical trap: Engine A rebuilds
-				-- its metadata through ImageIO's property model, which has a key for
-				-- Apple's MakerNote and none for anyone else's, so a Sony block
-				-- reaches the output only on the portable engines. `tohdr` says so
-				-- when it happens, and that notice now reaches the dialog.
+				-- The trap worth spelling out: ImageIO's property model has a key
+				-- for Apple's MakerNote and none for anyone else's, so a Sony
+				-- block survives only on the portable engines.
 				f:static_text {
 					title = "Lens, shutter count, creative style. Needs a Portable engine --\n"
 						.. "the Apple engine writes only Apple's. Describes the capture,\n"

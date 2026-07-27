@@ -1,20 +1,14 @@
 //! The XMP copy of the gain-map headroom.
 //!
-//! Apple writes the headroom three times — in the ISO 21496-1 `tmap` payload,
-//! in MakerApple tags 33/48, and here in XMP — and in `IMG_4913.HEIC` all three
-//! agree. That redundancy is the point: different consumers read different
-//! copies, so a file whose copies disagree is one where *something* will read
-//! the wrong number. `DSC07752_iso.heic` dropped this copy entirely;
-//! `DSC07752.heic` kept an XMP headroom of 11.863581 that its gain plane could
-//! not deliver.
+//! Apple states the headroom three times -- ISO 21496-1 `tmap`, MakerApple tags
+//! 33/48, and here -- and in `IMG_4913.HEIC` all three agree. Different consumers
+//! read different copies, so disagreement means something reads the wrong number.
+//! `DSC07752_iso.heic` dropped this copy; `DSC07752.heic` kept an XMP headroom of
+//! 11.863581 its gain plane could not deliver.
 //!
-//! # Units
-//!
-//! `HDRGainMapHeadroom` is **linear**, not stops — the multiplier over SDR
-//! white. `IMG_4913.HEIC` carries `4.880772` alongside an ISO
-//! `alternate_hdr_headroom` of `2.287109` stops, and `2^2.287109 = 4.880771`.
-//! Writing stops here would understate the headroom by an exponent and is the
-//! obvious way to get this wrong.
+//! **`HDRGainMapHeadroom` is linear, not stops** -- the multiplier over SDR white.
+//! `IMG_4913.HEIC` pairs `4.880772` with an ISO `alternate_hdr_headroom` of
+//! `2.287109` stops. Writing stops here understates it by an exponent.
 
 /// Apple's XMP namespace for the gain-map headroom.
 pub const HDR_GAIN_MAP_NS: &str = "http://ns.apple.com/HDRGainMap/1.0/";
@@ -63,27 +57,19 @@ fn headroom_description(alt_headroom_stops: f32) -> String {
 /// Graft the headroom onto a source's own XMP packet, keeping everything the
 /// source said.
 ///
-/// # Why this is textual and not a parse-and-reserialize
+/// Textual, not parse-and-reserialise: the packet is the photographer's
+/// (keywords, IPTC rights, develop history) and a round trip through any partial
+/// XMP model drops whatever it does not cover. Inserting one `rdf:Description`
+/// before `</rdf:RDF>` leaves every other byte in place, and is well-formed by
+/// construction since `rdf:RDF` may hold any number of descriptions.
 ///
-/// The source's packet is the *photographer's*: keywords, title, caption,
-/// rating, IPTC creator and rights, Lightroom's develop history. A round trip
-/// through any partial XMP model silently drops whatever the model does not
-/// cover, and no model here covers Adobe's schemas. Inserting one
-/// `rdf:Description` before the closing `</rdf:RDF>` leaves every other byte
-/// exactly where the source put it — a `rdf:RDF` element may hold any number of
-/// descriptions, so this is well-formed by construction rather than by luck.
+/// An existing `HDRGainMapHeadroom` is appended after, not replaced -- in RDF a
+/// later property of the same subject wins, so this states the output's number
+/// without editing bytes we did not write. See
+/// `tohdr_portable::align_apple_headroom` for the MakerNote half.
 ///
-/// A source that already states `HDRGainMapHeadroom` gets ours added after it.
-/// That is deliberate: the source's copy describes the source's headroom, and in
-/// RDF a later property of the same subject wins, so appending states the
-/// output's number without editing bytes we did not write. Callers that carry an
-/// Apple gain map should be realigning the *source's* copies anyway — see
-/// `tohdr_portable::align_apple_headroom` for the MakerNote half of the same
-/// problem.
-///
-/// `None` when `source` has no `</rdf:RDF>` to insert before, i.e. is not an XMP
-/// packet this function can extend; the caller should fall back to
-/// [`headroom_packet`] rather than ship something malformed.
+/// `None` when there is no `</rdf:RDF>` to insert before; fall back to
+/// [`headroom_packet`] rather than shipping something malformed.
 pub fn merge_headroom_into(source: &[u8], alt_headroom_stops: f32) -> Option<Vec<u8>> {
     const CLOSE: &[u8] = b"</rdf:RDF>";
     // The last one: a packet with nested RDF would otherwise get our description

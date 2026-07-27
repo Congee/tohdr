@@ -280,17 +280,9 @@ do
 	check(not ok, "file_exists is mandatory")
 end
 
--- A `.lrplugin` is self-contained: the binary sits beside the .lua files. There
--- is no PATH search, and there must not be one again.
---
--- Three reasons it was removed, each independently sufficient. (1) Lightroom's
--- Lua sandbox has no `os.getenv`, so nothing in here can read PATH -- the old
--- code searched a hardcoded *guess* at it and crashed the first real export on
--- `attempt to call field 'getenv' (a nil value)`. (2) A bundled binary is
--- checked first and the install step always provides one, so the guess only ran
--- when things were already broken. (3) A stale `tohdr` in one of those guessed
--- prefixes would be found and used silently, converting with a build other than
--- the one just made.
+-- No PATH search, and there must not be one again: the sandbox has no
+-- `os.getenv` (it crashed a real export), so the old code searched a hardcoded
+-- guess and could silently run a stale `tohdr` from another prefix.
 do
 	eq(Cli.defaultPathEnv, nil, "defaultPathEnv is gone")
 	eq(Cli.splitPath, nil, "splitPath is gone")
@@ -445,16 +437,12 @@ end
 print("export preset keys are frozen")
 -- ===========================================================================
 --
--- These strings are not ours to rename. Lightroom writes them into every saved
--- export preset, so a renamed key is simply not found on load: the setting
--- reverts to its default, silently, taking the user's custom binary path with
--- it, and nothing anywhere reports that it happened. That is what a snake_case
--- sweep over this plugin did do, which is why the list now lives in a test
--- instead of in a habit. Adding a key is fine -- add it here too, deliberately.
+-- Not ours to rename: LrC writes these into every saved preset, so a renamed key
+-- is silently not found on load and the setting reverts to its default. A
+-- snake_case sweep did exactly that once. Adding a key is fine -- add it here too.
 --
--- Read as text rather than loaded: the two files import LrView and friends, so
--- a stock interpreter cannot run them, and matching source is enough to catch
--- the rename this guards against.
+-- Matched as text, not loaded: those files import LrView, which a stock
+-- interpreter has no answer for.
 do
 	local frozen = {
 		'tohdr_flavor', 'tohdr_engine', 'tohdr_maxSizeEnabled',

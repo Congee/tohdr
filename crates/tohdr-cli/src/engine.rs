@@ -1,26 +1,17 @@
 //! Selects Engine A (Apple ImageIO) or Engine B (our muxer plus a plane codec)
 //! behind one type, so `convert`/`bench` can be written once against
-//! [`tohdr_core::GainMapEncoder`] instead of branching on every call site.
+//! [`tohdr_core::GainMapEncoder`].
 //!
-//! # Engine B has two codecs
+//! Codec selection lives here because this is the only crate that sees both
+//! implementations. `--engine portable` means "our container, the fastest codec
+//! this machine has" -- VideoToolbox, ~6x the software codec, falling back to
+//! `hpvca` outside what the hardware supports. `--engine hpvca` forces software,
+//! which is how the two are compared.
 //!
-//! Engine B is [`tohdr_heif::MuxEngine`] over a [`tohdr_heif::PlaneCodec`], and
-//! this is the only crate that can see both implementations, so codec selection
-//! lives here. `--engine portable` means "our container, the fastest codec this
-//! machine has": the media block via VideoToolbox, which is ~6x faster than the
-//! software codec and beats Engine A outright, falling back to `hpvca` when the
-//! request is outside what the hardware path can do.
-//!
-//! The choice is made **before** encoding, from the base image's bit depth and
-//! the requested quality, rather than by starting a hardware encode and
-//! recovering from its error. Two reasons: the two codecs produce different
-//! files, so a silent post-hoc substitution would make a benchmark or a
-//! reproducibility claim wrong; and the caller is told which one ran, because
-//! [`Engine::name`] reports the codec rather than the flag.
-//!
-//! `--engine hpvca` forces the software codec — that is how the two are
-//! compared, and how the portable path stays testable on a machine that has
-//! hardware.
+//! The choice is made *before* encoding, from bit depth and requested quality,
+//! rather than by recovering from a hardware error: the two codecs produce
+//! different files, so a silent substitution would invalidate a benchmark or a
+//! reproducibility claim. [`Engine::name`] reports the codec, not the flag.
 
 use std::path::Path;
 
@@ -126,35 +117,20 @@ impl Engine {
     /// Decode a source (plain HDR file or existing gain-map HEIC) into
     /// linear extended-range HDR.
     ///
-    /// Engine B reads with the pure-Rust decoders — the media block encodes, it
-    /// does not decode files — with one asymmetry. The pure-Rust set is
-    /// tif/tiff/png/jpg/jpeg, and a camera RAW is none of those, so before this
-    /// fell back the hardware codec could not touch the format the batch path
-    /// exists for:
+    /// Engine B reads with the pure-Rust decoders, which cover tif/png/jpg but no
+    /// camera RAW -- so [`Engine::Hardware`] falls back to ImageIO for those. That
+    /// loses nothing it claimed (Engine B is a claim about the *encoder*, and
+    /// VideoToolbox is already platform-bound), but [`Engine::Portable`]
+    /// deliberately does not fall back: `--engine hpvca` is the pure-Rust
+    /// reference path, and a silent hop into a system framework would void it.
     ///
-    /// ```text
-    ///   $ tohdr convert DSC07746.ARW --engine portable
-    ///   error: unsupported extension Some("arw") (want tif/tiff/png/jpg/jpeg)
-    /// ```
+    /// Only [`tohdr_portable::Error::UnsupportedInput`] falls through -- a corrupt
+    /// or oversized TIFF must fail as itself, not be re-decoded by another library.
     ///
-    /// Engine B is a claim about the *encoder* and the container, so pairing it
-    /// with ImageIO's decoder loses nothing it was ever claiming — and
-    /// [`Engine::Hardware`] is VideoToolbox, already as platform-bound as a
-    /// decoder can be. [`Engine::Portable`] deliberately does *not* fall back:
-    /// `--engine hpvca` is the pure-Rust reference path, and a silent hop into a
-    /// system framework would make it useless as one.
-    ///
-    /// Only [`tohdr_portable::Error::UnsupportedInput`] falls through. A TIFF
-    /// that is corrupt, or too large, must still fail as itself rather than be
-    /// quietly re-decoded by a different library with different behaviour.
-    /// `primaries` is the space to render *into*, and it is a lossy choice made
-    /// here: ImageIO carries out-of-gamut colour as negative components and the
-    /// loader clamps them, so asking for the narrow space is what discards wide
-    /// colour. See [`tohdr_core::colour`].
-    ///
-    /// The pure-Rust decoders do not take a space — they decode a TIFF or PNG at
-    /// face value — so this converts their output instead, which is exact in the
-    /// widening direction and needs no clamp.
+    /// `primaries` is the space to render *into*, and a lossy choice: ImageIO
+    /// carries out-of-gamut colour as negatives and the loader clamps them. The
+    /// pure-Rust decoders take no space, so their output is converted instead,
+    /// which is exact in the widening direction. See [`tohdr_core::colour`].
     pub fn load_hdr(&self, path: &Path, primaries: Primaries) -> anyhow::Result<HdrRgb> {
         let name = self.name();
         let portable = |path: &Path| -> Result<HdrRgb, tohdr_portable::Error> {

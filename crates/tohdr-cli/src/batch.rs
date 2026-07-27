@@ -1,61 +1,10 @@
 //! `tohdr batch`: a folder of sources -> a folder of gain-map HEICs.
 //!
-//! A single conversion already uses every core for its band draws, so this is
-//! not "parallelism the one-file path lacks". What it recovers is the part of a
-//! conversion that cannot be spread at all: ImageIO charges roughly 1.15 s of
-//! serial RAW decode to the first draw, during which nine of ten cores have
-//! nothing to do. Overlapping files fills that hole with another file's
-//! parallel work.
+//! Not parallelism the one-file path lacks -- a single conversion already uses
+//! every core. What this recovers is ImageIO's ~1.15 s of serial RAW decode, when
+//! nine of ten cores idle. Overlapping files fills that hole.
 //!
-//! Best of three over eight 61 Mpx Sony raws (M1 Max, 10 cores):
-//!
-//! ```text
-//!   jobs 1   2.25 s/file    26.7 files/min
-//!   jobs 2   1.46 s/file    41.0
-//!   jobs 3   1.46 s/file    41.0
-//!   jobs 4   1.34 s/file    44.6
-//!   jobs 5   1.37 s/file    43.8
-//!   jobs 6   1.25 s/file    47.8
-//! ```
-//!
-//! Two jobs take most of what there is to take. Everything from two to six then
-//! sits inside the run-to-run spread, which is about 20% on this machine, so the
-//! apparent edge at six is not something to design around — while its memory
-//! cost, roughly 2.5 GB per job, is real and linear. Hence a default of four.
-//!
-//! Capping each job's own worker count to its share of the cores was tried and
-//! is worse across the board (13.6 s against 10.7 s at three jobs): a job in
-//! ImageIO's serial decode is not using its share, and a static cap stops
-//! anyone else from taking it.
-//!
-//! # Encoder reuse across files
-//!
-//! `--engine portable` on Apple Silicon keeps its `VTCompressionSession`s in a
-//! pool (`tohdr_apple::vtenc`) rather than building one per file, which cuts a
-//! 12.19 MP plane encode from 97 ms to 27 ms. How much of that reaches the wall
-//! clock depends entirely on what fraction of the batch is encoding, and the two
-//! ends of that are far apart. Interleaved A/B, four repeats each,
-//! `--no-session-reuse` against the default:
-//!
-//! ```text
-//!   24 x 12.19 MP TIFF, jobs 4     3.30 s -> 2.74 s      -17%
-//!   24 x 12.19 MP TIFF, jobs 1     4.96 s -> 3.76 s      -24%
-//!    8 x 60.2 MP ARW,   jobs 1    18.86 s -> 17.68 s      -6%
-//!    8 x 60.2 MP ARW,   jobs 4    12.29 s -> 12.45 s     none
-//! ```
-//!
-//! A RAW batch is decode-bound — ImageIO's demosaic is ~1.15 s per file and
-//! single-threaded — so the encode is a tenth of the work, and at four jobs the
-//! saved milliseconds are simply filled by another file's decode. That is the
-//! same argument this module is built on, read in the other direction: when
-//! every core is already busy, making one stage faster moves nothing. The TIFF
-//! rows are what it looks like when the encode *is* the work.
-//!
-//! Reuse is on by default anyway, because it is free: output is byte-identical
-//! (a cold single `convert` and all 24 files of a pooled batch share one
-//! SHA-256) and peak RSS is unchanged to within 0.4%, since the sessions exist
-//! during the encode either way — the pool only keeps them alive between
-//! encodes.
+//! Default of four jobs, and why session pooling is on: docs/performance.md.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

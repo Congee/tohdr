@@ -1,10 +1,7 @@
 //! Gain-map derivation: given an HDR source and an SDR base, compute the gain
 //! plane and the metadata that reconstructs the HDR image from the base.
 //!
-//! # Reconstruction equation
-//!
-//! Per pixel, in linear light, on the luma channel (see "Channel combination"
-//! below):
+//! Per pixel, in linear light, on the luma channel:
 //!
 //! ```text
 //! ratio       = (alt_linear + alt_offset) / (base_linear + base_offset)
@@ -16,40 +13,20 @@
 //! alt_linear' = (base_linear + base_offset) * exp2(decoded) - alt_offset
 //! ```
 //!
-//! This is a direct port of libavif's `avifRGBImageComputeGainMap` /
-//! `avifRGBImageApplyGainMap` (AOMediaCodec/libavif, `src/gainmap.c`):
-//! - ratio + log2 form: `src/gainmap.c:711-713`.
-//! - encode gamma (forward `powf(v, gamma)`): `src/gainmap.c:775-781`.
-//! - decode gamma (inverse `powf(v, 1/gamma)`, `gammaInv` built from
-//!   `1.0f / gamma`): `src/gainmap.c:226-228`.
-//! - apply order — `(base + base_offset) * exp2(log2 * weight) - alt_offset`,
-//!   offset-then-scale-then-offset, alt_offset subtracted last:
-//!   `src/gainmap.c:266-267`. We always fully apply the map (`weight = 1`),
-//!   since `apply()` has no partial-headroom target.
-//! - headroom sign flip (gain stores log-ratio of alt to base; flip if alt is
-//!   darker than base): `src/gainmap.c:718-738`. We store the flip implicitly
-//!   by letting `ratio` go negative in log2 space — no explicit renormalize
-//!   step is needed since we compute `min_log2`/`max_log2` from the signed
-//!   data directly (unlike libavif we skip the outlier-trimming histogram in
-//!   `avifFindMinMaxWithoutOutliers`, `src/gainmap.c:375-429` — we use the raw
-//!   min/max, which is simpler but more sensitive to a single extreme pixel).
+//! Ported from libavif's `avifRGBImageComputeGainMap` / `ApplyGainMap`
+//! (`src/gainmap.c`), including the offset-then-scale-then-offset apply order. We
+//! always apply fully (`weight = 1`), and we take the raw signed min/max rather
+//! than libavif's outlier-trimming histogram -- simpler, but more sensitive to one
+//! extreme pixel.
 //!
-//! # Transfer function
+//! [`Rgb`] samples are sRGB-gamma-encoded in `0..=max_value`, linearised with the
+//! true piecewise EOTF rather than a 2.2 power curve: the linear toe keeps the
+//! black-pixel case from dividing by zero.
 //!
-//! [`Rgb`] samples are treated as **sRGB-gamma-encoded** in `0..=max_value`
-//! (not linear, not PQ/HLG). We linearize with the true sRGB EOTF (piecewise
-//! linear segment + power curve), not a pure 2.2 power curve, because sRGB is
-//! the de-facto encoding for 8/10-bit RGB buffers in this codebase and the
-//! toe segment matters for the black-pixel edge case (a pure gamma curve
-//! divides by zero in its derivative at 0; sRGB's linear toe does not).
-//!
-//! Both `hdr` and `sdr_base` — and the reconstructed output of [`apply`] — are
-//! stored in the *same* `0..=max_value` encoded range. This module does not
-//! model extended-range/float HDR storage: an "HDR" input is simply an image
-//! whose linear values are brighter than the SDR base at the same encoded
-//! bit depth, and reconstruction clamps to `1.0` in linear space before
-//! re-encoding. Representing true above-white HDR headroom would need a
-//! float or extended-range pixel format, which [`Rgb`] does not have.
+//! `hdr`, `sdr_base` and [`apply`]'s output all share that same encoded range.
+//! There is no float/extended-range storage here, so an "HDR" input just means one
+//! whose linear values exceed the base at the same bit depth, and reconstruction
+//! clamps to 1.0 before re-encoding.
 
 use std::sync::LazyLock;
 

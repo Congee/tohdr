@@ -170,14 +170,10 @@ pub struct Budgeted {
 /// carrying `gain_quality` along proportionally so the plane does not stay
 /// expensive while the base is starved.
 ///
-/// # Monotonicity assumption
-///
-/// Binary search is only correct if output size is non-decreasing in quality.
-/// For both engines' rate control that holds in practice but is not guaranteed
-/// by any codec: a quantizer step can occasionally cost bytes elsewhere. The
-/// consequence of a local inversion is a slightly suboptimal quality pick, never
-/// an over-budget result, because every returned candidate is one whose measured
-/// size was checked directly — the search never extrapolates.
+/// Assumes size is non-decreasing in quality, which holds in practice for both
+/// engines but is guaranteed by no codec. A local inversion costs a slightly
+/// suboptimal pick, never an over-budget result: every returned candidate had its
+/// size measured directly, so the search never extrapolates.
 pub fn encode_within_budget<E: GainMapEncoder>(
     engine: &E,
     base: &Rgb,

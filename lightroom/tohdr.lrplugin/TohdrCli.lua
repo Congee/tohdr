@@ -2,11 +2,10 @@
 
 TohdrCli.lua
 
-Pure-Lua logic for building the `tohdr convert` command line and locating
-the `tohdr` binary. Deliberately has ZERO `import 'LrXxx'` calls so it can
-be loaded and unit-tested with a stock `lua`/`luajit` interpreter outside
-Lightroom -- see tests/test_TohdrCli.lua. All filesystem/PATH/plugin-path
-access is pushed to the caller as plain values or injected functions.
+Pure-Lua logic for building the `tohdr convert` command line and locating the
+`tohdr` binary. Has ZERO `import 'LrXxx'` calls on purpose, so it runs under a
+stock `lua` interpreter for tests/test_TohdrCli.lua; all filesystem access is
+injected by the caller.
 
 ------------------------------------------------------------------------]]
 
@@ -16,20 +15,15 @@ local M = {}
 -- Shell quoting
 -- ===========================================================================
 
---- Quote a single argument for POSIX `/bin/sh -c "..."` (what
---- LrTasks.execute runs on macOS). Wrap in single quotes and escape any
---- embedded single quote as '\'' (close quote, escaped quote, reopen quote).
---- Single-quoting is chosen over double-quoting because inside single quotes
---- *nothing* is special -- no `$`, `` ` ``, `\`, or `"` expansion -- which is
---- exactly what a photo path (spaces, unicode, even literal `$` or `` ` ``)
---- needs.
+--- Quote one argument for POSIX `/bin/sh -c`, which is what LrTasks.execute
+--- runs. Single quotes, because inside them nothing expands -- exactly what a
+--- photo path full of spaces, unicode or literal `$` needs.
 function M.quote_arg(s)
 	assert(type(s) == "string", "quote_arg: expected a string")
 	return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
---- Build a full shell command line from a binary path and an array of plain
---- (unquoted) argument strings. Every element is quoted independently.
+--- Build a command line from a binary path and plain unquoted args.
 function M.build_command_line(binary_path, args)
 	local parts = { M.quote_arg(binary_path) }
 	for _, a in ipairs(args) do
@@ -42,10 +36,8 @@ end
 -- `tohdr convert` argument construction
 -- ===========================================================================
 
---- Recognized flavor/engine/tone-map values, kept in one place so the
---- dialog's combo-box choices and the args we emit can't drift apart. Must
---- match crates/tohdr-cli/src/cli.rs's parse_flavor / EngineKind::parse /
---- parse_tone_map.
+-- One copy of the accepted values, so the dialog's choices and the args we emit
+-- cannot drift. Must match cli.rs parse_flavor / EngineKind::parse / parse_tone_map.
 M.FLAVORS = { "apple", "iso", "both" }
 M.ENGINES = { "apple", "portable" }
 M.TONE_MAPS = { "clip", "reinhard" }
@@ -54,27 +46,10 @@ local function is_non_empty(v)
 	return v ~= nil and v ~= ""
 end
 
---- Build the argument array (unquoted plain strings) for
---- `tohdr convert <input> --output <output> [...]` from export settings.
+--- Build the argument array for `tohdr convert <input> --output <output> [...]`.
 ---
---- `settings` fields consumed (all optional except flavor/engine/quality/
---- min_quality/tone_map, which the dialog always sets a default for):
----   tohdr_flavor            "apple" | "iso" | "both"
----   tohdr_engine            "apple" | "portable"
----   tohdr_maxSizeEnabled    boolean
----   tohdr_maxSizeValue      number, e.g. 4
----   tohdr_maxSizeUnit       "MB" | "MiB"
----   tohdr_quality           number 1..100
----   tohdr_minQuality        number 1..100
----   tohdr_toneMap           "clip" | "reinhard"
----   tohdr_gainSubsample     number (optional; omitted -> CLI default of 2)
----   tohdr_headroom          number (optional; omitted -> CLI auto-derives it)
----   tohdr_makerNote         boolean; pass `raw_path` to `--maker-note-from`
----
---- `raw_path` is the original camera file this rendition was developed from, when
---- the caller could find one. Optional and per-photo, so it is an argument rather
---- than a setting: `tohdr_makerNote` is the user's standing choice, this is the
---- one file that choice applies to.
+--- `raw_path` is an argument, not a setting: `tohdr_makerNote` is the user's
+--- standing choice, this is the one per-photo file it applies to.
 function M.build_convert_args(settings, input_path, output_path, raw_path)
 	assert(is_non_empty(input_path), "build_convert_args: input_path is required")
 	assert(is_non_empty(output_path), "build_convert_args: output_path is required")
@@ -117,14 +92,10 @@ function M.build_convert_args(settings, input_path, output_path, raw_path)
 		table.insert(args, tostring(settings.tohdr_gainSubsample))
 	end
 
-	-- Stated rather than left to the CLI's default, so the plugin's two halves
-	-- cannot drift: ExportServiceProvider asks Lightroom for a `p3_hdr`
-	-- intermediate, and this is the same decision spelled to the other side. A
-	-- future change to the CLI's default must not silently retag these exports.
-	--
-	-- On the normal path `tohdr` reads the intermediate's own ICC profile and this
-	-- flag is redundant; it decides the SDR-fallback case, where there is no
-	-- embedded gain map and nothing to read a profile from.
+	-- Stated, not left to the CLI default, so a future default change cannot
+	-- silently retag these exports. Redundant on the normal path (tohdr reads
+	-- the intermediate's ICC profile); it decides the SDR-fallback case, where
+	-- there is no profile to read.
 	table.insert(args, "--colour-space")
 	table.insert(args, "p3")
 
@@ -133,12 +104,9 @@ function M.build_convert_args(settings, input_path, output_path, raw_path)
 		table.insert(args, tostring(settings.tohdr_headroom))
 	end
 
-	-- The one thing the intermediate cannot carry. Lightroom renders most of what
-	-- the raw says about the photograph into the TIFF's Exif and none of the
-	-- vendor MakerNote, so `tohdr` reads that block out of the original instead.
-	-- Both conditions matter: the user asked for it, and we actually found a file
-	-- to read. Nothing is passed when either is missing, and then `tohdr` behaves
-	-- exactly as it did before this existed.
+	-- The one thing the intermediate cannot carry: LrC renders the raw's Exif
+	-- but drops the vendor MakerNote. Passed only when the user asked *and* a
+	-- file was found, so absent means tohdr behaves as it did before.
 	if settings.tohdr_makerNote and is_non_empty(raw_path) then
 		table.insert(args, "--maker-note-from")
 		table.insert(args, raw_path)
@@ -153,45 +121,19 @@ end
 -- Binary location
 -- ===========================================================================
 
--- There is deliberately no PATH search here, and no `defaultPathEnv` /
--- `splitPath` to support one. `.lrplugin` bundles are self-contained: the
--- binary is installed beside these `.lua` files, and that is the only
--- automatic lookup.
---
--- What was removed, and why it could not be repaired:
---
---   * There is no PATH to read. Lightroom's Lua sandbox has no `os.getenv` and
---     no Lr API exposes the environment, so the old code was not searching
---     `PATH` -- it was searching a hardcoded guess at it (/opt/homebrew/bin,
---     /usr/local/bin, ~/.cargo/bin, ~/.nix-profile/bin,
---     /run/current-system/sw/bin). That guess encodes package-manager
---     assumptions with no way to check them.
---   * It was unreachable anyway. A bundled binary is checked first and the
---     install step always provides one, so the guess only ever ran in a
---     configuration that was already broken.
---   * It was actively dangerous. A stale `tohdr` in one of those prefixes
---     would be found and used silently, converting with a build other than the
---     one you just made -- exactly the class of quiet wrongness this project
---     exists to prevent.
---
--- An explicit **Custom tohdr path** still works, because that is a deliberate
--- choice by the user rather than a guess by us; it is what to point at
--- `target/release/tohdr` during development.
+-- There is deliberately no PATH search, and do not add one. The sandbox has no
+-- `os.getenv`, so the code removed from here was not reading PATH but guessing
+-- at it (homebrew, /usr/local, ~/.cargo, ~/.nix-profile) -- which could silently
+-- run a stale `tohdr` from another prefix. A bundled binary is always installed,
+-- so the guess was unreachable anyway. An explicit custom path still works,
+-- being the user's choice rather than ours.
 
 --- Turn what `LrTasks.execute` returns into the exit code a person expects.
 ---
---- The SDK documents the return as "the exit status of the OS shell", and the
---- call as "similar to Lua's built-in os.execute()". On macOS that is the raw
---- wait(2) status from system(3), which packs a normal exit code into the high
---- byte. So `tohdr` exiting 1 arrives here as 256 -- and the first real export
---- inside Lightroom duly reported "tohdr failed (exit 256)" to the user, a
---- number that appears nowhere in the CLI.
----
---- Only exact multiples of 256 are unpacked. Everything else passes through:
---- Windows returns a plain exit code, and on POSIX a signal death shows up as
---- 128+signal, which is already the familiar shell rendering. A small nonzero
---- value is genuinely ambiguous between those two platforms and there is no
---- information here to resolve it, so this does not pretend to.
+--- macOS gives back the raw wait(2) status, which packs the exit code into the
+--- high byte -- `tohdr` exiting 1 arrives as 256. Only exact multiples of 256
+--- are unpacked: Windows returns a plain code, and POSIX signal deaths are
+--- 128+signal, already the familiar rendering.
 function M.decode_exit_status(status)
 	local n = tonumber(status)
 	if n == nil then
@@ -203,13 +145,8 @@ function M.decode_exit_status(status)
 	return n
 end
 
---- Turn a nonzero exit status plus captured output into one message worth
---- showing a user.
----
---- `tohdr` prints its own diagnosis on stderr (which quality it tried, why a
---- budget could not be met, and what to change), so the last non-empty line is
---- almost always the actionable part. Swallowing it and reporting only an exit
---- code would throw away the useful half.
+--- One message worth showing a user, from a nonzero status plus captured output.
+--- The last non-empty line is `tohdr`'s own diagnosis and the actionable half.
 function M.summarize_failure(status, output)
 	status = M.decode_exit_status(status)
 	local last
@@ -224,33 +161,16 @@ function M.summarize_failure(status, output)
 	return "tohdr failed (exit " .. tostring(status) .. ") with no output"
 end
 
---- Where the gain map in a successful run's output came from.
+--- Where a successful run's gain map came from: `"lightroom-embedded"`,
+--- `"derived"`, or nil when the output says neither.
 ---
---- `"lightroom-embedded"` when `tohdr` transcoded the intermediate's own gain
---- map, `"derived"` when it computed one from the pixels, `nil` when the output
---- says neither.
+--- Reads the JSON, because with `--json` the CLI prints *only* that -- a gate
+--- searching for the prose line could never match. The text forms are still
+--- recognised for runs without `--json`, anchored to line start because the
+--- *transcoded* message ends "...not derived".
 ---
---- This reads the JSON, not the prose, and that is the whole point of it. The
---- plugin passes `--json`, and with `--json` the CLI prints *only* the JSON object
---- -- the human-readable "  gain map: derived from the source's HDR pixels" line
---- lives in the other branch of `convert::run` and is never emitted. So the gate
---- that searched for that line could not match, and an SDR intermediate would have
---- produced a washed-out HEIC reported as a success: the one failure this plugin
---- exists to catch, silently unguarded.
----
---- Matched as a pattern rather than parsed, because Lightroom's Lua has no JSON
---- decoder and this is one flat object of scalars from a serde struct -- no
---- nesting, no escapes in this field's value. The text forms are still recognized
---- so a run without `--json` is not a blind spot, and they are anchored to the
---- start of a line for two reasons: a filename containing "gain map: derived"
---- would otherwise fake one, and the *transcoded* line ends "...not derived", so a
---- plain substring search for the word finds it in the message that means the
---- opposite.
----
---- `nil` for an output that names no source -- an older binary, or a future one
---- that renames the field. Callers must treat that as "do not fail the photo": a
---- wrong accusation deletes a good file, where a missed one leaves a file the user
---- can still look at.
+--- nil means "do not fail the photo": a wrong accusation deletes a good file,
+--- a missed one leaves a file the user can still look at.
 function M.gain_map_source(output)
 	local text = tostring(output or "")
 	local from_json = text:match('"gain_map_source"%s*:%s*"([^"]*)"')
@@ -268,31 +188,16 @@ function M.gain_map_source(output)
 	return nil
 end
 
---- Pull the advisory lines out of a *successful* run's output.
+--- Pull `note:`/`warning:` lines out of a successful run's output, deduplicated
+--- with counts so a 200-photo export reports each condition once.
 ---
---- `tohdr` prints `note:` when it did something the user did not ask for but
---- which is defensible, and `warning:` when it had to guess or drop something.
---- The colour-space report is the case that matters most here: the plugin asks
---- Lightroom for `p3_hdr` and asks `tohdr` for `--colour-space p3`, and if
---- Lightroom ignores that request `tohdr` says so -- either
----
----   note: <file> is srgb by its own ICC profile, so the output declares ...
----   warning: <file> embeds no ICC profile this build recognises ...
----
---- Until this function existed, both lines were captured and then thrown away on
---- the success path, so a Lightroom that quietly exported the wrong colour space
---- produced a HEIC labelled from a default instead of from the file, and nothing
---- told anybody. Silence from an export now means the request was honoured.
----
---- Deduplicated with counts, because a 200-photo export hits the same condition
---- 200 times and one dialog listing it once is the readable form. Returns a list
---- of `{ text = <line>, count = <n> }` in first-seen order, empty when the run
---- had nothing to say.
+--- Matters most for the colour space: if LrC ignores the `p3_hdr` request,
+--- `tohdr` says so here. Silence now means the request was honoured.
 function M.advisories(output)
 	local order, seen = {}, {}
 	for line in tostring(output or ""):gmatch("[^\r\n]+") do
-		-- Match the CLI's own prefix rather than a bare "note:", so a filename
-		-- or an Exif string containing the word cannot fake an advisory.
+		-- Anchored on the CLI's own `tohdr:` prefix, so a filename containing
+		-- the word cannot fake an advisory.
 		local text = line:match("^%s*tohdr:%s*(note:.*)$") or line:match("^%s*tohdr:%s*(warning:.*)$")
 		if text then
 			if seen[text] then
@@ -306,11 +211,8 @@ function M.advisories(output)
 	return order
 end
 
---- Render what `advisories` collected across a whole export into one message.
----
---- Returns nil when there is nothing to report, so the caller can skip showing a
---- dialog at all -- an export that went exactly as asked must stay silent, or the
---- dialog becomes noise that gets clicked away without reading.
+--- Render collected advisories into one message, or nil when there is nothing
+--- to say -- a dialog that always appears gets clicked away unread.
 function M.summarize_advisories(list)
 	if not list or #list == 0 then
 		return nil
@@ -343,20 +245,11 @@ function M.merge_advisories(into, list)
 	return into
 end
 
---- Decide which `tohdr` binary to run, in priority order:
----   1. explicit user-configured path (settings dialog "Custom tohdr path")
----   2. the bundled binary beside the plugin (plugin_binary_path)
+--- Which `tohdr` to run: the user's custom path, else the bundled binary. No
+--- third option, and nothing is located by guessing.
 ---
---- There is no third option -- see the note above `summarize_failure`. Nothing
---- is ever located by guessing.
----
---- All existence checks go through the injected `file_exists(path) -> bool`
---- so this function has no direct filesystem access and is fully testable
---- with a fake.
----
---- Returns `path, nil` on success, or `nil, error_message` if nothing was
---- found -- callers should show `error_message` to the user rather than
---- fail silently.
+--- Existence goes through the injected `file_exists`, so this stays testable.
+--- Returns `path, nil`, or `nil, error_message` for the caller to show.
 function M.locate_binary(opts)
 	local user_path = opts.user_binary_path
 	local plugin_binary_path = opts.plugin_binary_path
@@ -373,8 +266,8 @@ function M.locate_binary(opts)
 		return plugin_binary_path, nil
 	end
 
-	-- Name the expected location, because it is now the only automatic one and
-	-- a user has no other way to guess where we looked.
+	-- Name the expected location: it is the only automatic one, and the user has
+	-- no other way to know where we looked.
 	return nil, "Could not find the 'tohdr' binary. It belongs beside the "
 		.. "plugin's .lua files"
 		.. (is_non_empty(plugin_binary_path) and (" (expected at " .. plugin_binary_path .. ")") or "")

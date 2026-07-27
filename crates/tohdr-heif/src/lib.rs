@@ -1,23 +1,15 @@
 //! ISOBMFF/HEIF reading and gain-map muxing.
 //!
-//! Engine B owns its container rather than delegating to a HEIF library: the
-//! structure a gain-map HEIC needs (a `tmap` derived item, an auxiliary image
-//! with Apple's URN, and an `auxl` back-reference, all over one shared gain-map
-//! image item) is exactly the part general-purpose HEIF writers do not expose.
-//! We must own the muxer anyway, so the HEVC encoder stays unmodified and this
-//! crate assembles its output.
+//! Engine B owns its container because the structure a gain-map HEIC needs -- a
+//! `tmap` derived item, an auxiliary image with Apple's URN, and an `auxl`
+//! back-reference over one shared gain-map item -- is exactly what general-purpose
+//! HEIF writers do not expose. Reverse-engineered from `IMG_4913.HEIC`; see
+//! docs/heic-gainmap-structure.md.
 //!
-//! The target structure is not guesswork — it is reverse-engineered byte by byte
-//! from `IMG_4913.HEIC`; see `docs/heic-gainmap-structure.md`.
-//!
-//! # Scope
-//!
-//! Reading: enough to locate and extract image items, their `hvcC` configuration
-//! and coded data, and any gain map (either flavor). Deliberately not a general
-//! HEIF decoder — no grid reassembly beyond reporting it, no pixel decoding.
-//!
-//! Writing: one base image, one gain-map image, and the boxes that tie them
-//! together in either or both flavors.
+//! Reading covers locating image items, their `hvcC` and coded data, and either
+//! gain-map flavour. Not a general decoder: no grid reassembly beyond reporting
+//! it, no pixel decoding. Writing covers one base, one gain map, and the boxes
+//! tying them together in either or both flavours.
 
 #![forbid(unsafe_code)]
 

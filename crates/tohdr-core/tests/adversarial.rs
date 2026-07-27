@@ -88,25 +88,12 @@ fn one_nan_sample_does_not_wipe_the_whole_gain_map() {
 /// written to disk, which for a darkening map means the floored form
 /// `alt_headroom == max(0, max_log2)`.
 ///
-/// This test previously asserted the *unfloored* equality plus
-/// `base_headroom != alt_headroom`, on the reasoning that `base == alt` makes
-/// `gain_weight` return 0 for every display and so disables the map. The first
-/// assertion was unsatisfiable on disk and the second was unachievable at all:
-///
-/// - The ISO headroom fields are unsigned (libavif
-///   `include/avif/avif.h:692-693`), so a negative `alt_headroom` serialized to
-///   0 while `max_log2` stayed negative. The test passed only because it never
-///   serialized — it checked the in-memory struct. `iso21496_round_trip_holds_
-///   criterion_5_for_a_darkening_map` below covers the gap it left.
-/// - Keeping `base != alt` would not have kept the map alive anyway. With
-///   `alt < base` libavif takes its sign-flip branch,
-///   `w = -clamp((H - base) / (alt - base), 0, 1)`, which is 0 for every
-///   display headroom `H >= 0`. And the encoding that *would* apply a darkening
-///   map — `base_headroom > alt_headroom`, per `avif.h:678-681` — makes the
-///   base the high-headroom rendition, contradicting criterion 6's
-///   `base_headroom == 0` for an SDR base. A darkening map with an SDR base is
-///   inexpressible in this model, so declaring zero gain is the honest encoding
-///   rather than a lossy one.
+/// Assert the *floored* equality, and do not add `base_headroom != alt_headroom`:
+/// the ISO headroom fields are unsigned, so a negative `alt_headroom` serialises
+/// to 0 while `max_log2` stays negative -- checking the in-memory struct hides
+/// that. A darkening map with an SDR base is inexpressible in this model anyway
+/// (libavif's sign-flip branch weights it 0 for every display), so declaring zero
+/// gain is the honest encoding.
 #[test]
 fn invariant_holds_even_when_the_base_is_brighter_than_the_source() {
     // An independently graded SDR base with lifted shadows, brighter than the

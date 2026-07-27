@@ -1,26 +1,18 @@
-//! `tohdr bench`: compare the Apple and portable engines on one input —
-//! wall time and output size.
+//! `tohdr bench`: compare the Apple and portable engines on one input -- wall time
+//! and output size.
 //!
-//! The source is loaded and the gain map derived **once**, and both engines
-//! encode those identical bytes. Letting each engine load the source itself
-//! would fold two different TIFF decoders into the measurement, so the
-//! numbers would no longer isolate the thing being compared. The load and
-//! derive cost is reported separately rather than hidden.
+//! The source is loaded and the gain map derived *once*, and both engines encode
+//! those identical bytes, so two TIFF decoders cannot leak into the measurement.
+//! Load and derive are reported separately.
 //!
-//! # First iteration versus the rest
+//! First iteration and mean are both reported, because on the hardware codec they
+//! answer different questions: the first encode of a geometry creates a
+//! `VTCompressionSession` and brings the pipeline up (97.1 ms against 27.5 at
+//! 12.19 MP), so the mean is what `batch` gets per file and the first is what one
+//! cold `convert` gets. Collapsing them would flatter or slander the engine
+//! depending only on `--iterations`.
 //!
-//! Repeating an encode is not the same as doing it once, and on the hardware
-//! codec the difference is large: the first encode of a given geometry creates a
-//! `VTCompressionSession` and brings the media block's pipeline up, and both are
-//! then reused (`tohdr_apple::vtenc`'s session pool). Measured at 12.19 MP, the
-//! base plane costs 97.1 ms the first time and 27.5 ms after — so a mean over
-//! iterations answers "what does `tohdr batch` get per file", while the first
-//! iteration alone answers "what does one `tohdr convert` in a cold process
-//! get". Both are reported, because collapsing them into one mean would
-//! flatter or slander the engine depending only on `--iterations`.
-//!
-//! `--no-session-reuse` forces every iteration to be a first iteration, which is
-//! how the pool's worth is measured.
+//! `--no-session-reuse` makes every iteration a first iteration.
 
 use std::time::{Duration, Instant};
 

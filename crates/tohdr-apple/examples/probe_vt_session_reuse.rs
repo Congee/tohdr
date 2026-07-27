@@ -1,20 +1,14 @@
 //! Does reusing a `VTCompressionSession` change the bytes, and what does it buy?
 //!
-//! Creating one costs 30–45 ms and depends on nothing but geometry and settings,
-//! so a batch that converts a folder of same-sized files should create two
-//! sessions and not two hundred. The reason that is not obviously free is
-//! reproducibility: `vtenc` guarantees that identical pixels give identical
-//! bytes (`strip_unregistered_sei`), and a stateful encoder could easily make
-//! frame 2 of a session differ from frame 1 of a fresh one — which would mean a
-//! file's output depended on its *position in the batch*. That is a worse
-//! property than the milliseconds are worth, so it is checked here first and the
-//! speed is reported second.
+//! Bytes first, speed second. `vtenc` guarantees identical pixels give identical
+//! bytes, and a stateful encoder could make frame 2 of a session differ from frame
+//! 1 of a fresh one -- which would make output depend on position in the batch, a
+//! worse property than the milliseconds are worth.
 //!
-//! What makes it plausible that the bytes match: every frame is an IDR with
-//! `MaxKeyFrameInterval = 1` and no reordering, so it refers to nothing before
-//! it, and an IDR slice header carries no `pic_order_cnt_lsb` at all (H.265
-//! §7.3.6.1) — so even the frame's position cannot leak into the slice header.
-//! Plausible is not measured, hence this file.
+//! It is plausible they match: every frame is an IDR with
+//! `MaxKeyFrameInterval = 1` and no reordering, and an IDR slice header carries no
+//! `pic_order_cnt_lsb` (H.265 7.3.6.1), so position cannot leak in. Plausible is
+//! not measured, hence this file.
 //!
 //! Run: `cargo run --release --example probe_vt_session_reuse -p tohdr-apple -- <hdr.tiff> [iters]`
 

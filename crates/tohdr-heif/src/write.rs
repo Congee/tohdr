@@ -1,21 +1,14 @@
 //! Gain-map HEIC muxer: [`mux`].
 //!
-//! # Two-pass offsets
+//! `iloc` extents into `mdat` need each image's absolute file offset, which
+//! depends on the size of everything before `mdat` -- including `iloc`. The cycle
+//! breaks because a box's serialised *size* never depends on the value in a
+//! fixed-width field: write `iloc` with placeholder offsets, record where those
+//! 4-byte fields landed, finish `meta`, then patch in the real offsets. One build
+//! pass, one small patch pass.
 //!
-//! `iloc` extents that point into `mdat` (`construction_method` 0) need the
-//! *absolute file offset* of each image's bytes, but that offset depends on
-//! the size of everything before `mdat` — including `iloc` itself. We break
-//! the cycle by exploiting that a box's serialized *size* never depends on
-//! the *value* written into a fixed-width field: we write `iloc` with
-//! placeholder offsets (0) and record where those 4-byte fields landed in
-//! the output buffer, finish serializing `meta` (now its length is known),
-//! compute `mdat`'s body start from `ftyp_len + meta_len + 8`, and go back
-//! and patch the placeholders with the real absolute offsets. One pass to
-//! build, one small patch pass — no separate size-accounting phase needed.
-//!
-//! `idat`-relative extents (`construction_method` 1) don't have this
-//! problem: they're relative to `idat`'s own body, which we control and
-//! know immediately as we lay out its contents.
+//! `idat`-relative extents (`construction_method` 1) are exempt -- they are
+//! relative to `idat`'s own body, known immediately.
 
 use crate::boxes::{begin_box, begin_fullbox, end_box};
 use crate::{Chroma, ColourInfo, MuxRequest, Result};

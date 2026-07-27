@@ -1,20 +1,13 @@
 //! Turn anything ImageIO can decode into the `<hdr.tiff>` every probe here asks
 //! for.
 //!
-//! # Why this exists
+//! The measurements in `docs/` are taken on TIFF fixtures, because the probes
+//! decode with `tohdr_portable` on purpose -- either engine's own decoder would
+//! privilege its own reading. Nothing in the tree could *produce* one, so a
+//! deleted fixture took its table row with it.
 //!
-//! Most of the measurements in `docs/` are taken on TIFF fixtures, because
-//! `tohdr bench` and the probes decode with `tohdr_portable` on purpose — using
-//! either engine's own decoder would privilege that engine's reading of the
-//! input. But nothing in the tree could *produce* one, so a fixture that got
-//! cleaned up took its table row with it: the 60 MP source behind
-//! `docs/engine-comparison.md`'s largest row could not be regenerated, only
-//! quoted.
-//!
-//! Float32 RGB, linear, extended range — the one TIFF flavour
-//! `tohdr_portable::load_hdr` reads back as linear light rather than as PQ or as
-//! SDR sRGB, so a round trip through this is lossless in the sense that matters:
-//! `load_hdr(export(x)) == x`.
+//! Float32 RGB, linear, extended range: the one flavour `load_hdr` reads back as
+//! linear light rather than PQ or SDR sRGB, so `load_hdr(export(x)) == x`.
 //!
 //! Run: `cargo run --release --example export_hdr_tiff -p tohdr-apple -- <src> <out.tiff>`
 

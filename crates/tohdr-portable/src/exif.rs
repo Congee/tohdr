@@ -1,61 +1,30 @@
 //! Lifting a source file's Exif block out, so a conversion keeps the camera,
-//! lens, exposure and date instead of dropping them.
+//! lens, exposure and date.
 //!
-//! Every supported source already carries Exif as one contiguous TIFF
-//! structure — a HEIF `Exif` item's payload, a JPEG `APP1` segment's payload,
-//! or, for a Lightroom TIFF, the file's own `IFD0`. So this module has one job
-//! in three dressings: find that structure, then re-emit it as a standalone
-//! TIFF block that [`tohdr_heif::MuxRequest::exif`] can carry.
+//! Every supported source carries Exif as one contiguous TIFF structure (a HEIF
+//! `Exif` item, a JPEG `APP1` payload, or a Lightroom TIFF's own `IFD0`), so this
+//! finds that structure and re-emits it standalone for
+//! [`tohdr_heif::MuxRequest::exif`]. Selection is a *denylist*, so an unknown tag
+//! is carried rather than lost.
 //!
-//! ## What is kept
+//! It is rebuilt rather than copied for two reasons:
 //!
-//! Everything the source states about the *photograph*: `IFD0`, the Exif, GPS
-//! and Interoperability sub-IFDs, the `MakerNote`, and `IFD1`'s thumbnail. The
-//! selection is a denylist, so a tag nobody here has heard of is carried rather
-//! than lost.
+//! - A TIFF `IFD0` describes pixels too. Its `StripOffsets` and `SubIFDs` point
+//!   into a file the output does not contain, so copying them yields live
+//!   pointers into nothing. That is what [`IFD0_DROP`] removes, and why the list
+//!   is by tag number: only we know those offsets no longer lead anywhere.
+//! - A value addressed relative to the TIFF header cannot move. `MakerNote`
+//!   (`0x927C`) is the one that matters -- Apple's, Canon's and Sony's all use
+//!   offsets into the enclosing TIFF -- so [`serialize`] pads it back to the exact
+//!   block-relative offset the source had, and vendor detection is never needed.
 //!
-//! ## Why it is rebuilt rather than copied
+//! ICC (`0x8773`) and an `IFD0` XMP packet (`0x02BC`) are left out for a different
+//! reason: the `colr` box and the XMP item carry them better.
 //!
-//! Copying the bytes would be simpler and is wrong in two ways.
-//!
-//! A TIFF source's `IFD0` describes *pixels* as well as metadata: its
-//! `StripOffsets` point into a file the output does not contain, and its
-//! `SubIFDs` pointer reaches the Lightroom gain map. Emitting those verbatim
-//! produces an Exif block whose offsets are live pointers into nothing. That is
-//! the class of tag [`IFD0_DROP`] exists to remove, and it is why the denylist
-//! is written out by tag number rather than inferred from types: a reader that
-//! knows a tag is an offset will follow it, and only we know it no longer leads
-//! anywhere.
-//!
-//! Second, a value that is *itself* addressed relative to the TIFF header
-//! cannot simply move. `MakerNote` (`0x927C`) is the one that matters — Apple's,
-//! Canon's and Sony's all use offsets into the enclosing TIFF — so rather than
-//! relocate it, [`serialize`] puts it back at the exact block-relative offset
-//! the source had it at, padding to reach it. Vendor detection is then not
-//! needed and neither is trust: the bytes see the same addresses they were
-//! written for.
-//!
-//! An embedded ICC profile (`0x8773`) and an `IFD0` XMP packet (`0x02BC`) are
-//! the two tags left out for a different reason: neither is dropped from the
-//! *output*, they are simply carried by a part of it better suited to the job —
-//! the `colr` box and the XMP item respectively.
-//!
-//! ## Grafting a `MakerNote` from the original camera file
-//!
-//! A rendered intermediate has no `MakerNote` to keep. Measured on
-//! `DSC07746.ARW` and the TIFF Lightroom Classic exports from it: 42 of the
-//! raw's 60 standard Exif tags reach the TIFF and none of Sony's 124 vendor
-//! ones, because the block is opaque to a renderer and an opaque block addressed
-//! with file-absolute offsets is not something a renderer can forward.
-//!
-//! So the original is read a second time for that one tag.
-//! [`read_maker_note`] lifts it out and [`read_with_maker_note`] grafts it into
-//! the intermediate's block — using the same pinning, which is what makes this
-//! safe: the blob is placed at the offset it occupied *in the raw*, so its own
-//! pointers address the right bytes again without one of them being rewritten.
-//! On `DSC07746.ARW` that offset is 5,222 and the blob is 38,332 bytes, and all
-//! 114 of its entries address values inside their own span, so pinning is
-//! sufficient as well as necessary.
+//! A rendered intermediate has no `MakerNote` at all, so [`read_maker_note`]
+//! reads the original camera file a second time for that one tag and
+//! [`read_with_maker_note`] grafts it in with the same pinning. See
+//! lightroom/README.md for what a render does and does not forward.
 
 use std::path::Path;
 
@@ -313,26 +282,16 @@ pub enum AppleHeadroom {
 
 /// Make the carried `MakerNote`'s headroom agree with the output's.
 ///
-/// # Why this has to happen at all
+/// Headroom is stated three times -- ISO payload, XMP, MakerApple 33/48 -- and all
+/// copies in one file must agree within 1e-3 (docs/acceptance-criteria.md 9), or a
+/// consumer reads the wrong number. The source's tag 48 describes the *source's*
+/// headroom, 0.019 stops off ours on `IMG_4913.HEIC`, so carrying it verbatim
+/// imports a 1.3% over-declaration.
 ///
-/// Apple states the headroom three times — the ISO payload, the XMP packet, and
-/// MakerApple tags 33/48 — and `docs/acceptance-criteria.md` §9 requires every
-/// copy in one file to agree within `1e-3`, because a consumer picks one and a
-/// file whose copies disagree is one where somebody reads the wrong number. The
-/// source's tag 48 describes the *source's* headroom; this conversion derives
-/// its own, and on `IMG_4913.HEIC` the two differ by 0.019 stops. Carrying the
-/// `MakerNote` verbatim would therefore import a 1.3% over-declaration into a
-/// file whose ISO payload says otherwise — and over-declaration is the exact
-/// defect criterion 5 exists to catch.
-///
-/// So tag 48 is rewritten. Only tag 48: `tohdr_core::apple::headroom_from_tags`
-/// uses tag 33 solely to pick a branch at the `1.0` threshold and never
-/// numerically, so a source value already above `1.0` decodes the same either
-/// way and is left as the camera wrote it. One below `1.0` selects the other
-/// branch and does have to be raised.
-///
-/// Both tags keep their existing denominators and their offsets, so the
-/// `MakerNote`'s length never changes and the pin stays valid.
+/// Only tag 48 is rewritten: `headroom_from_tags` uses tag 33 solely to pick a
+/// branch at the 1.0 threshold, so a value already above 1.0 is left as the camera
+/// wrote it. Both keep their denominators and offsets, so the note's length never
+/// changes and the pin stays valid.
 pub fn align_apple_headroom(block: &mut [u8], headroom_linear: f32) -> AppleHeadroom {
     let Some((start, len)) = locate_apple_maker_note(block) else {
         return AppleHeadroom::Absent;

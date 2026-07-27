@@ -1,17 +1,15 @@
 //! Scratch: why does `encode_from_hdr` declare zero headroom?
 //!
-//! It hands ImageIO an extended-linear-sRGB float `CGImage` and asks for
-//! `kCGImageDestinationEncodeToISOGainmap`, and gets back a well-formed file
-//! whose gain map carries nothing. Candidate causes, each tried below:
+//! It hands ImageIO an extended-linear-sRGB float `CGImage`, asks for
+//! `kCGImageDestinationEncodeToISOGainmap`, and gets a well-formed file whose gain
+//! map carries nothing. Candidates, each tried below:
 //!
 //!   A. 96-bit RGB float with `AlphaInfo::None` is not a layout CoreGraphics
-//!      actually honours, so the pixels ImageIO sees are not the ones we wrote.
-//!   B. It is honoured, but ImageIO needs an explicit content headroom hint
-//!      before it will derive a non-trivial gain map.
+//!      honours, so ImageIO does not see the pixels we wrote.
+//!   B. It is honoured, but ImageIO needs an explicit content headroom hint.
 //!   C. The colour space is wrong for the request.
 //!
-//! Prints the declared headroom for each variant; whichever is non-zero is the
-//! answer. Safe to delete once resolved.
+//! Prints declared headroom per variant. Safe to delete once resolved.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;

@@ -1,14 +1,12 @@
 //! Does a container transform we write mean what we meant?
 //!
-//! `tohdr_core::orient`'s own tests prove the *algebra* — that the `irot`/`imir`
-//! pair we pick composes to the coordinate map Exif defines — but they have to
-//! assume the order the two boxes are applied in, and a spec sentence is not a
-//! measurement. This asks the only authority that matters on this platform:
-//! write all eight orientations through both engines, and have ImageIO resolve
-//! each file's boxes back into an Exif orientation number.
+//! `tohdr_core::orient`'s tests prove the algebra but must assume the order the
+//! two boxes apply in, and a spec sentence is not a measurement. This writes all
+//! eight orientations through both engines and has ImageIO resolve each file's
+//! boxes back to an Exif number.
 //!
 //! A row where `read back` differs from `exif in` is a photo that comes out the
-//! wrong way up in Photos, Preview and every app built on ImageIO.
+//! wrong way up in Photos, Preview, and everything else built on ImageIO.
 //!
 //! ```text
 //! cargo run --release -p tohdr-cli --example probe_orientation

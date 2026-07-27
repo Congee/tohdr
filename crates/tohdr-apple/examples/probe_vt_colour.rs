@@ -1,15 +1,13 @@
 //! Why is the hardware path stuck at 49 dB no matter the bitrate?
 //!
-//! `probe_vt_quality.rs` found the reconstruction PSNR of the VideoToolbox path
-//! pinned at 49.04 dB from q85 to q100 while the file grew 7.5x. Quantization
-//! error responds to bitrate; that does not. So the loss is systematic, and the
-//! obvious candidate is the `colr` box: we hand VideoToolbox BGRA and let *it*
-//! choose an RGB→YCbCr matrix, then declare a matrix of our own in the container.
-//! If the two disagree, every pixel decodes through the wrong inverse matrix — a
-//! constant error, exactly what the sweep shows.
+//! `probe_vt_quality.rs` found PSNR pinned at 49.04 dB from q85 to q100 while the
+//! file grew 7.5x. Quantization error responds to bitrate; that does not, so the
+//! loss is systematic -- and the candidate is `colr`: we hand VideoToolbox BGRA and
+//! let it choose an RGB->YCbCr matrix, then declare our own. Disagreement decodes
+//! every pixel through the wrong inverse, a constant error.
 //!
-//! This tries the plausible declarations against the metric. Whichever one the
-//! encoder actually used should stand out, not marginally but by tens of dB.
+//! This tries the plausible declarations against the metric. The one the encoder
+//! actually used should stand out by tens of dB.
 //!
 //! Run: `cargo run --release --example probe_vt_colour -p tohdr-apple -- <hdr.tiff>`
 

@@ -31,35 +31,16 @@ pub trait PlaneCodec {
     /// The `colr` that describes what [`PlaneCodec::encode_base`] *actually
     /// produced*.
     ///
-    /// # Why this is the codec's business and not the muxer's
+    /// The codec's business, not the muxer's: an encoder fed RGB picks its own
+    /// RGB->YCbCr matrix and the container must declare that one, since a decoder
+    /// applies the inverse of whatever `colr` claims. Getting it wrong is a
+    /// constant error immune to bitrate -- 21 dB when the muxer hard-coded BT.601
+    /// for both backends, hidden behind a *smaller* file
+    /// (`tohdr-apple/examples/probe_vt_colour.rs`). Hence no default impl.
     ///
-    /// An encoder fed RGB picks its own RGB→YCbCr matrix, and the container has
-    /// to declare the one that was used — a decoder applies the inverse of
-    /// whatever the `colr` claims. Get it wrong and every pixel decodes through
-    /// the wrong matrix: a *constant* error, immune to bitrate.
-    ///
-    /// This is not hypothetical. The muxer used to hard-code BT.601 for both
-    /// backends, which is right for one of them and silently wrong for the other.
-    /// Measured on a 12 MP photograph, one encode per codec, varying only this
-    /// declaration (`tohdr-apple/examples/probe_vt_colour.rs`):
-    ///
-    /// ```text
-    ///                    declared BT.709   declared BT.601
-    ///   VideoToolbox         70.00 dB          49.04 dB
-    ///   hpvca                51.81 dB          69.31 dB
-    /// ```
-    ///
-    /// 21 dB, and it hid behind a *smaller* file — which reads like a win until
-    /// the reconstruction is measured. Hence no default implementation: a new
-    /// backend must state its matrix rather than inherit someone else's.
-    ///
-    /// # Why the primaries come from outside
-    ///
-    /// The matrix and the transfer are facts about the encoder — it applied them,
-    /// so only it knows. The *primaries* are a fact about the pixels it was handed,
-    /// which the loader decided and the codec never sees: an encoder given RGB
-    /// cannot tell Rec.709 red from Display P3 red, and would be guessing. So the
-    /// caller states them and the codec composes the two halves of the answer.
+    /// Primaries come from the caller because they are a fact about the pixels the
+    /// codec was handed, not about what it did: given RGB, an encoder cannot tell
+    /// Rec.709 red from Display P3 red.
     fn base_colour(&self, primaries: Primaries) -> ColourInfo;
 
     /// Encode the SDR base.

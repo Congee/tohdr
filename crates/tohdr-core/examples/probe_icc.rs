@@ -1,22 +1,17 @@
 //! What does `primaries_from_icc` make of profiles that really exist on disk?
 //!
-//! `colour.rs` tests recognition against profiles built in the test itself, plus
-//! the colorants copied out of the one Lightroom embeds. That proves the matching
-//! arithmetic, but it cannot prove the *inputs* are right: the numbers were
-//! transcribed by hand, and a profile that Lightroom or macOS writes slightly
-//! differently would be missed with no test failing.
+//! `colour.rs`'s tests build their profiles in-test from hand-transcribed
+//! colorants, which proves the matching arithmetic but not the inputs -- a profile
+//! macOS writes slightly differently would be missed with no test failing. So this
+//! feeds whole profile files through the same function, keeping the unit tests
+//! pure.
 //!
-//! So this feeds whole profile files through the same function. Unit tests stay
-//! pure; this probe is where real bytes get read. Point it at ColorSync profiles
-//! or at ICCs extracted from a TIFF's tag 34675:
+//! Unrecognised is a finding, not noise: it means `convert` warns and falls back to
+//! whatever `--colour-space` guessed.
 //!
 //! ```
 //! cargo run --example probe_icc -p tohdr-core -- '/System/Library/ColorSync/Profiles/Display P3.icc'
 //! ```
-//!
-//! Recognised means the base image gets labelled from the source. Unrecognised
-//! means `convert` warns and falls back to whatever `--colour-space` asked for,
-//! which is a guess — so an unrecognised profile here is a finding, not noise.
 
 use std::path::PathBuf;
 

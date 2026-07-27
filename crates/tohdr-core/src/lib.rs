@@ -1,22 +1,17 @@
-//! Flavor-neutral core for HDR gain maps.
+//! Flavour-neutral core for HDR gain maps.
 //!
-//! Deliberately contains no container and no codec: the same [`GainMapMeta`]
-//! feeds every backend. Engines live in sibling crates and implement
-//! [`GainMapEncoder`].
+//! No container and no codec: the same [`GainMapMeta`] feeds every backend.
+//! Engines live in sibling crates and implement [`GainMapEncoder`]. Field naming
+//! follows ISO 21496-1, as libavif's `avifGainMap` also does.
 //!
-//! Gain-map flavors this models:
-//! - **ISO 21496-1** — `tmap` derived item (HEIC/AVIF), `jhgm` box (JXL)
-//! - **Apple** — `urn:com:apple:photo:2020:aux:hdrgainmap` aux image plus the
-//!   MakerApple headroom tags (see [`apple`])
+//! Two flavours are modelled: **ISO 21496-1** (`tmap` derived item in HEIC/AVIF,
+//! `jhgm` box in JXL) and **Apple** (a
+//! `urn:com:apple:photo:2020:aux:hdrgainmap` aux image plus the MakerApple
+//! headroom tags -- see [`apple`]).
 //!
-//! Field naming follows ISO 21496-1, which libavif's `avifGainMap` also tracks.
-//!
-//! # Pixel types
-//!
-//! [`Rgb`] is fixed-range (`0..=max_value`, sRGB-encoded) and models the **SDR
-//! base**. [`hdr::HdrRgb`] is linear `f32` with `1.0` at SDR diffuse white and
-//! models the **HDR source**; only it can represent the above-white light a gain
-//! map exists to carry.
+//! [`Rgb`] is fixed-range sRGB-encoded and models the SDR base. [`hdr::HdrRgb`]
+//! is linear `f32` with `1.0` at diffuse white and models the HDR source; only it
+//! represents the above-white light a gain map exists to carry.
 
 pub mod apple;
 pub mod colour;

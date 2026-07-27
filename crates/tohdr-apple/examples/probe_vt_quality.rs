@@ -1,20 +1,14 @@
 //! Does the media block reach Engine A's *fidelity*, and what does that cost?
 //!
-//! `probe_vt_tuning.rs` swept quality and `RealTime` on bytes and milliseconds
-//! and found `RealTime=true` both faster and smaller — from which it is tempting
-//! to conclude there is no trade. That conclusion does not follow: fewer bytes at
-//! the same requested quality is exactly what a *lower-fidelity* encode looks
-//! like. `examples/roundtrip` then measured the reconstruction and put the
-//! hardware path at 49.0 dB against Engine A's 70.1 dB on the same 12 MP source.
+//! `probe_vt_tuning.rs` swept bytes and milliseconds and found `RealTime=true`
+//! both faster and smaller, which is tempting to read as "no trade" -- but fewer
+//! bytes at the same requested quality is also what lower fidelity looks like.
 //!
-//! So this sweeps the same knobs against the metric that actually matters — PSNR
-//! of the reconstructed HDR image versus the source — and reports speed beside
-//! it, so the speed comparison in `docs/engine-comparison.md` can be made at
-//! matched quality rather than at matched `--quality`.
-//!
-//! The PSNR definition is copied from `examples/roundtrip.rs` (peak = the
-//! source's own maximum luma; pixels below 0.05 luma excluded) so the numbers are
-//! directly comparable to the ones recorded there.
+//! So this sweeps the same knobs against reconstruction PSNR, reporting speed
+//! beside it, so docs/engine-comparison.md can compare at matched *quality* rather
+//! than matched `--quality`. PSNR definition is copied from `examples/roundtrip.rs`
+//! (peak = source's own max luma, pixels below 0.05 luma excluded) so the numbers
+//! stay comparable.
 //!
 //! Run: `cargo run --release --example probe_vt_quality -p tohdr-apple -- <hdr.tiff>`
 
