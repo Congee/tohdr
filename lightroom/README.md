@@ -172,9 +172,16 @@ check — and passes it to `--maker-note-from`. `tohdr` reads about the first 43
 of it, lifts tag `0x927C`, and places the blob at the offset it occupied **in the
 raw** (5,222 for this file), padding the block out to reach it. Nothing inside the
 blob is rewritten, which is what makes it safe: the vendor's own pointers address
-the bytes they were written to address. Verified end to end — `exiftool -a
--Sony:all` reports the same 124 tags with the same raw values off the ARW and off
-the output.
+the bytes they were written to address. Verified end to end through a live
+Lightroom export — `exiftool -a -Sony:all -s -H -n` reports the same 124 tags with
+the same raw values off the ARW and off the output, differing on one line that
+exiftool computes from the containing file rather than reads.
+
+That lookup must use **`LrTasks.pcall`, never the built-in.** `getRawMetadata`
+yields the task's coroutine, Lua 5.1 cannot yield across a C function, and `pcall`
+is one — so a built-in `pcall` there does not protect the call, it breaks it, with
+*"Yielding is not allowed within a C or metamethod call"*. A test scans for the
+built-in and rejects it.
 
 Two caveats, both of which the dialog states:
 
@@ -416,12 +423,31 @@ Be clear about which half of this is proven.
   collapse to one line with a count. Same shape as the `gain_map_source` gate
   before it: a check that cannot report is a check that does not exist.
 
-**Still not verified:**
+- **The whole chain, in one export.** With `LrTasks.pcall` in place, the same
+  photo through the same preset — engine `portable`, box checked, 4 MB budget —
+  produced a HEIC carrying **124 Sony tags, byte-for-byte the ARW's**:
 
-- **Whether the whole chain now works**, i.e. that with `LrTasks.pcall` the
-  lookup returns the path and 124 Sony tags land in the exported HEIC. Both halves
-  are proven separately — the CLI on the real Exif, and the SDK's contract for the
-  yield-safe call — but the two have not yet run together.
+  ```
+  exiftool -a -Sony:all -s -H -n   ARW: 124 tags   HEIC: 124 tags
+  diff: one line
+    0x0000 HiddenDataOffset   139264  ->  140212      (+948)
+  ```
+
+  That +948 is the Exif block's own offset in the HEIC, which is exiftool
+  resolving a stored pointer against the containing file — `HiddenDataOffset`
+  names bytes only the raw holds, and it would move like this in any file anyone
+  copied a `MakerNote` into. Every other tag, including the ones that describe the
+  capture (`DynamicRangeOptimizer`, `CreativeStyle`, as-shot white balance), is
+  identical.
+
+  The gain map is untouched by the graft: `tohdr verify` passes every invariant,
+  4601x3068 `L008` plane, both flavors, 2.524 declared stops, and the file grew by
+  42,910 bytes — the 38,332-byte blob plus the padding that puts it back at offset
+  5,222 — to 3,879,046, still inside the 4 MB budget. No advisory dialog, which is
+  the correct outcome: a carried graft is a `step` line, not a `note:` or
+  `warning:`, so there is nothing to report.
+
+**Still not verified:**
 
   - the prefs plist records `tohdr_engine = "portable"` and
     `tohdr_makerNote = true`, so Engine B ran with the box checked, and Engine B
