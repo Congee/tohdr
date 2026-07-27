@@ -197,30 +197,56 @@ end
 --- `TIFF` masters are scans and composites, and asking `tohdr` to look in one
 --- would earn a "has no MakerNote to take" warning per photo -- a dialog full of
 --- notices about files that were never going to have one.
+local function takes_a_maker_note(format)
+	return format == 'RAW' or format == 'DNG' or format == 'JPG'
+end
+
+--- The original camera file behind a rendition, or nil and the reason why not.
+---
+--- The reason is the whole point of the second return value. When the user has
+--- asked for the camera's `MakerNote` and the catalog cannot produce a file to
+--- take one from, the conversion still succeeds and `tohdr` is never told that
+--- anything was wanted -- so it cannot warn, and the feature becomes a silent
+--- no-op that looks exactly like success. That is precisely how the first live
+--- export failed: engine `portable`, box checked, and nothing in the output to
+--- say the original was never found.
+---
+--- Reasons are worded to be identical across photos, so 200 renditions with the
+--- same cause collapse to one line with a count instead of 200 lines.
 local function original_path(rendition)
 	local photo = rendition.photo
 	if not photo then
-		return nil
+		return nil, 'Lightroom did not say which photo this rendition came from'
 	end
 	-- pcall because this is metadata access on a catalog we do not own: a photo
 	-- can be removed mid-export, and losing one MakerNote must not fail a
 	-- conversion that would otherwise succeed.
-	local ok, path = pcall(function()
+	local ok, path, format = pcall(function()
 		local subject = photo
 		if photo:getRawMetadata('isVirtualCopy') then
 			subject = photo:getRawMetadata('masterPhoto') or photo
 		end
-		local format = subject:getRawMetadata('fileFormat')
-		if format ~= 'RAW' and format ~= 'DNG' and format ~= 'JPG' then
-			return nil
+		local fmt = subject:getRawMetadata('fileFormat')
+		if not takes_a_maker_note(fmt) then
+			return nil, fmt
 		end
-		return subject:getRawMetadata('path')
+		return subject:getRawMetadata('path'), fmt
 	end)
-	if not ok or path == nil or path == '' then
-		return nil
+	if not ok then
+		-- `path` holds the error when pcall failed. Kept verbatim rather than
+		-- summarised: this is the one channel that can explain an API contract
+		-- we got wrong, and paraphrasing it would throw that away.
+		return nil, 'the catalog would not answer (' .. tostring(path) .. ')'
+	end
+	if not takes_a_maker_note(format) then
+		return nil, 'the master is a ' .. tostring(format or 'file of unknown format')
+			.. ', which carries no MakerNote'
+	end
+	if path == nil or path == '' then
+		return nil, 'the catalog holds no path for the master file'
 	end
 	if LrFileUtils.exists(path) == false then
-		return nil
+		return nil, 'the original file is no longer where the catalog expects it'
 	end
 	return path
 end
@@ -276,7 +302,10 @@ function export_service_provider.processRenderedPhotos(_function_context, export
 
 				-- Looked up only when it would be used, so a user who left the
 				-- checkbox off pays no catalog access for it.
-				local raw_path = property_table.tohdr_makerNote and original_path(rendition) or nil
+				local raw_path, no_raw_because
+				if property_table.tohdr_makerNote then
+					raw_path, no_raw_because = original_path(rendition)
+				end
 
 				local args = TohdrCli.build_convert_args(
 					property_table, rendered_path, out_path, raw_path
@@ -316,6 +345,20 @@ function export_service_provider.processRenderedPhotos(_function_context, export
 					-- silent fallback (most importantly a colour space it had to
 					-- guess at) reaches the user instead of the bit bucket.
 					TohdrCli.merge_advisories(advisories, TohdrCli.advisories(output))
+
+					-- `tohdr` warns about every MakerNote it refuses, but it
+					-- cannot warn about a file it was never handed. This is the
+					-- one outcome only the plugin can see, so it is reported in
+					-- the same channel and collapses by count like the rest.
+					if no_raw_because then
+						TohdrCli.merge_advisories(advisories, {
+							{
+								text = "warning: the camera's MakerNote was requested, but "
+									.. no_raw_because,
+								count = 1,
+							},
+						})
+					end
 				end
 
 				-- Delete the intermediate on EVERY path, not just success. It

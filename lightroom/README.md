@@ -219,7 +219,7 @@ Be clear about which half of this is proven.
 **Verified here, by running it:**
 
 - All four plugin files and the test file parse: `luajit -bl` on each, 5/5 OK.
-- `lua lightroom/tests/test_TohdrCli.lua` — **151 checks, 0 failures**. Covers
+- `lua lightroom/tests/test_TohdrCli.lua` — **158 checks, 0 failures**. Covers
   command-line construction and, most importantly, shell quoting: spaces,
   embedded single quotes, `$(...)`, backticks, semicolons, backslashes, double
   quotes and unicode all survive as literals. Also binary-location precedence,
@@ -328,6 +328,15 @@ Be clear about which half of this is proven.
   recognition matches colorants against Bradford-adapted references instead of
   comparing profiles byte for byte.
 
+- **That a saved export preset survives a plugin update, read back from LrC's
+  own preferences.** After the keys were restored, an export wrote
+  `sdk_com.tohdr.lightroom-export` in
+  `~/Library/Preferences/com.adobe.LightroomClassicCC7.plist` holding all eleven
+  `tohdr_*` keys with non-default values intact — `tohdr_engine = "portable"`,
+  `tohdr_maxSizeEnabled = true`, `tohdr_maxSizeValue = 4`. That plist is also the
+  place to read *what actually ran*, which is how the export below was diagnosed
+  without guessing at the dialog state.
+
 **Still not verified:**
 
 - That the advisory dialog *renders*. Every export so far has had nothing to
@@ -336,19 +345,41 @@ Be clear about which half of this is proven.
   exercised only in Lua, never on screen. The dialog is the last thing standing
   between a future silent fallback and the user, so it is worth confirming the
   first time an export legitimately trips one.
+- **Why a live export took no `MakerNote`, with every gate saying it should
+  have.** The first export with the feature installed produced no vendor tags at
+  all: `exiftool -a -Sony:all` on the output reports 0, and tag `0x927C` is absent
+  rather than present-and-broken. Everything measurable says it should have
+  worked:
 
-  The MakerNote change makes that likely on the next export: with the box checked
-  and the Apple engine selected — both defaults — `tohdr` emits exactly one
-  `warning:` per photo saying the engine writes no foreign `MakerNote`, which is
-  the advisory dialog's first real customer.
-- **That `getRawMetadata('path')` returns what this expects inside a live
-  export.** The SDK documents the key, the gate (`fileFormat`, `isVirtualCopy`,
-  `masterPhoto`) and that no `catalog:with___AccessDo` wrapper is needed inside an
-  `LrTasks` task — and `processRenderedPhotos` is one — but none of it has been run
-  against a real catalog yet. The `--maker-note-from` half is verified from the
-  command line on the real `DSC07746.ARW`; only the "ask Lightroom which file this
-  came from" half is untested. Failing that lookup is designed to be harmless: the
-  flag is omitted and the conversion is what it was before.
+  - the prefs plist records `tohdr_engine = "portable"` and
+    `tohdr_makerNote = true`, so Engine B ran with the box checked, and Engine B
+    is the engine that *can* carry a foreign blob;
+  - the catalog (read `immutable=1`) gives the master as `fileFormat = RAW`,
+    `masterImage` null, path `…/7.19/DSC07746.ARW`, a file that exists — so
+    `original_path`'s format, virtual-copy, path and existence gates all pass;
+  - both files' Exif is little-endian, so `byte-order-differs` cannot fire;
+  - `exportRendition.photo` is documented, as are `isVirtualCopy`, `masterPhoto`,
+    `fileFormat` and `path` as raw-metadata keys, so no name is wrong;
+  - and replaying the *real* Exif through the CLI carries it: feeding the exported
+    HEIC back as the source with `--engine portable --maker-note-from` the ARW
+    reports `"maker_note_graft":"carried"`, 38,332 bytes pinned at 5,222, and the
+    result holds all **124** Sony tags, the same count as the ARW.
+
+  So the CLI half is proven against the real metadata, not a synthetic stand-in —
+  the earlier 42-of-60 table was measured on "a 16-bit TIFF with Lightroom-shaped
+  metadata injected", which is exactly the kind of proxy this contradicts. Two
+  candidates remain: `original_path` returned nil for a reason the SDK's docs do
+  not predict (`getRawMetadata` inside `processRenderedPhotos`), or the graft was
+  refused with a warning that reached a dialog nobody recorded.
+
+  Both are now self-reporting, which is the actual defect this exposed: `tohdr`
+  warns about every `MakerNote` it refuses, but it cannot warn about a companion
+  file it was never handed, so a failed lookup was *silent* and indistinguishable
+  from success. `original_path` now returns a reason with its nil, and the plugin
+  turns that into an advisory in the same collected channel. The reasons are
+  worded identically across photos so 200 renditions collapse to one line with a
+  count. This is the same shape of bug as the `gain_map_source` gate: a check that
+  cannot report is a check that does not exist.
 - **That Plug-in Manager displays `VERSION.build`** as the stamp
   `tools/install-lrplugin.sh` writes. The field is a string in Adobe's own
   samples and `Info.lua` still parses and `dofile`s with one in it, but the

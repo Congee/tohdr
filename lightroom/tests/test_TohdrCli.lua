@@ -411,6 +411,36 @@ do
 	eq(#all, 2, "a silent run adds nothing")
 end
 
+do
+	-- ExportServiceProvider synthesises one advisory the CLI cannot produce:
+	-- `tohdr` warns about every MakerNote it refuses, but it is never told about
+	-- a companion file the plugin failed to find, so that outcome is silent
+	-- unless the plugin says it. A hand-made entry has to behave like a parsed
+	-- one -- collapse by text, carry a count, reach the message.
+	local synthetic = {
+		{ text = "warning: the camera's MakerNote was requested, but "
+			.. "the catalog holds no path for the master file", count = 1 },
+	}
+	local all = Cli.merge_advisories({}, synthetic)
+	Cli.merge_advisories(all, synthetic)
+	Cli.merge_advisories(all, synthetic)
+	eq(#all, 1, "the same reason from three photos collapses to one entry")
+	eq(all[1].count, 3, "with all three counted")
+
+	local msg = Cli.summarize_advisories(all) or ""
+	check(msg:match("3 photos"), "the count reaches the message")
+	check(msg:match("MakerNote was requested"), "and so does the reason")
+
+	-- Mixed with the CLI's own output, since a real export produces both.
+	Cli.merge_advisories(all, Cli.advisories(
+		"tohdr: warning: the companion's MakerNote sits at an offset the rebuilt Exif block's\n"
+	))
+	eq(#all, 2, "a CLI advisory and a synthetic one coexist")
+	local both = Cli.summarize_advisories(all) or ""
+	check(both:match("MakerNote was requested"), "plugin reason still listed")
+	check(both:match("sits at an offset"), "CLI warning listed alongside it")
+end
+
 -- ===========================================================================
 print("export preset keys are frozen")
 -- ===========================================================================
