@@ -32,23 +32,41 @@ python3 tools/make_hdr_source.py out/scene.tiff --width 3024 --height 4032
 ```
 
 `--flavor apple | iso | both` chooses the signaling (`ios` is accepted as an
-alias for `iso`). `--engine apple | portable` chooses the backend.
+alias for `iso`). `--engine apple | portable | hpvca` chooses the backend.
 
-## Two engines
+## Two engines, three backends
 
-| | Engine A `apple-imageio` | Engine B `portable-hpvca` |
-|---|---|---|
-| Codec | Apple ImageIO | `hpvca` (BSD-3/Apache) |
-| Container | ImageIO | `tohdr-heif`, written here |
-| Apple frameworks | required | none |
-| 0.79 MP | 83.9 ms | **70.7 ms** |
-| 12.19 MP | **228.5 ms** | 646.7 ms |
-| 60.22 MP | **572.3 ms** | 9403.8 ms |
+Engine A hands the planes to Apple's ImageIO. Engine B assembles the container
+itself — `tohdr-heif`, written here — behind a swappable
+[`PlaneCodec`](crates/tohdr-heif/src/engine.rs), so the HEVC encoder is a
+substitutable part rather than the design. Two codecs implement it, hence three
+selectable backends.
 
-They cross over and then diverge — see
-[`docs/engine-comparison.md`](docs/engine-comparison.md) for the measurements,
-including a round-trip quality comparison that makes the file-size difference
-meaningful rather than misleading.
+| | Engine A | Engine B | Engine B |
+|---|---|---|---|
+| `--engine` | `apple` | `portable` | `hpvca` |
+| Reports itself as | `apple-imageio` | `hardware-videotoolbox` | `portable-hpvca` |
+| Codec | Apple ImageIO | platform media block | `hpvca` (BSD-3/Apache) |
+| Container | ImageIO | `tohdr-heif` | `tohdr-heif` |
+| Apple frameworks | required | required | none |
+| 0.79 MP | 77.7 ms | **10.1 ms** | 29.5 ms |
+| 12.19 MP | 225.5 ms | **28.3 ms** | 257.4 ms |
+| 60.22 MP | 545.3 ms | **221.3 ms** | 5762.5 ms |
+
+`--engine portable` means "our container, the fastest codec this machine has" —
+the media block when the job allows it, `hpvca` when it does not (a 10-bit base,
+or a quality that asks for 4:4:4 chroma). `--engine hpvca` forces the pure-Rust
+path, which is how the two are compared. The choice is made before encoding, not
+by recovering from a hardware error, so a benchmark cannot be invalidated by a
+silent substitution.
+
+Those timings are the mean of iterations 2..n with the `VTCompressionSession`
+reused — what a *second* file of the same geometry costs. Cold, in a fresh
+process, the media block pays a start-up that dominates at small sizes: 36.6 /
+102.7 / 430.7 ms on the same three fixtures, which is slower than `hpvca` at
+0.79 MP. [`docs/engine-comparison.md`](docs/engine-comparison.md) has the
+measurements, the session-pool limits, and a round-trip quality comparison that
+makes the file-size difference meaningful rather than misleading.
 
 A 60 MP raw converts in 2.6 s and a folder of them at 48 files/min;
 [`docs/performance.md`](docs/performance.md) has the stage breakdown, the
@@ -82,8 +100,9 @@ Current status against the criteria:
 | File | Result |
 |---|---|
 | `IMG_4913.HEIC` (reference) | 11 passed, 0 failed |
-| Engine A output | 10 passed, 0 failed, 1 skipped |
-| Engine B output | 10 passed, 0 failed, 1 skipped |
+| `apple-imageio` output | 10 passed, 0 failed, 1 skipped |
+| `hardware-videotoolbox` output | 10 passed, 0 failed, 1 skipped |
+| `portable-hpvca` output | 10 passed, 0 failed, 1 skipped |
 | `DSC07752_iso.heic` | **4 failed** |
 | `DSC07752.heic` | **1 failed** |
 
@@ -98,17 +117,21 @@ criterion 8 in [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md).
 
 `lightroom/tohdr.lrplugin` exports gain-map HEICs by shelling out to this CLI,
 with flavor, engine, quality, tone map, and a maximum output size in the export
-dialog. Its logic is unit-tested with a stock Lua interpreter, but **it has never
-been run inside Lightroom** — see [`lightroom/README.md`](lightroom/README.md)
-for exactly what is and is not verified.
+dialog. It runs inside Lightroom Classic 15.4.1: a 60.2 MP `DSC07746.ARW`
+exports to a gain-map HEIC that passes `tohdr verify`. Its Lua logic is unit-
+tested with a stock interpreter as well. See
+[`lightroom/README.md`](lightroom/README.md) for what that live run established
+— including that Lightroom's Lua sandbox has no `os.getenv` — and what is still
+open.
 
 ## Layout
 
 ```
 crates/tohdr-core      pixel types, derivation, ISO 21496-1, Apple tags, XMP
-crates/tohdr-heif      ISOBMFF reader and gain-map muxer  (no unsafe)
-crates/tohdr-apple     Engine A: ImageIO encode/decode/inspect  (the oracle)
-crates/tohdr-portable  Engine B: hpvca + our muxer
+crates/tohdr-heif      ISOBMFF reader and Engine B's muxer  (no unsafe)
+crates/tohdr-apple     Engine A: ImageIO encode/decode/inspect  (the oracle),
+                       and Engine B's VideoToolbox plane codec
+crates/tohdr-portable  Engine B's hpvca plane codec, and the pure-Rust decoders
 crates/tohdr-cli       convert / batch / inspect / verify / bench
 tools/                 independent verifier, HDR test-source generator
 lightroom/             Lightroom Classic export plugin and its tests

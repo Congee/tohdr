@@ -22,11 +22,12 @@ file. Reproduce with `tohdr bench` and
 
 ## Correctness
 
-Both engines pass **9 of 9 applicable acceptance criteria, exit 0**, on the
-independent `tools/verify_gainmap.py` (which shares no code with the Rust
-crates). Criteria 8 and 9 skip for both: neither writes MakerApple tags or an
-XMP headroom copy yet, which is the remaining gap against `IMG_4913.HEIC`'s
-11/11.
+All three backends pass **10 of 10 applicable acceptance criteria, exit 0**, on
+the independent `tools/verify_gainmap.py` (which shares no code with the Rust
+crates). Only criterion 8 skips, and only for a source that carries no
+MakerApple tags to begin with: there is nothing to check. Criterion 9 passes —
+the XMP headroom copy agrees with the ISO payload to 3.4e-05 on Engine B and
+5.2e-08 on Engine A. `IMG_4913.HEIC` itself scores 11/11.
 
 What ImageIO reports for each engine's output:
 
