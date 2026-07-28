@@ -13,7 +13,28 @@ Exports photos as gain-map HEICs by handing Lightroom's rendered pixels to the
 
 ## Installing
 
-Two routes. The second is what has actually been exercised on this machine.
+Three routes. The last is what has actually been exercised on this machine.
+
+**A release build.** Fetch `tohdr.lrplugin-<version>-macos-arm64.zip` with `curl`
+— not a browser — unzip into
+`~/Library/Application Support/Adobe/Lightroom/Modules/`, restart Lightroom. The
+release notes carry the commands.
+
+Releases are **unsigned**: a signature Gatekeeper accepts means a Developer ID,
+which means a paid Apple account. `curl` is what replaces it — the quarantine
+flag comes from the downloading app, not the OS, so curl leaves only
+`com.apple.provenance` and there is nothing to strip. A browser download needs
+`xattr -dr com.apple.quarantine`; a locally built binary needs nothing.
+
+Ad-hoc signing would not help: the linker already does it on arm64, and
+Gatekeeper rejects it for a quarantined file.
+
+**Apple silicon only**, and never a universal binary. nixpkgs 26.11 has dropped
+x86_64-darwin, so the devshell that supplies `apple-sdk_26` does not exist for
+Intel at all; supporting it would mean pinning a second nixpkgs whose security
+fixes end in 2026. Apple is closing the same door from its side — macOS 26 is the
+last release to run on Intel, and on only four models, three of them Xeon
+machines with no Quick Sync for `--engine videotoolbox` to find.
 
 **Plug-in Manager.** `File > Plug-in Manager… > Add`, and pick
 `lightroom/tohdr.lrplugin`. Loads it from wherever it sits, so the repo checkout
@@ -87,10 +108,10 @@ Either way:
    convenient thing to point at `target/release/tohdr` while developing, so a
    rebuild takes effect without reinstalling.
 
-   The bundle is genuinely portable, not just tidy: `.cargo/config.toml` passes
-   `-Wl,-dead_strip_dylibs`, so the binary links nothing outside
-   `/System/Library` and `/usr/lib` — no nix store paths, nothing
-   machine-specific.
+   The bundle moves between machines, not just between folders:
+   `.cargo/config.toml` passes `-Wl,-dead_strip_dylibs`, so the binary links
+   nothing outside `/System/Library` and `/usr/lib` — no nix store paths, nothing
+   machine-specific. Between *architectures* it does not move; see above.
 
 2. **Restart Lightroom.** The `Modules` folder is scanned only at launch, and an
    already-running Lightroom holds the old copy of every `.lua` file — so a

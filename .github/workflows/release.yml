@@ -1,0 +1,146 @@
+name: Release
+
+# Ships unsigned: Gatekeeper only accepts a Developer ID, which needs a paid
+# Apple account. The notes say curl instead, which attaches no quarantine flag.
+
+on:
+  push:
+    # Bare version tags: the tag is the version, so `v` states it twice.
+    tags: ['[0-9]*']
+  # Packages and verifies without publishing.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lrplugin:
+    name: tohdr.lrplugin (macos, arm64)
+    # One arch, and never a `lipo` universal binary. nixpkgs 26.11 dropped
+    # x86_64-darwin outright, so the devshell that supplies apple-sdk_26 does not
+    # exist for Intel -- supporting it means pinning a second, older nixpkgs.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    # Same reason as ci.yml: the ISO gain-map symbols need the flake's SDK 26.
+    defaults:
+      run:
+        shell: nix develop --command bash -e {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # Plug-in Manager shows Info.lua's version, so the tag must match it.
+      - name: version
+        id: version
+        run: |
+          info=lightroom/tohdr.lrplugin/Info.lua
+          ver=$(sed -n 's/.*major = \([0-9]*\), minor = \([0-9]*\), revision = \([0-9]*\).*/\1.\2.\3/p' "$info")
+          [ -n "$ver" ] || { echo "no VERSION in $info" >&2; exit 1; }
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "$ver" ]; then
+            echo "tag ${GITHUB_REF_NAME} != $ver from $info; bump revision or retag" >&2
+            exit 1
+          fi
+          name="$ver"
+          [ "${GITHUB_REF_TYPE}" = tag ] || name="$ver+$(git rev-parse --short=8 HEAD)"
+          echo "plugin=$ver" >> "$GITHUB_OUTPUT"
+          echo "asset=tohdr.lrplugin-$name-macos-arm64.zip" >> "$GITHUB_OUTPUT"
+
+      # Reuse the installer; a second implementation would be the one that drifts.
+      # Exact arch match, so a universal build (`x86_64 arm64`) fails too.
+      - name: stage bundle
+        run: |
+          tools/install-lrplugin.sh "$PWD/dist/tohdr.lrplugin"
+          cp LICENSE-MIT LICENSE-APACHE dist/tohdr.lrplugin/
+          archs=$(lipo -archs dist/tohdr.lrplugin/tohdr)
+          [ "$archs" = arm64 ] || { echo "built for '$archs', want arm64 alone" >&2; exit 1; }
+
+      # The binary being shipped, not the tree. lua is brew's; the devshell
+      # deliberately does not carry it.
+      - name: verify the bundle
+        run: |
+          brew install --quiet lua
+          bin=dist/tohdr.lrplugin/tohdr
+          test -x "$bin"
+          cargo build --locked --release -p tohdr-conformance
+          cargo build --locked --release -p tohdr-portable --example make_hdr_source
+          lua lightroom/tests/test_TohdrCli.lua
+          lightroom/tests/test_cli_contract.sh "$bin"
+          mkdir -p out
+          ./target/release/examples/make_hdr_source out/scene.tiff \
+              --width 640 --height 480 --peak 8.0
+          for engine in apple hpvca; do
+            "$bin" convert out/scene.tiff -o "out/$engine.heic" --flavor both --engine "$engine"
+            "$bin" verify "out/$engine.heic"
+            ./target/release/tohdr-conformance "out/$engine.heic" --expect-flavor both
+          done
+
+      # zip -X, not ditto: ditto adds a `._` AppleDouble entry per file.
+      - name: package
+        env:
+          ASSET: ${{ steps.version.outputs.asset }}
+        run: |
+          ( cd dist && zip -q -r -X "../$ASSET" tohdr.lrplugin )
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          unzip -l "$ASSET"
+          cat "$ASSET.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lrplugin
+          path: |
+            ${{ steps.version.outputs.asset }}
+            ${{ steps.version.outputs.asset }}.sha256
+
+      - name: publish
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET: ${{ steps.version.outputs.asset }}
+          PLUGIN: ${{ steps.version.outputs.plugin }}
+        run: |
+          # shellcheck disable=SC2088  # markdown, so the tilde stays literal
+          mods='~/Library/Application\ Support/Adobe/Lightroom/Modules'
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          cat > notes.md <<EOF
+          Lightroom Classic export plugin, version $PLUGIN, built from ${GITHUB_SHA:0:8}.
+
+          ## Install
+
+          \`\`\`sh
+          curl -fLO $url/$ASSET
+          curl -fLO $url/$ASSET.sha256
+          shasum -a 256 -c $ASSET.sha256
+          unzip -q $ASSET && mv tohdr.lrplugin $mods/
+          \`\`\`
+
+          Restart Lightroom Classic; the Modules folder is scanned only at launch.
+
+          Use \`curl\`, not a browser. This build is **unsigned** — Developer ID needs a
+          paid Apple account — and browsers, unlike curl, attach the quarantine flag
+          that makes Gatekeeper block it. After a browser download:
+          \`xattr -dr com.apple.quarantine $mods/tohdr.lrplugin\`. A locally built binary
+          is never quarantined.
+
+          Apple silicon (arm64) only. Requires macOS 15 or later and Lightroom Classic 13+.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag --title "${GITHUB_REF_NAME}" --notes-file notes.md \
+              "$ASSET" "$ASSET.sha256"
