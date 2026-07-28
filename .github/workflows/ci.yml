@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Engine B is not portable -- VideoToolbox is macOS-only. What this guards is
+  # narrower: `tohdr-portable` stays Apple-free, or `--engine hpvca` stops being
+  # the pure-Rust reference path it is compared against. `tohdr-conformance` is
+  # here for the same reason and holds it more strictly: no Apple, no tohdr.
+  apple-free:
+    name: portable crates stay apple-free (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: >
+          cargo clippy --locked -p tohdr-core -p tohdr-heif -p tohdr-portable
+          -p tohdr-conformance --all-targets -- -D warnings
+      - run: >
+          cargo test --locked -p tohdr-core -p tohdr-heif -p tohdr-portable
+          -p tohdr-conformance --no-fail-fast
+
+  licenses:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  macos:
+    name: full workspace (macos)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    # Through the flake, not the runner's Xcode: the ISO gain-map symbols are
+    # absent from SDKs before 26 and weak-link to NULL below min version 15.0.
+    defaults:
+      run:
+        shell: nix develop --command bash -e {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # Separate step so a devshell failure is not reported as a clippy failure.
+      - name: devshell
+        run: rustc --version && cargo --version
+
+      - name: clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --locked --workspace --no-fail-fast
+
+      - name: build
+        run: |
+          cargo build --locked --release -p tohdr-cli -p tohdr-conformance
+          cargo build --locked --release -p tohdr-portable --example make_hdr_source
+
+      # For the plugin's unit tests; the devshell deliberately does not carry it.
+      - name: lua
+        shell: bash
+        run: brew install --quiet lua
+
+      - name: lua plugin tests
+        run: lua lightroom/tests/test_TohdrCli.lua
+
+      - name: cli contract
+        run: lightroom/tests/test_cli_contract.sh ./target/release/tohdr
+
+      # Every verification layer on one file, per docs/acceptance-criteria.md: our
+      # reader, ImageIO itself, and the independent checker that shares no code
+      # with any of it. `videotoolbox` is left out: the media block is not
+      # dependable on a runner VM.
+      - name: end-to-end
+        run: |
+          mkdir -p out
+          ./target/release/examples/make_hdr_source out/scene.tiff \
+              --width 640 --height 480 --peak 8.0
+          for engine in apple hpvca; do
+            echo "::group::engine $engine"
+            ./target/release/tohdr convert out/scene.tiff -o "out/$engine.heic" \
+                --flavor both --engine "$engine" --max-size 4MB
+            ./target/release/tohdr inspect "out/$engine.heic"
+            ./target/release/tohdr verify "out/$engine.heic"
+            ./target/release/tohdr-conformance "out/$engine.heic" --expect-flavor both
+            echo "::endgroup::"
+          done
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: end-to-end-output
+          path: out/
+          retention-days: 7
