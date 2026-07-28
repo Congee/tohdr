@@ -1160,6 +1160,23 @@ mod tests {
         }
     }
 
+    /// A runner VM has no usable media block: even 64x64 comes back -17691
+    /// (`kVTSessionMalfunctionErr`) with nothing live. Probed once, so the tests
+    /// below still run wherever the hardware is real.
+    fn media_block_works() -> bool {
+        static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *OK.get_or_init(|| match encode_gain(&tiny_gain(), 85) {
+            Ok(_) => {
+                drain_session_pool();
+                true
+            }
+            Err(e) => {
+                eprintln!("skipping the VideoToolbox tests: {e}");
+                false
+            }
+        })
+    }
+
     #[test]
     fn recognises_the_real_videotoolbox_sei() {
         assert!(is_unregistered_user_data_sei(&real_vt_sei()));
@@ -1298,6 +1315,9 @@ mod tests {
     #[test]
     fn a_pooled_session_encodes_identically_to_a_fresh_one() {
         let _serial = pool_test_lock();
+        if !media_block_works() {
+            return;
+        }
         let gain = tiny_gain();
 
         // Two cold encodes, which is what the recorded output hashes were taken
@@ -1335,6 +1355,9 @@ mod tests {
     #[test]
     fn a_completed_encode_leaves_no_budget_reserved() {
         let _serial = pool_test_lock();
+        if !media_block_works() {
+            return;
+        }
         drain_session_pool();
         assert_eq!(live_session_pixels(), 0, "drain must release everything");
 
@@ -1361,6 +1384,9 @@ mod tests {
     #[test]
     fn admitting_a_large_frame_ends_idle_sessions_to_make_room() {
         let _serial = pool_test_lock();
+        if !media_block_works() {
+            return;
+        }
         set_session_reuse(true);
         drain_session_pool();
 

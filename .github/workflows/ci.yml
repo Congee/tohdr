@@ -83,6 +83,8 @@ jobs:
       - name: clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
+      # The three vtenc tests that need a real media block self-skip here; a
+      # runner VM has none.
       - name: test
         run: cargo test --locked --workspace --no-fail-fast
 
