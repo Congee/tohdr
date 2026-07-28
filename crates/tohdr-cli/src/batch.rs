@@ -289,7 +289,7 @@ mod tests {
         for name in ["b.ARW", "a.arw", "notes.xmp", "c.TIF"] {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
-        let got = collect_inputs(&[dir.clone()]).unwrap();
+        let got = collect_inputs(std::slice::from_ref(&dir)).unwrap();
         let names: Vec<String> = got
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -304,7 +304,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let odd = dir.join("explicit.weird");
         std::fs::write(&odd, b"x").unwrap();
-        assert_eq!(collect_inputs(&[odd.clone()]).unwrap(), vec![odd]);
+        assert_eq!(collect_inputs(std::slice::from_ref(&odd)).unwrap(), vec![odd]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -50,6 +50,9 @@ fn draw_full(image: &CGImage, cs: &CGColorSpace, w: usize, h: usize, stride: usi
 }
 
 /// Exact copy of `draw_band`'s geometry from read.rs.
+// Spelled out rather than bundled the way read.rs does it: the probe varies
+// these independently, which is the whole point of having it.
+#[allow(clippy::too_many_arguments)]
 fn draw_band(
     image: &CGImage,
     cs: &CGColorSpace,

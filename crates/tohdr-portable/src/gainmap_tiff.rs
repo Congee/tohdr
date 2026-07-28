@@ -551,6 +551,13 @@ impl<'a> Plane<'a> {
         if width == 0 || height == 0 {
             return Err(Error::Decode(format!("{what}: {width}x{height} image")));
         }
+        // Sub-byte depths would make `row_bytes` zero, and rows here are read as
+        // whole bytes anyway. Reject rather than divide by it below.
+        if bits == 0 || !bits.is_multiple_of(8) {
+            return Err(Error::UnsupportedInput(format!(
+                "{what}: {bits} bits per sample; only whole bytes are supported"
+            )));
+        }
 
         let row_bytes = width as usize * 3 * (bits as usize / 8);
         let strip_offsets = tiff.integers(
@@ -588,7 +595,7 @@ impl<'a> Plane<'a> {
             if let Some(bad) = counts
                 .iter()
                 .enumerate()
-                .find(|(i, c)| **c as usize % row_bytes != 0 && *i < expected_strips)
+                .find(|(i, c)| !(**c as usize).is_multiple_of(row_bytes) && *i < expected_strips)
             {
                 return Err(Error::Decode(format!(
                     "{what}: strip {} byte count {} is not a multiple of the {row_bytes}-byte \

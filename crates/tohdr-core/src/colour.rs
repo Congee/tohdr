@@ -270,10 +270,10 @@ fn icc_tag<'a>(icc: &'a [u8], sig: &[u8; 4]) -> Option<&'a [u8]> {
 pub fn primaries_from_icc(icc: &[u8]) -> Option<Primaries> {
     if let Some(cicp) = icc_tag(icc, b"cicp") {
         // 4-byte type signature, 4 reserved, then primaries/transfer/matrix/range.
-        if let Some(&code) = cicp.get(8) {
-            if let Some(p) = Primaries::ALL.iter().find(|p| p.nclx() == code as u16) {
-                return Some(*p);
-            }
+        if let Some(&code) = cicp.get(8)
+            && let Some(p) = Primaries::ALL.iter().find(|p| p.nclx() == code as u16)
+        {
+            return Some(*p);
         }
     }
 
@@ -281,8 +281,8 @@ pub fn primaries_from_icc(icc: &[u8]) -> Option<Primaries> {
     for (col, sig) in [b"rXYZ", b"gXYZ", b"bXYZ"].into_iter().enumerate() {
         let tag = icc_tag(icc, sig)?;
         // XYZType: 4-byte signature, 4 reserved, then one XYZNumber.
-        for row in 0..3 {
-            got[row][col] = s15f16(tag, 8 + row * 4)?;
+        for (row, out) in got.iter_mut().enumerate() {
+            out[col] = s15f16(tag, 8 + row * 4)?;
         }
     }
 
@@ -511,8 +511,8 @@ mod tests {
             icc.extend_from_slice(&20u32.to_be_bytes());
             body.extend_from_slice(b"XYZ ");
             body.extend_from_slice(&[0; 4]);
-            for row in 0..3 {
-                body.extend_from_slice(&(((m[row][col] * 65536.0).round()) as i32).to_be_bytes());
+            for r in &m {
+                body.extend_from_slice(&((r[col] * 65536.0).round() as i32).to_be_bytes());
             }
         }
         icc.extend_from_slice(&body);

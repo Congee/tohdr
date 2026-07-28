@@ -150,7 +150,7 @@ fn over_declared_headroom_under_applies_the_map() {
     let broken = GainMapMeta {
         max_log2: [1.96; 3],
         base_headroom: 0.0,
-        alt_headroom: 3.568470,
+        alt_headroom: 3.56847,
         ..GainMapMeta::default()
     };
     // The reference capture keeps the two equal.

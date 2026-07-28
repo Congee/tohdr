@@ -758,15 +758,15 @@ fn rebuild<'a>(
     })?;
     // The source's own tag wins: it is the one the rest of its Exif was written
     // against, and a JPEG that has both is stating the same thing twice.
-    if ifd0.get(TAG_IPTC).is_none() {
-        if let Some(iim) = external_iptc.filter(|b| !b.is_empty()) {
-            root.push(PlanEntry {
-                tag: TAG_IPTC,
-                typ: 7,
-                count: iim.len() as u32,
-                value: Value::Bytes(iim),
-            });
-        }
+    if ifd0.get(TAG_IPTC).is_none()
+        && let Some(iim) = external_iptc.filter(|b| !b.is_empty())
+    {
+        root.push(PlanEntry {
+            tag: TAG_IPTC,
+            typ: 7,
+            count: iim.len() as u32,
+            value: Value::Bytes(iim),
+        });
     }
     // Where the tentative `MakerNote` entry ended up, so it can be withdrawn if
     // its offset turns out to be unreachable, and whether that entry is the
@@ -776,79 +776,79 @@ fn rebuild<'a>(
     let mut maker_is_graft = false;
     let mut graft = MakerNoteGraft::NotOffered;
 
-    if let Some(off) = sub_ifd_offset(&tiff, &ifd0, TAG_EXIF_IFD) {
-        if let Ok(exif_ifd) = tiff.read_ifd(off) {
-            // The Exif IFD holds two things that are not plain values: the
-            // Interoperability pointer and the MakerNote.
-            let mut entries = plan(&tiff, &exif_ifd, |t| {
-                !matches!(t, TAG_INTEROP_IFD | TAG_MAKER_NOTE)
-            })?;
-            if let Some(ioff) = sub_ifd_offset(&tiff, &exif_ifd, TAG_INTEROP_IFD) {
-                if let Ok(interop) = tiff.read_ifd(ioff) {
-                    let kept = plan(&tiff, &interop, |_| true)?;
-                    if !kept.is_empty() {
-                        ifds.push(PlannedIfd {
-                            entries: kept,
-                            next: None,
-                        });
-                        entries.push(pointer(TAG_INTEROP_IFD, ifds.len() - 1));
-                    }
-                }
-            }
-            let pushed = if let Some(m) = maker_note(&tiff, &exif_ifd) {
-                // The source's own tag wins, for the same reason it does for
-                // IPTC: it is the one the rest of this block was written
-                // alongside, and two `MakerNote`s cannot both be tag `0x927C`.
-                if companion.is_some() {
-                    graft = MakerNoteGraft::HostHasOwn;
-                }
-                entries.push(m);
-                true
-            } else if let Some(c) = companion {
-                match graft_maker_note(c, tiff.little_endian) {
-                    Ok(entry) => {
-                        entries.push(entry);
-                        maker_is_graft = true;
-                        graft = MakerNoteGraft::Carried { bytes: c.len() };
-                        true
-                    }
-                    Err(why) => {
-                        graft = why;
-                        false
-                    }
-                }
-            } else {
-                false
-            };
-            // Only a *pinned* entry is a candidate for withdrawal, and only a
-            // `MakerNote` over four bytes long gets pinned — a shorter one lives
-            // inside its entry, where there is no offset to be unreachable.
-            let withdrawable =
-                pushed && matches!(entries.last().map(|e| &e.value), Some(Value::Pinned { .. }));
-            if !entries.is_empty() {
-                ifds.push(PlannedIfd {
-                    entries,
-                    next: None,
-                });
-                let idx = ifds.len() - 1;
-                if withdrawable {
-                    maker_at = Some((idx, ifds[idx].entries.len() - 1));
-                }
-                root.push(pointer(TAG_EXIF_IFD, idx));
-            }
-        }
-    }
-
-    if let Some(off) = sub_ifd_offset(&tiff, &ifd0, TAG_GPS_IFD) {
-        if let Ok(gps) = tiff.read_ifd(off) {
-            let kept = plan(&tiff, &gps, |_| true)?;
+    if let Some(off) = sub_ifd_offset(&tiff, &ifd0, TAG_EXIF_IFD)
+        && let Ok(exif_ifd) = tiff.read_ifd(off)
+    {
+        // The Exif IFD holds two things that are not plain values: the
+        // Interoperability pointer and the MakerNote.
+        let mut entries = plan(&tiff, &exif_ifd, |t| {
+            !matches!(t, TAG_INTEROP_IFD | TAG_MAKER_NOTE)
+        })?;
+        if let Some(ioff) = sub_ifd_offset(&tiff, &exif_ifd, TAG_INTEROP_IFD)
+            && let Ok(interop) = tiff.read_ifd(ioff)
+        {
+            let kept = plan(&tiff, &interop, |_| true)?;
             if !kept.is_empty() {
                 ifds.push(PlannedIfd {
                     entries: kept,
                     next: None,
                 });
-                root.push(pointer(TAG_GPS_IFD, ifds.len() - 1));
+                entries.push(pointer(TAG_INTEROP_IFD, ifds.len() - 1));
             }
+        }
+        let pushed = if let Some(m) = maker_note(&tiff, &exif_ifd) {
+            // The source's own tag wins, for the same reason it does for IPTC:
+            // it is the one the rest of this block was written alongside, and
+            // two `MakerNote`s cannot both be tag `0x927C`.
+            if companion.is_some() {
+                graft = MakerNoteGraft::HostHasOwn;
+            }
+            entries.push(m);
+            true
+        } else if let Some(c) = companion {
+            match graft_maker_note(c, tiff.little_endian) {
+                Ok(entry) => {
+                    entries.push(entry);
+                    maker_is_graft = true;
+                    graft = MakerNoteGraft::Carried { bytes: c.len() };
+                    true
+                }
+                Err(why) => {
+                    graft = why;
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        // Only a *pinned* entry is a candidate for withdrawal, and only a
+        // `MakerNote` over four bytes long gets pinned — a shorter one lives
+        // inside its entry, where there is no offset to be unreachable.
+        let withdrawable =
+            pushed && matches!(entries.last().map(|e| &e.value), Some(Value::Pinned { .. }));
+        if !entries.is_empty() {
+            ifds.push(PlannedIfd {
+                entries,
+                next: None,
+            });
+            let idx = ifds.len() - 1;
+            if withdrawable {
+                maker_at = Some((idx, ifds[idx].entries.len() - 1));
+            }
+            root.push(pointer(TAG_EXIF_IFD, idx));
+        }
+    }
+
+    if let Some(off) = sub_ifd_offset(&tiff, &ifd0, TAG_GPS_IFD)
+        && let Ok(gps) = tiff.read_ifd(off)
+    {
+        let kept = plan(&tiff, &gps, |_| true)?;
+        if !kept.is_empty() {
+            ifds.push(PlannedIfd {
+                entries: kept,
+                next: None,
+            });
+            root.push(pointer(TAG_GPS_IFD, ifds.len() - 1));
         }
     }
 
@@ -1200,13 +1200,16 @@ impl Writer {
 mod tests {
     use super::*;
 
+    /// One IFD entry as the tests spell it: tag, type, count, value bytes.
+    type RawEntry = (u16, u16, u32, Vec<u8>);
+
     /// Build a TIFF by hand so the tests state exactly what the reader sees.
     struct Build {
         le: bool,
-        entries: Vec<(u16, u16, u32, Vec<u8>)>,
-        subs: Vec<(u16, Vec<(u16, u16, u32, Vec<u8>)>)>,
+        entries: Vec<RawEntry>,
+        subs: Vec<(u16, Vec<RawEntry>)>,
         /// `IFD1`'s entries, plus the thumbnail bytes tag 513 must point at.
-        ifd1: Option<(Vec<(u16, u16, u32, Vec<u8>)>, Vec<u8>)>,
+        ifd1: Option<(Vec<RawEntry>, Vec<u8>)>,
     }
 
     impl Build {
@@ -1933,7 +1936,9 @@ mod tests {
     /// under test: `align_apple_headroom` has to find tag 48's value through the
     /// note's own base, not the enclosing block's.
     fn apple_maker_note(tag33: (i32, i32), tag48: (i32, i32)) -> Vec<u8> {
-        let entries: [(u16, u16, u32, Option<(i32, i32)>); 4] = [
+        // Tag, type, count, and the rational value if the entry has one.
+        type NoteEntry = (u16, u16, u32, Option<(i32, i32)>);
+        let entries: [NoteEntry; 4] = [
             (2, 7, 4, None),                        // an inline value, before
             (APPLE_TAG_HEADROOM, 10, 1, Some(tag33)),
             (APPLE_TAG_GAIN, 10, 1, Some(tag48)),

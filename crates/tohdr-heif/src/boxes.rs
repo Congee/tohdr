@@ -186,7 +186,7 @@ pub(crate) fn begin_fullbox(buf: &mut Vec<u8>, box_type: &[u8; 4], version: u8, 
 /// right in one linear pass — only the file-absolute `iloc` offsets need a
 /// second, separate patch (done in `write.rs` after the whole file layout is
 /// known).
-pub(crate) fn end_box(buf: &mut Vec<u8>, pos: usize) {
+pub(crate) fn end_box(buf: &mut [u8], pos: usize) {
     let size = (buf.len() - pos) as u32;
     buf[pos..pos + 4].copy_from_slice(&size.to_be_bytes());
 }

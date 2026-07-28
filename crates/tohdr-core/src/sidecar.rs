@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn nothing_is_supported_by_default() {
         assert_eq!(MetadataSupport::default(), MetadataSupport::NONE);
-        assert!(!MetadataSupport::NONE.exif);
-        assert!(MetadataSupport::ALL.exif && MetadataSupport::ALL.xmp);
+        const { assert!(!MetadataSupport::NONE.exif) };
+        const { assert!(MetadataSupport::ALL.exif && MetadataSupport::ALL.xmp) };
     }
 }

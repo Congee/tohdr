@@ -150,7 +150,7 @@ fn half_to_f32(h: u16) -> f32 {
                 e -= 1;
             }
             let f = f & 0x3FF;
-            ((sign << 31) | (((127 - 15 + e as i32) as u32) << 23) | (f << 13)) as u32
+            (sign << 31) | (((127 - 15 + e) as u32) << 23) | (f << 13)
         }
     } else if exp == 0x1F {
         (sign << 31) | (0xFF << 23) | (frac << 13)

@@ -188,9 +188,11 @@ fn corrupt_maker_note_tags_cannot_produce_infinite_headroom() {
 /// reject values no real capture can produce rather than passing them on.
 #[test]
 fn iso_parse_rejects_absurd_log2_ranges() {
-    let mut meta = GainMapMeta::default();
-    meta.max_log2 = [30000.0; 3];
-    meta.alt_headroom = 30000.0;
+    let meta = GainMapMeta {
+        max_log2: [30000.0; 3],
+        alt_headroom: 30000.0,
+        ..Default::default()
+    };
     let bytes = tohdr_core::iso21496::serialize(&meta);
     let parsed = tohdr_core::iso21496::parse(&bytes);
     assert!(

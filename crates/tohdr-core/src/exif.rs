@@ -197,38 +197,38 @@ fn segments(bytes: &[u8]) -> impl Iterator<Item = (u8, &[u8])> {
     } else {
         None
     };
+    // Every segment is yielded, so one call consumes exactly one: `at = None`
+    // is what ends the walk, and the iterator stays ended once it has.
     core::iter::from_fn(move || {
-        loop {
-            let mut p = at?;
-            // Segments are `ff <marker> <u16 length, counting itself>`. Fill
-            // bytes of `ff` before a marker are legal and must be skipped.
-            while bytes.get(p) == Some(&0xff) && bytes.get(p + 1) == Some(&0xff) {
-                p += 1;
-            }
-            if bytes.get(p) != Some(&0xff) {
+        let mut p = at?;
+        // Segments are `ff <marker> <u16 length, counting itself>`. Fill
+        // bytes of `ff` before a marker are legal and must be skipped.
+        while bytes.get(p) == Some(&0xff) && bytes.get(p + 1) == Some(&0xff) {
+            p += 1;
+        }
+        if bytes.get(p) != Some(&0xff) {
+            at = None;
+            return None;
+        }
+        let marker = *bytes.get(p + 1)?;
+        // Start of scan or end of image: no headers remain.
+        if marker == 0xda || marker == 0xd9 {
+            at = None;
+            return None;
+        }
+        let len = u16::from_be_bytes([*bytes.get(p + 2)?, *bytes.get(p + 3)?]) as usize;
+        if len < 2 {
+            at = None;
+            return None;
+        }
+        let body = bytes.get(p + 4..p + 2 + len);
+        at = Some(p + 2 + len);
+        match body {
+            None => {
                 at = None;
-                return None;
+                None
             }
-            let marker = *bytes.get(p + 1)?;
-            // Start of scan or end of image: no headers remain.
-            if marker == 0xda || marker == 0xd9 {
-                at = None;
-                return None;
-            }
-            let len = u16::from_be_bytes([*bytes.get(p + 2)?, *bytes.get(p + 3)?]) as usize;
-            if len < 2 {
-                at = None;
-                return None;
-            }
-            let body = bytes.get(p + 4..p + 2 + len);
-            at = Some(p + 2 + len);
-            match body {
-                None => {
-                    at = None;
-                    return None;
-                }
-                Some(b) => return Some((marker, b)),
-            }
+            Some(b) => Some((marker, b)),
         }
     })
 }
@@ -270,6 +270,8 @@ mod tests {
 
         // And the Exif block is still where it was, ahead of the new segment.
         assert_eq!(app1_payload(&jpeg), Some(&b"MM\0\x2a\0\0\0\x08"[..]));
+        // Which is the segment the reader has to walk past to reach this one.
+        assert_eq!(app13_iptc_payload(&jpeg), Some(&iim[..]));
     }
 
     /// No IPTC must produce the same bytes as the plain wrapper, so adding the

@@ -182,8 +182,8 @@ fn parallel_derive_matches_single_threaded_serial_reimplementation() {
     }
     let hdr = Rgb { width: w, height: h, bits: 8, data: hdr_data };
     let base = Rgb { width: w, height: h, bits: 8, data: base_data };
-    let mut opts = DeriveOptions::default();
-    opts.subsample = 2; // exercise the subsample-average path, non-divisible dims
+    // subsample 2 exercises the subsample-average path on non-divisible dims
+    let opts = DeriveOptions { subsample: 2, ..Default::default() };
     let (plane_par, meta_par) = derive(&hdr, &base, &opts);
 
     // Serial reimplementation of the exact same math, single-threaded,

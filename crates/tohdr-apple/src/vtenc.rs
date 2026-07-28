@@ -530,11 +530,11 @@ impl Session {
         );
         set(
             unsafe { kVTCompressionPropertyKey_RealTime },
-            CFBoolean::new(key.realtime).as_ref() as *const CFBoolean as *const CFType,
+            CFBoolean::new(key.realtime) as *const CFBoolean as *const CFType,
         );
         set(
             unsafe { kVTCompressionPropertyKey_AllowFrameReordering },
-            CFBoolean::new(false).as_ref() as *const CFBoolean as *const CFType,
+            CFBoolean::new(false) as *const CFBoolean as *const CFType,
         );
         let one = cf_i32(1);
         set(

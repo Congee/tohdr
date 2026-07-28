@@ -27,6 +27,14 @@ pub(crate) enum Prop {
     Other,
 }
 
+/// One `iref` group: the reference type, the item making the reference, and the
+/// items it points at.
+pub(crate) type RefGroup = ([u8; 4], ItemId, Vec<ItemId>);
+
+/// One `ipma` row: an item and the `ipco` indices it is associated with, each
+/// flagged `essential`.
+pub(crate) type ItemProps = (ItemId, Vec<(u16, bool)>);
+
 /// One `iloc` item entry, offsets already collapsed to `base_offset + extent
 /// offset` (still relative to whichever source `construction_method`
 /// selects — file-absolute for 0, `idat`-relative for 1).
@@ -431,10 +439,7 @@ fn parse_iinf(bytes: &[u8], b: &crate::boxes::BoxHeader) -> Result<Vec<Item>> {
     Ok(items)
 }
 
-fn parse_iref(
-    bytes: &[u8],
-    b: &crate::boxes::BoxHeader,
-) -> Result<Vec<([u8; 4], ItemId, Vec<ItemId>)>> {
+fn parse_iref(bytes: &[u8], b: &crate::boxes::BoxHeader) -> Result<Vec<RefGroup>> {
     if b.body_end - b.body_start < 4 {
         return Err(Error::Truncated { at: b.body_start, need: 4 });
     }
@@ -518,7 +523,7 @@ fn parse_property(bytes: &[u8], c: &crate::boxes::BoxHeader) -> Result<Prop> {
 fn parse_iprp(
     bytes: &[u8],
     b: &crate::boxes::BoxHeader,
-) -> Result<(Vec<Prop>, Vec<(ItemId, Vec<(u16, bool)>)>)> {
+) -> Result<(Vec<Prop>, Vec<ItemProps>)> {
     let ipco = find_box(bytes, b.body_start, b.body_end, b"ipco").ok_or(Error::MissingBox("ipco"))?;
     let mut props = Vec::new();
     for child in iter_boxes(bytes, ipco.body_start, ipco.body_end) {
@@ -533,10 +538,7 @@ fn parse_iprp(
     Ok((props, ipma))
 }
 
-fn parse_ipma(
-    bytes: &[u8],
-    b: &crate::boxes::BoxHeader,
-) -> Result<Vec<(ItemId, Vec<(u16, bool)>)>> {
+fn parse_ipma(bytes: &[u8], b: &crate::boxes::BoxHeader) -> Result<Vec<ItemProps>> {
     let mut r = Reader::new(&bytes[b.body_start..b.body_end]);
     let version = r.u8()?;
     let flags_bytes = r.take(3)?;

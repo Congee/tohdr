@@ -116,17 +116,18 @@ fn main() {
             .unwrap_or_default();
         let s = stats(&rgb);
         let (mut dmean, mut dmax) = (f64::NAN, f64::NAN);
-        if let Some((_, r, rw, rh)) = &reference {
-            if *rw == rgb.width && *rh == rgb.height {
-                let (mut sum, mut worst) = (0.0f64, 0.0f64);
-                for (a, b) in r.luma.iter().zip(s.luma.iter()) {
-                    let d = (*a as f64 - *b as f64).abs();
-                    sum += d;
-                    worst = worst.max(d);
-                }
-                dmean = sum / r.luma.len() as f64;
-                dmax = worst;
+        if let Some((_, r, rw, rh)) = &reference
+            && *rw == rgb.width
+            && *rh == rgb.height
+        {
+            let (mut sum, mut worst) = (0.0f64, 0.0f64);
+            for (a, b) in r.luma.iter().zip(s.luma.iter()) {
+                let d = (*a as f64 - *b as f64).abs();
+                sum += d;
+                worst = worst.max(d);
             }
+            dmean = sum / r.luma.len() as f64;
+            dmax = worst;
         }
         let fmt = |v: f64| if v.is_nan() { "-".to_string() } else { format!("{v:.2}") };
         println!(

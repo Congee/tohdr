@@ -325,7 +325,7 @@ fn parses_real_three_channel_payload() {
         .expect("3-channel payload must parse");
 
     // The defect, asserted: 3.568 stops declared, 1.96 actually encoded.
-    assert!((m.alt_headroom - 3.568470).abs() < 1e-6, "{}", m.alt_headroom);
+    assert!((m.alt_headroom - 3.56847).abs() < 1e-6, "{}", m.alt_headroom);
     assert!((m.max_log2[0] - 1.96).abs() < 1e-6, "{}", m.max_log2[0]);
     assert!(
         m.alt_headroom - m.max_log2[0] > 1.6,

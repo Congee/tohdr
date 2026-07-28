@@ -258,36 +258,36 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
     // only ever swaps Engine B's plane codec, never the backend writing metadata.
     let nominal = Engine::new(args.engine).metadata_support();
     let mut withdrawn: Option<String> = None;
-    if let Some(found) = &source_exif {
-        if matches!(found.maker_note_graft, MakerNoteGraft::Carried { .. }) {
-            let apple = companion
-                .as_ref()
-                .is_some_and(tohdr_portable::ForeignMakerNote::is_apple);
-            let engine_name = Engine::new(args.engine).name();
-            if !nominal.maker_note && !apple {
-                // Engine A rebuilds its metadata from parsed properties, and
-                // ImageIO parses no vendor block but Apple's. Leaving the tag in
-                // would report a graft the output does not contain.
-                eprintln!(
-                    "tohdr: warning: the {engine_name} engine writes only Apple's MakerNote — \
-                     ImageIO has no property key for another vendor's — so the grafted block \
-                     would not have reached the output and was left out. `--engine videotoolbox` \
-                     writes the Exif block whole and keeps it"
-                );
-                withdrawn = Some(format!("dropped-{engine_name}"));
-            } else if nominal.max_exif_block.is_some_and(|m| found.tiff.len() > m) {
-                // An oversize block gets ImageIO to return no properties at all,
-                // so the choice is one vendor block or every standard tag.
-                eprintln!(
-                    "tohdr: warning: the grafted MakerNote makes the Exif block {} bytes, past \
-                     the {} a {engine_name} carrier can hold, and an oversize block yields no \
-                     metadata at all — so it was left out and the rest of the Exif kept. \
-                     `--engine videotoolbox` writes the block whole and keeps both",
-                    found.tiff.len(),
-                    nominal.max_exif_block.unwrap_or(0),
-                );
-                withdrawn = Some("dropped-oversize".to_string());
-            }
+    if let Some(found) = &source_exif
+        && matches!(found.maker_note_graft, MakerNoteGraft::Carried { .. })
+    {
+        let apple = companion
+            .as_ref()
+            .is_some_and(tohdr_portable::ForeignMakerNote::is_apple);
+        let engine_name = Engine::new(args.engine).name();
+        if !nominal.maker_note && !apple {
+            // Engine A rebuilds its metadata from parsed properties, and
+            // ImageIO parses no vendor block but Apple's. Leaving the tag in
+            // would report a graft the output does not contain.
+            eprintln!(
+                "tohdr: warning: the {engine_name} engine writes only Apple's MakerNote — \
+                 ImageIO has no property key for another vendor's — so the grafted block would \
+                 not have reached the output and was left out. `--engine videotoolbox` writes \
+                 the Exif block whole and keeps it"
+            );
+            withdrawn = Some(format!("dropped-{engine_name}"));
+        } else if nominal.max_exif_block.is_some_and(|m| found.tiff.len() > m) {
+            // An oversize block gets ImageIO to return no properties at all,
+            // so the choice is one vendor block or every standard tag.
+            eprintln!(
+                "tohdr: warning: the grafted MakerNote makes the Exif block {} bytes, past the \
+                 {}-byte limit of the {engine_name} carrier, and an oversize block yields no \
+                 metadata at all — so it was left out and the rest of the Exif kept. `--engine \
+                 videotoolbox` writes the block whole and keeps both",
+                found.tiff.len(),
+                nominal.max_exif_block.unwrap_or(0),
+            );
+            withdrawn = Some("dropped-oversize".to_string());
         }
     }
     if withdrawn.is_some() {
@@ -497,7 +497,6 @@ pub fn convert_one(args: &ConvertArgs, progress: bool) -> anyhow::Result<Convert
         );
     }
     step!("tohdr: encoder is {}", engine.name());
-    drop(loader);
 
     // Only hand each block to an engine that writes it. The distinction survives
     // into the report because "the source had no Exif" and "this engine dropped
