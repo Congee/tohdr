@@ -29,14 +29,14 @@ jobs:
       run:
         shell: nix develop --command bash -e {0}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -101,7 +101,7 @@ jobs:
           unzip -l "$ASSET"
           cat "$ASSET.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: lrplugin
           path: |
