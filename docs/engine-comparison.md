@@ -23,8 +23,8 @@ file. Reproduce with `tohdr bench` and
 ## Correctness
 
 All three backends pass **10 of 10 applicable acceptance criteria, exit 0**, on
-the independent `tools/verify_gainmap.py` (which shares no code with the Rust
-crates). Only criterion 8 skips, and only for a source that carries no
+the independent `tohdr-conformance` (whose manifest names no `tohdr-*` crate, so
+it cannot reach our reader). Only criterion 8 skips, and only for a source that carries no
 MakerApple tags to begin with: there is nothing to check. Criterion 9 passes —
 the XMP headroom copy agrees with the ISO payload to 3.4e-05 on Engine B and
 5.2e-08 on Engine A. The iPhone 17 Pro reference capture — used throughout as the
@@ -43,8 +43,9 @@ What ImageIO reports for each engine's output:
 Engine B only reaches that row after the `grpl`/`altr` fix — see
 [the structure notes](heic-gainmap-structure.md). Before it, ImageIO reported
 `iso_aux=false` and enumerated two images for a `tmap` that our reader and the
-Python checker both called valid. That defect was invisible to everything
-except the platform oracle, which is the argument for having one.
+container checker both called valid. That defect was invisible to everything
+except the platform oracle, which is the argument for having one — and is now
+criterion 17, since it was only ever two boxes and an entity list.
 
 ### Where Engine A is not a faithful oracle of itself
 
@@ -332,8 +333,10 @@ bring-up that a batch pays once and the table above strips out:
 **8x behind became 0.8x — ahead.** The output is valid where it matters: ImageIO
 reports both flavors present, the gain plane comes back as `L008` — the HEVC
 Monochrome profile keeps it genuinely single-channel, matching Apple's own
-convention rather than acquiring neutral chroma — and `tools/verify_gainmap.py`
-gives 0 failed / 9 passed / 2 skipped.
+convention rather than acquiring neutral chroma — and the container checker gives
+0 failed, with only criterion 8 skipped (measured again on a `--engine
+videotoolbox` conversion after the checker was rewritten in Rust: 10 passed, 1
+skipped, exit 0).
 
 Three things that had to be measured rather than assumed:
 
@@ -558,7 +561,7 @@ Engine A's 12%.
 That tail is not spread over the image. p99.9 error is ~3% for both, so it is
 about one pixel in a thousand, and the worst pixel for *both* engines sits at
 saturation 0.85 — inside the saturated red highlight that
-`tools/make_hdr_source.py` puts there deliberately. A single-channel gain map is
+`examples/make_hdr_source` puts there deliberately. A single-channel gain map is
 derived from luma, so a highlight that clips in one channel only is
 under-corrected by construction. Both engines hit that limit; Engine B hits it
 harder because it quantizes the gain plane more aggressively.
@@ -589,8 +592,10 @@ The headroom numbers agree to **0.019 stops (0.8%)** despite being produced by
 completely separate code — Apple's camera pipeline on one side, our
 `derive_consistent` on the other, from a decode of Apple's own reconstruction.
 The gain-plane geometry lands on exactly Apple's half-resolution convention.
-`tools/verify_gainmap.py`: 9 passed, 0 failed, exit 0; ImageIO reports both
-flavors present.
+`tohdr-conformance`: 11 passed, 0 failed, nothing skipped, exit 0 — criterion 8
+included, since a conversion of the reference capture carries and realigns its
+MakerApple tags, and all three headroom copies then agree to 2.53e-06. ImageIO
+reports both flavors present.
 
 Engine B cannot be run on this input directly — **its limitation is the decoder,
 not the encoder**. Both of its codecs would encode this fine; the pure-Rust

@@ -14,15 +14,16 @@ with Apple-style signaling and one with ISO 21496-1 signaling.
 [`docs/heic-gainmap-structure.md`](docs/heic-gainmap-structure.md) is the
 byte-level comparison of what differs between them, and
 [`docs/acceptance-criteria.md`](docs/acceptance-criteria.md) turns "matches the
-capture that works" into 16 machine-checkable criteria.
+capture that works" into 17 criteria, 16 of them machine-checkable.
 
 ## Quick start
 
 ```sh
 cargo build --release -p tohdr-cli
+cargo build --release -p tohdr-portable --example make_hdr_source
 
 # 12 MP synthetic HDR source with known-exact content
-python3 tools/make_hdr_source.py out/scene.tiff --width 3024 --height 4032
+./target/release/examples/make_hdr_source out/scene.tiff --width 3024 --height 4032
 
 # both gain-map flavors, capped at 4 MB
 ./target/release/tohdr convert out/scene.tiff -o out/photo.heic \
@@ -84,16 +85,19 @@ architecture behind it, and the optimisations that measured worse.
 Three independent layers, deliberately not sharing code:
 
 - `tohdr verify` — our own reader.
-- `tools/verify_gainmap.py` — stdlib-only ISOBMFF walk plus `exiftool`, sharing
-  no code with the Rust crates, so a bug present in both our reader and our
-  writer still shows up.
+- `tohdr-conformance` — the acceptance criteria checked against the raw bytes,
+  independent by dependency graph: its manifest names no `tohdr-*` crate, so cargo
+  will not let it call our reader, and the ISO 21496-1 payload and the Apple
+  MakerNote are parsed by `ultrahdr-core` rather than by us. So a bug present in
+  both our reader and our writer still shows up.
 - `tohdr_apple::inspect` — **macOS ImageIO itself**, the decoder every Apple app
   goes through.
 
-That third layer earned its place. Engine B once produced a `tmap` our reader
-and the Python checker both called valid, while ImageIO reported no ISO gain map
-at all. The cause was a missing `grpl`/`altr` entity group; nothing but the
-platform oracle could have caught it.
+That third layer earned its place. Engine B once produced a `tmap` our reader and
+the container checker both called valid, while ImageIO reported no ISO gain map at
+all. The cause was a missing `grpl`/`altr` entity group — which nothing but the
+platform oracle *did* catch, and which criterion 17 now checks statically, because
+it was only ever two boxes and an entity list.
 
 The second layer needed auditing too. Criteria 1 and 4 could pass *vacuously* —
 the "base" item was derived from `dimg[0]` and then compared against `dimg[0]`.
@@ -107,12 +111,16 @@ criteria have to be able to reject:
 
 | File | Result |
 |---|---|
-| iPhone 17 Pro reference capture | 11 passed, 0 failed |
+| iPhone 17 Pro reference capture | 12 passed, 0 failed |
 | `apple-imageio` output | 10 passed, 0 failed, 1 skipped |
 | `hardware-videotoolbox` output | 10 passed, 0 failed, 1 skipped |
 | `portable-hpvca` output | 10 passed, 0 failed, 1 skipped |
 | washed-out ISO-flavor export | **4 failed** |
 | washed-out Apple-flavor export | **1 failed** |
+
+The last two rows were measured with the retired Python checker and cannot be
+re-run: neither file is on disk any more. Re-export them before trusting a rewrite
+of the checker — a checker only ever tested on files that pass is untested.
 
 The remaining skip is criterion 8, MakerApple tags 33/48, which neither engine
 writes — deliberately. Apple's tag formula cannot express more than 3.0 stops
@@ -135,16 +143,19 @@ open.
 ## Layout
 
 ```
-crates/tohdr-core      pixel types, derivation, ISO 21496-1, Apple tags, XMP
-crates/tohdr-heif      ISOBMFF reader and Engine B's muxer  (no unsafe)
-crates/tohdr-apple     Engine A: ImageIO encode/decode/inspect  (the oracle),
-                       and Engine B's VideoToolbox plane codec
-crates/tohdr-portable  Engine B's hpvca plane codec, and the pure-Rust decoders
-crates/tohdr-cli       convert / batch / inspect / verify / bench
-tools/                 independent verifier, HDR test-source generator
-lightroom/             Lightroom Classic export plugin and its tests
-docs/                  structure teardown, acceptance criteria, engine comparison,
-                       performance
+crates/tohdr-core         pixel types, derivation, ISO 21496-1, Apple tags, XMP
+crates/tohdr-heif         ISOBMFF reader and Engine B's muxer  (no unsafe)
+crates/tohdr-apple        Engine A: ImageIO encode/decode/inspect  (the oracle),
+                          and Engine B's VideoToolbox plane codec
+crates/tohdr-portable     Engine B's hpvca plane codec, the pure-Rust decoders,
+                          and the HDR test-source generator (an example)
+crates/tohdr-cli          convert / batch / inspect / verify / bench
+crates/tohdr-conformance  the acceptance criteria against raw bytes; depends on
+                          no tohdr-* crate, and cargo enforces it
+tools/                    the Lightroom plugin installer
+lightroom/                Lightroom Classic export plugin and its tests
+docs/                     structure teardown, acceptance criteria, engine
+                          comparison, performance
 ```
 
 ## Known gaps

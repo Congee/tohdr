@@ -697,6 +697,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tohdr-conformance"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "ultrahdr-core",
+]
+
+[[package]]
 name = "tohdr-core"
 version = "0.1.0"
 dependencies = [

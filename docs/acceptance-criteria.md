@@ -25,38 +25,66 @@ checker while a CLI flag implied otherwise. Which tool owns what:
 
 | Criteria | Covered by |
 |---|---|
-| 1, 4, 7, 9 | `verify_gainmap.py` only — they need raw box walking, which `ReadBack` has no vocabulary for |
+| 1, 4, 7, 9, 17 | `tohdr-conformance` only — they need raw box walking, which `ReadBack` has no vocabulary for |
 | 2, 3, 5, 6, 8, 10 | both, and they must agree; a disagreement is a bug in one of them |
-| 11 | `tohdr verify` only — needs a reference file, which the Python checker has no mechanism for |
+| 11 | `tohdr verify` only — needs a reference file, which `tohdr-conformance` has no mechanism for |
 | 12, 13 | `cargo test` (`tohdr-core/tests/hdr.rs`); the PSNR half is only ever *measured* by `cargo run --example roundtrip`, never asserted |
-| 14 | `tohdr verify` only — it *is* the ImageIO oracle, which the Python checker deliberately avoids being |
+| 14 | `tohdr verify` only — it *is* the ImageIO oracle, which `tohdr-conformance` deliberately avoids being |
 | 16 | enforced at write time in `convert.rs`, re-verified by neither |
 
-So a full gate is `tohdr verify` **and** `verify_gainmap.py` **and** `cargo test`.
+So a full gate is `tohdr verify` **and** `tohdr-conformance` **and** `cargo test`.
 Any one alone leaves criteria unchecked.
 
-`tools/verify_gainmap.py` checks the container criteria **independently**, sharing
-no code with the Rust crates: it walks the boxes from raw bytes with stdlib
-`struct` and cross-checks the headroom against `exiftool`. `tohdr verify` uses
-our own reader, so a bug present in both our reader and our writer would sail
-through it; the Python checker exists to make that class of self-consistent error
-visible. Measured discrimination on the three files above: the reference capture
-passes 11/11 and exits 0; the ISO-flavor export fails criteria 2, 5, 8, 10 and
-exits 1; the Apple-flavor export fails criterion 8 and exits 1. A conversion **of
-the reference capture** now passes 11/11 through either engine, because it carries
-the source's MakerNote and realigns its headroom tag (§8 below). Converting a source that has no MakerApple
-tags of its own — a TIFF or a JPEG — still passes 10/10 applicable and skips 8,
-which is the correct outcome rather than a gap: there is no tag to check.
+`crates/tohdr-conformance` checks the container criteria **independently**, and
+the independence is a property of the build rather than a promise: its manifest
+names no `tohdr-*` crate, so cargo will not let it call our reader even by
+accident. What it does not walk itself it delegates rather than reimplements —
+`ultrahdr-core` parses the ISO 21496-1 payload and the Apple MakerNote. `tohdr
+verify` uses our own reader, so a defect present in both our reader and our writer
+would sail through it; this crate exists to make that class of self-consistent
+error visible.
 
-That last case is where having two checkers paid for itself. `tohdr verify`
+Measured: the reference capture passes 12/12 and exits 0. A conversion **of the
+reference capture** passes 11/11 with nothing skipped, because it carries the
+source's MakerNote and realigns its headroom tag (§8 below) — all three headroom
+copies then agree to 2.53e-06. Converting a source with no MakerApple tags of its
+own — a TIFF or a JPEG — passes 10/10 applicable through all three backends and
+skips 8, which is the correct outcome rather than a gap: there is no tag to check.
+
+Discrimination against the two washed-out exports was measured with the retired
+Python checker, not this one: the ISO-flavor export failed criteria 2, 5, 8, 10
+and the Apple-flavor export failed criterion 8. **Neither file is on disk any
+more**, so those runs cannot be repeated. What survives is
+`assets/fixtures/dsc07752_iso21496.bin` and, in `crates/tohdr-conformance/tests`,
+one deliberately-broken input per criterion — including the Apple-flavor export's
+exact tag 48 of `-0.008120966145`. Re-export both files before trusting any
+future rewrite of this checker; agreement on files that pass proves very little.
+
+The TIFF case is where having two checkers paid for itself. `tohdr verify`
 **failed** it — "Apple aux image present but MakerApple tags are missing" — while
-the Python checker skipped it, so the two disagreed about a file that was in fact
-correct, and every TIFF or JPEG conversion exited non-zero for obeying §8's
-"never from nothing" rule. The Rust checker was the wrong one and now skips too.
-Measured on all four files, both checkers agree: `tohdr verify` and
-`verify_gainmap.py` exit 0 on the reference capture and on a TIFF conversion, and 1 on
-both washed-out exports. A disagreement between them is by construction a bug in one of
-them, and should be chased rather than explained away.
+the container checker skipped it, so the two disagreed about a file that was in
+fact correct, and every TIFF or JPEG conversion exited non-zero for obeying §8's
+"never from nothing" rule. `tohdr verify` was the wrong one and now skips too. A
+disagreement between the two layers is by construction a bug in one of them, and
+should be chased rather than explained away.
+
+**On retiring `tools/verify_gainmap.py`.** It was the stdlib-Python container
+checker, independent by language instead of by dependency graph. Before it was
+removed the two were run against 8 files that pass (both engines × three flavors,
+the reference capture, the committed fixture) and 10 deliberately-broken ones:
+identical verdicts on every criterion for all 8 passing files, and non-zero exit
+on all 10 broken ones from both, so neither ever accepted what the other rejected.
+They differed on two of the broken files, both times with the Python degrading
+where this checker attributes:
+
+- a zero gamma denominator — the Python fails criterion 4 and *skips* 5, 6, 7 and
+  10, because its own parse fails and it has no metadata to judge, which leaves
+  criterion 7 unable to fail on the one defect it names. This checker passes 4
+  (item, references, brand and length are all correct) and fails 5, 6, 7 and 10.
+- a payload that lies about its channel count — 62 bytes with `is_multichannel`
+  set — the Python exits 2 on an unhandled `struct` error, reporting an unreadable
+  file. This checker fails criterion 4 with the length it wanted and the length it
+  found.
 
 Reference values come from `docs/heic-gainmap-structure.md`, decoded byte by byte
 from the real files; the raw payloads are committed under `assets/fixtures/`.
@@ -110,8 +138,23 @@ is a defect even when one implementation's algebra survives it.
    consumer needs the back-reference to know which image the map applies to.
 4. **[verify]** With a flavor including ISO: a `tmap` derived item exists, its
    `dimg` lists `[base, gain]` in that order, `tmap` appears in `ftyp`'s
-   compatible brands, and its payload is exactly 62 bytes (1 `ToneMapImage`
-   version byte + the 61-byte single-channel C.2.2 struct).
+   compatible brands, and its payload is exactly the size its own channel-count
+   flag implies — 62 bytes for one channel (1 `ToneMapImage` version byte + the
+   61-byte C.2.2 struct), 142 for three. The size is fixed for a given channel
+   count, so matching it is the whole of "exact": a payload with trailing slack
+   has the wrong length. Both sizes are accepted because three channels is a
+   legitimate improvement (see the end of this file), not a defect.
+17. **[verify]** With a flavor including ISO: a `grpl` box carries an `altr`
+    entity group containing both the `tmap` item and the base. Numbered last
+    because it was added last, but it belongs here.
+
+    This is the defect that **only macOS ImageIO caught**: Engine B once produced
+    a file whose every box was correct and which both container checkers called
+    valid, while ImageIO reported no ISO gain map at all. Nothing but the
+    platform oracle could see it, which was true right up until it was checked
+    for — it is two boxes and an entity list, visible to anything that walks the
+    container. Criterion 14 stays as it is; a platform oracle is still worth
+    having for the next thing nobody thought to check.
 
 ## B. Metadata correctness
 
@@ -199,11 +242,12 @@ This is where both broken exports actually fail, and the failure is shared:
    1e-3. Apple writes it three times and all three agree — a file whose copies
    disagree is one where some consumer will read the wrong one.
 
-   `verify_gainmap.py` originally compared only the ISO and XMP copies, which
+   The container checker originally compared only the ISO and XMP copies, which
    made this criterion blind to the copy most likely to be stale: the MakerApple
    pair a conversion inherits when it carries a source's MakerNote. It now
-   compares all three. The extended check passes on the reference capture itself (worst
-   delta 9.59e-05) and fails a verbatim carry, which is what forced the tag-48
+   compares all three, every pair against every other. The extended check passes
+   on the reference capture itself (worst
+   delta 9.71e-05) and fails a verbatim carry, which is what forced the tag-48
    rewrite in §8.
 
 ## C. Predicted render behavior
@@ -220,7 +264,7 @@ display:
     guarantees by construction, since it clamps to `[0, 1]` before an optional
     sign flip, so the check could only fail on NaN and stayed green on a file
     whose delivered gain was off by a full stop. It is now
-    `every_display_gets_its_stops` and reports identically to the Python
+    `every_display_gets_its_stops` and reports identically to the container
     checker: on the ISO-flavor export both say *worst at 2.00-stop display: delivered
     1.099, expected 1.960 (err 0.861)*.
 
@@ -249,9 +293,9 @@ display:
     *This was enforced nowhere until it was checked.* `verify.rs` computed the
     verdict before the reference was inspected and then printed the reference's
     checks without folding them in, so `--against` looked like it served this
-    criterion while contributing nothing to the exit code; `verify_gainmap.py`
-    does not implement it at all, and still doesn't — it has no reference-file
-    mechanism. Rust-only coverage is therefore expected here, not a divergence.
+    criterion while contributing nothing to the exit code; the container checker
+    does not implement it at all — it has no reference-file mechanism.
+    `tohdr verify`-only coverage is therefore expected here, not a divergence.
 
 ## D. Reconstruction fidelity
 

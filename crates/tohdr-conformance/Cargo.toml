@@ -1,0 +1,24 @@
+[package]
+name = "tohdr-conformance"
+version = "0.1.0"
+description = "Independent acceptance checker; shares no code with the tohdr crates"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "tohdr-conformance"
+path = "src/main.rs"
+
+# No `tohdr-*` dependency, deliberately. `tohdr verify` reads our output with our
+# own reader, so a defect shared by the reader and the writer is invisible to it;
+# this crate is the second opinion, and cargo is what keeps it one.
+#
+# What it does not walk itself it delegates rather than reimplements:
+# ultrahdr-core parses the ISO 21496-1 payload and the Apple MakerNote.
+# default-features off for the same reason tohdr-core does it -- `tonemap` pulls
+# AGPL-3.0-only zentone, which nothing here uses.
+[dependencies]
+ultrahdr-core = { version = "0.6", default-features = false, features = ["std"] }
+serde_json = "1"

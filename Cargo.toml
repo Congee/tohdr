@@ -6,6 +6,7 @@ members = [
     "crates/tohdr-apple",
     "crates/tohdr-portable",
     "crates/tohdr-cli",
+    "crates/tohdr-conformance",
     "spikes/hpvca-probe",
     "spikes/imageio-probe",
 ]

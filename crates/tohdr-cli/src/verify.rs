@@ -143,7 +143,7 @@ pub fn checks_for(rb: &ReadBack) -> Vec<Check> {
 
     // Criterion 6. Absent from this checker until now, so a file declaring a
     // non-zero base headroom — a mis-declared HDR base, or a future writer bug —
-    // passed every Rust check while `verify_gainmap.py` failed it twice over.
+    // passed every check here while the container checker failed it twice over.
     if let Some(m) = &rb.iso_meta {
         checks.push(Check {
             name: "base_headroom_zero".into(),
@@ -167,7 +167,7 @@ pub fn checks_for(rb: &ReadBack) -> Vec<Check> {
     // `[-1, 1]`. That was a tautology — `gain_weight` clamps to `[0, 1]` before
     // returning (`tohdr_core::hdr`), then optionally negates — so it could only
     // ever fail on NaN, and it stayed green on a synthetic file whose real
-    // delivered gain was off by a full stop. `verify_gainmap.py` has checked the
+    // delivered gain was off by a full stop. The container checker has checked the
     // genuine invariant all along; this brings the two into line.
     //
     // `max_log2` is floored at zero for the same reason criterion 5 floors it:
@@ -473,7 +473,7 @@ mod tests {
 
     /// The inverse of what this test used to assert. It required a failure when
     /// an Apple-flavor file carried no tags, which contradicted
-    /// `docs/acceptance-criteria.md` §8 and `tools/verify_gainmap.py:587` — and
+    /// `docs/acceptance-criteria.md` §8 and the container checker — and
     /// made a conversion of any TIFF or JPEG exit non-zero, since those have no
     /// MakerNote to carry and §8's rule is "never from nothing".
     #[test]

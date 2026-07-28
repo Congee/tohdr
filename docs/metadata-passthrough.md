@@ -114,10 +114,12 @@ decodes the same either way and stays as the camera wrote it. Above 3.0 stops no
 tag 48 can express the headroom without understating it, and then both tags are
 removed in place — §8's "silence is correct", with the other 23 tags kept.
 
-`tools/verify_gainmap.py` criterion 9 now includes the MakerApple copy. It did
-not before, which is how a stale copy could have ridden along unnoticed; the
-extended check passes on Apple's own file (worst delta 9.59e-05) and would fail
-on a verbatim carry.
+The container checker's criterion 9 includes the MakerApple copy. It did not
+before, which is how a stale copy could have ridden along unnoticed; the extended
+check passes on Apple's own file (worst delta 9.71e-05) and would fail on a
+verbatim carry. Note the formula it uses is Skia's `SkExif.cpp:83-95`, not
+`ultrahdr-core`'s `headroom_stops()` — those differ, and only Skia's reproduces
+the agreement Apple itself wrote into the reference capture.
 
 ## 3. XMP is merged, not replaced
 
@@ -238,7 +240,7 @@ since the user set that deliberately.
 
 Caveat: this is the dialog's remembered state, not a measured export. No LrC TIFF
 has been through the `tiff-ifd0` path yet; that arm is tested against a
-`tools/make_hdr_source.py` TIFF with `exiftool`-injected tags, not against
+`examples/make_hdr_source` TIFF with `exiftool`-injected tags, not against
 Lightroom's own output.
 
 ## 7. Still missing
