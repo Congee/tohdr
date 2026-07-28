@@ -2,6 +2,8 @@
 /out
 /.direnv
 /.claude
+# Local orientation notes, not a deliverable.
+/HANDOFF.md
 *.heic
 *.HEIC
 *.jpg
