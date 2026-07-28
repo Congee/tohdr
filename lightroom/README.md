@@ -23,12 +23,31 @@ stays the live copy.
 GUI step:
 
 ```sh
+tools/install-lrplugin.sh
+```
+
+which builds the CLI, copies the four `.lua` files and the binary, and stamps the
+commit into `Info.lua`'s `VERSION.build` — `202607271212-c374036f`, or
+`…-dirty` when the tree has uncommitted changes under `lightroom/` or `crates/`.
+By hand it is:
+
+```sh
 cargo build --release -p tohdr-cli
 DEST="$HOME/Library/Application Support/Adobe/Lightroom/Modules/tohdr.lrplugin"
 mkdir -p "$DEST"
 install -m 644 lightroom/tohdr.lrplugin/*.lua "$DEST/"
 install -m 755 target/release/tohdr "$DEST/tohdr"
 ```
+
+The stamp exists because of point 2 below: nothing inside the plugin can tell you
+which copy of the Lua is live, and access times on those files do not move when
+Lightroom reads them — an hour went into learning that. Plug-in Manager displays
+the version string, so afterwards the question is answered by looking at it. The
+`<timestamp>-<short sha>` format is Adobe's own: every LrC 15.3 sample plugin
+carries `build="202604090947-8f3672ed"`, the string that also names the SDK bundle
+they shipped in. The SDK Guide documents the field nowhere; this was read off
+`docs/LrC_15.3_*/Sample Plugins/*/Info.lua`. The checkout stays `build = "dev"`,
+so a stamp can never be committed by accident.
 
 Either way:
 
@@ -74,6 +93,7 @@ Either way:
 | Maximum file size (e.g. 4 MB) | `--max-size` |
 | Quality, minimum quality | `--quality`, `--min-quality` |
 | Tone map — clip / Reinhard | `--tone-map` |
+| Copy the camera's MakerNote from the original file | `--maker-note-from <raw>` |
 | *(not exposed)* base colour space, fixed at P3 | `--colour-space p3` |
 | Custom tohdr path | — |
 
@@ -119,6 +139,72 @@ is deleted and the photo fails with an explanation. A gain map derived from an
 already-clipped SDR rendition describes no HDR at all, and shipping one is the
 exact failure this project exists to prevent.
 
+### The camera's MakerNote
+
+The intermediate cannot carry one. Measured on `DSC07746.ARW` and the TIFF
+Lightroom exports from it: 42 of the raw's 60 standard Exif tags reach the TIFF
+and **none** of Sony's 124 `MakerNote` ones. A vendor block is opaque to a
+renderer, and it is addressed with offsets into the raw file, so there is nothing
+sensible for Lightroom to forward.
+
+So with the box checked the plugin asks the catalog for the original file —
+`photo:getRawMetadata('path')`, which the SDK documents as *"the current path to
+the photo file if available; otherwise, the last known path"*, hence the existence
+check — and passes it to `--maker-note-from`. `tohdr` reads about the first 43 KB
+of it, lifts tag `0x927C`, and places the blob at the offset it occupied **in the
+raw** (5,222 for this file), padding the block out to reach it. Nothing inside the
+blob is rewritten, which is what makes it safe: the vendor's own pointers address
+the bytes they were written to address. Verified end to end — `exiftool -a
+-Sony:all` reports the same 124 tags with the same raw values off the ARW and off
+the output.
+
+Two caveats, both of which the dialog states:
+
+- **It needs a Portable engine.** Engine A rebuilds its metadata through
+  ImageIO's property model, which has a key for Apple's `MakerNote` and none for
+  anyone else's, so a Sony block goes in and 0 tags come out. `tohdr` detects this
+  from the engine's own `MetadataSupport` and withdraws the graft rather than
+  reporting one the file does not contain — the warning then reaches the advisory
+  dialog.
+- **It describes the capture, not your edit.** As-shot white balance,
+  `DynamicRangeOptimizer`, `CreativeStyle: Standard` — all the camera's, and a
+  photo developed in Lightroom no longer matches them. This is what every
+  exiftool user copying a `MakerNote` already accepts, and it is genuine
+  provenance, but it is not a description of the pixels shipped beside it. One
+  tag is a live pointer either way: `HiddenDataOffset` names bytes only the raw
+  contains, and exiftool duly resolves it against the new file.
+
+Restricted to `RAW`, `DNG` and `JPG` masters. A `PSD` or `TIFF` master is a scan
+or a composite; asking `tohdr` to look in one earns a "has no MakerNote to take"
+warning per photo, which is a dialog full of notices about files that were never
+going to have one. Virtual copies resolve through `masterPhoto`.
+
+### Naming
+
+Two namespaces, one rule each.
+
+**Names we declare are `snake_case`** — locals, our own functions, our own table
+fields. All of them, no exceptions.
+
+**Strings Lightroom reads keep the spelling Lightroom expects**, which for
+Adobe's is `camelCase`: the `LR_*` export keys, the fields on the export-service
+table (`startDialog`, `processRenderedPhotos`), its methods (`getRawMetadata`,
+`waitForRender`).
+
+The `tohdr_*` preset keys belong to that second namespace, and they are frozen.
+Lightroom writes them into every saved export preset, so renaming
+`tohdr_maxSizeEnabled` does not rename a variable — it orphans a stored setting.
+The key silently reverts to its default on load, including a user's custom binary
+path, and nothing reports that it happened. They keep the spelling they shipped
+with; a new key (`tohdr_makerNote`) joins them in that spelling rather than
+splitting one table between two conventions. `share 'tohdr_labelWidth'` isn't
+persisted, but it is a string handed to Lightroom in the same namespace, so it
+matches its neighbours.
+
+Adobe is not internally consistent here either (`LrView` takes
+`fill_horizontal` and `width_in_digits`), so matching it everywhere was never an
+option; the boundary above is what can actually be held.
+
 Three settings keys were wrong before LrC's own preferences were dumped and
 read: `LR_export_useHDR` does not exist (it was silently ignored, so every
 intermediate was SDR), `ProPhotoRGB` is a wide-gamut *SDR* space that the CLI
@@ -133,7 +219,7 @@ Be clear about which half of this is proven.
 **Verified here, by running it:**
 
 - All four plugin files and the test file parse: `luajit -bl` on each, 5/5 OK.
-- `lua lightroom/tests/test_TohdrCli.lua` — **87 checks, 0 failures**. Covers
+- `lua lightroom/tests/test_TohdrCli.lua` — **151 checks, 0 failures**. Covers
   command-line construction and, most importantly, shell quoting: spaces,
   embedded single quotes, `$(...)`, backticks, semicolons, backslashes, double
   quotes and unicode all survive as literals. Also binary-location precedence,
@@ -143,13 +229,32 @@ Be clear about which half of this is proven.
   `tohdr: note:`/`tohdr: warning:` prefix counts so a filename cannot fake one,
   and that the same condition across many photos collapses to one line with a
   count), that the removed PATH-guessing helpers stay removed, and that
-  `locateBinary` is unaffected by a sandbox with `os.getenv` deleted.
+  `locate_binary` is unaffected by a sandbox with `os.getenv` deleted.
+
+  It also freezes the eleven `tohdr_*` export-preset keys against a list, and
+  checks that every dialog default and every widget binding names one of them.
+  That guard exists because it was needed: the snake_case pass renamed all seven
+  camelCase keys, which reads as a refactor and is actually silent data loss —
+  Lightroom does not find a renamed key in a saved preset, so the setting reverts
+  to its default with no error, the user's custom binary path included. Verified
+  the guard fails: renaming one key in a scratch copy produces seven failures,
+  from the declaration, the frozen list, the default and the binding.
+
+  Two more earn their keep by having caught something. `gain_map_source` must
+  read the JSON, because the gate that guards this plugin's entire purpose — an
+  SDR intermediate yielding a washed-out HEIC reported as a success — searched the
+  *prose* for `gain map: derived`, and the plugin passes `--json`, under which the
+  CLI emits that line nowhere. The gate could not fire. Its replacement is
+  anchored to the start of a line, because the test for a filename containing
+  `gain map: derived` failed the first version — and because the opposite message
+  ends `…not derived`, so any substring search finds the word in the line that
+  means the reverse.
 
   The count is environment-independent by design — verified identical under
   `PATH` empty, `PATH` long, and `HOME` unset. It used to be 172 only because a
   loop asserted once per `PATH` entry, so it silently tracked the length of the
   tester's own `PATH`; that number was never reproducible on another machine.
-- `sh lightroom/tests/test_cli_contract.sh` — **19 checks, 0 failures**. Runs
+- `sh lightroom/tests/test_cli_contract.sh` — **25 checks, 0 failures**. Runs
   the real binary and asserts every flag the plugin emits exists, and that every
   flavor/engine/tone-map/size string the dialog can produce is accepted. This is
   the guard against `cli.rs` being renamed out from under the Lua.
@@ -184,7 +289,7 @@ Be clear about which half of this is proven.
   stops, every invariant `ok`. So `waitForRender` and `configureProgress` behave
   as assumed across a session — and `uploadFailed` does too, from the export
   before it, which reported `tohdr failed (exit 1)` in the Export Results dialog:
-  the real exit code, so `decodeExitStatus` unpacks a real wait status correctly
+  the real exit code, so `decode_exit_status` unpacks a real wait status correctly
   in a real Lightroom, not just in the test.
 - **That `LR_enableHDRDisplay` and `LR_export_bitDepthOthers` are accepted under
   those names by an export service**, which was previously inferred from the
@@ -231,6 +336,23 @@ Be clear about which half of this is proven.
   exercised only in Lua, never on screen. The dialog is the last thing standing
   between a future silent fallback and the user, so it is worth confirming the
   first time an export legitimately trips one.
+
+  The MakerNote change makes that likely on the next export: with the box checked
+  and the Apple engine selected — both defaults — `tohdr` emits exactly one
+  `warning:` per photo saying the engine writes no foreign `MakerNote`, which is
+  the advisory dialog's first real customer.
+- **That `getRawMetadata('path')` returns what this expects inside a live
+  export.** The SDK documents the key, the gate (`fileFormat`, `isVirtualCopy`,
+  `masterPhoto`) and that no `catalog:with___AccessDo` wrapper is needed inside an
+  `LrTasks` task — and `processRenderedPhotos` is one — but none of it has been run
+  against a real catalog yet. The `--maker-note-from` half is verified from the
+  command line on the real `DSC07746.ARW`; only the "ask Lightroom which file this
+  came from" half is untested. Failing that lookup is designed to be harmless: the
+  flag is omitted and the conversion is what it was before.
+- **That Plug-in Manager displays `VERSION.build`** as the stamp
+  `tools/install-lrplugin.sh` writes. The field is a string in Adobe's own
+  samples and `Info.lua` still parses and `dofile`s with one in it, but the
+  rendering has not been looked at.
 
 The plugin is installed in the `Modules` folder on this machine, so the first two
 lists reflect a real Lightroom, not inference. Every item in the second list got

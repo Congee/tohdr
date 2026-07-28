@@ -32,7 +32,25 @@ return {
 	LrToolkitIdentifier = 'com.tohdr.lightroom-export',
 	LrPluginName = "HDR Gain-Map HEIC",
 
-	VERSION = { major = 0, minor = 1, revision = 0, build = 0 },
+	-- The fourth field is the build, and it takes a *string* as well as a number.
+	-- Adobe's own LrC 15.3 samples all carry
+	--   VERSION = { major=15, minor=3, revision=0, build="202604090947-8f3672ed" }
+	-- which is a UTC build timestamp and a git short hash -- the same string that
+	-- names the SDK bundle it shipped in. (Its older samples use `build=200000`,
+	-- an integer, so both forms work. The SDK Guide documents neither; this is read
+	-- off `docs/LrC_15.3_*/Sample Plugins/*/Info.lua`.)
+	--
+	-- Worth using here, because this plugin has a provenance problem the same shape
+	-- as Adobe's. The `Modules` folder is scanned only at launch and a running
+	-- Lightroom holds the `.lua` files it loaded, so "is Lightroom running the code
+	-- I just edited?" is a real question with no answer from inside the plugin --
+	-- access times do not move on those files, which cost an hour of debugging
+	-- once. Plug-in Manager shows this version string, so stamping the commit into
+	-- it answers that question by looking.
+	--
+	-- `"dev"` is what a checkout says. `tools/install-lrplugin.sh` rewrites this
+	-- line as it copies the bundle, so an installed plugin names its own commit.
+	VERSION = { major = 0, minor = 1, revision = 0, build = "dev" },
 
 	LrExportServiceProvider = {
 		title = "HDR Gain-Map HEIC",

@@ -23,17 +23,17 @@ local M = {}
 --- *nothing* is special -- no `$`, `` ` ``, `\`, or `"` expansion -- which is
 --- exactly what a photo path (spaces, unicode, even literal `$` or `` ` ``)
 --- needs.
-function M.quoteArg(s)
-	assert(type(s) == "string", "quoteArg: expected a string")
+function M.quote_arg(s)
+	assert(type(s) == "string", "quote_arg: expected a string")
 	return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
 --- Build a full shell command line from a binary path and an array of plain
 --- (unquoted) argument strings. Every element is quoted independently.
-function M.buildCommandLine(binaryPath, args)
-	local parts = { M.quoteArg(binaryPath) }
+function M.build_command_line(binary_path, args)
+	local parts = { M.quote_arg(binary_path) }
 	for _, a in ipairs(args) do
-		table.insert(parts, M.quoteArg(tostring(a)))
+		table.insert(parts, M.quote_arg(tostring(a)))
 	end
 	return table.concat(parts, " ")
 end
@@ -50,7 +50,7 @@ M.FLAVORS = { "apple", "iso", "both" }
 M.ENGINES = { "apple", "portable" }
 M.TONE_MAPS = { "clip", "reinhard" }
 
-local function isNonEmpty(v)
+local function is_non_empty(v)
 	return v ~= nil and v ~= ""
 end
 
@@ -58,35 +58,41 @@ end
 --- `tohdr convert <input> --output <output> [...]` from export settings.
 ---
 --- `settings` fields consumed (all optional except flavor/engine/quality/
---- minQuality/toneMap, which the dialog always sets a default for):
----   tohdr_flavor        "apple" | "iso" | "both"
----   tohdr_engine        "apple" | "portable"
----   tohdr_maxSizeEnabled boolean
----   tohdr_maxSizeValue  number, e.g. 4
----   tohdr_maxSizeUnit   "MB" | "MiB"
----   tohdr_quality       number 1..100
----   tohdr_minQuality    number 1..100
----   tohdr_toneMap       "clip" | "reinhard"
----   tohdr_gainSubsample number (optional; omitted -> CLI default of 2)
----   tohdr_headroom      number (optional; omitted -> CLI auto-derives it)
-function M.buildConvertArgs(settings, inputPath, outputPath)
-	assert(isNonEmpty(inputPath), "buildConvertArgs: inputPath is required")
-	assert(isNonEmpty(outputPath), "buildConvertArgs: outputPath is required")
+--- min_quality/tone_map, which the dialog always sets a default for):
+---   tohdr_flavor            "apple" | "iso" | "both"
+---   tohdr_engine            "apple" | "portable"
+---   tohdr_maxSizeEnabled    boolean
+---   tohdr_maxSizeValue      number, e.g. 4
+---   tohdr_maxSizeUnit       "MB" | "MiB"
+---   tohdr_quality           number 1..100
+---   tohdr_minQuality        number 1..100
+---   tohdr_toneMap           "clip" | "reinhard"
+---   tohdr_gainSubsample     number (optional; omitted -> CLI default of 2)
+---   tohdr_headroom          number (optional; omitted -> CLI auto-derives it)
+---   tohdr_makerNote         boolean; pass `raw_path` to `--maker-note-from`
+---
+--- `raw_path` is the original camera file this rendition was developed from, when
+--- the caller could find one. Optional and per-photo, so it is an argument rather
+--- than a setting: `tohdr_makerNote` is the user's standing choice, this is the
+--- one file that choice applies to.
+function M.build_convert_args(settings, input_path, output_path, raw_path)
+	assert(is_non_empty(input_path), "build_convert_args: input_path is required")
+	assert(is_non_empty(output_path), "build_convert_args: output_path is required")
 
-	local args = { "convert", inputPath, "--output", outputPath }
+	local args = { "convert", input_path, "--output", output_path }
 
-	if isNonEmpty(settings.tohdr_flavor) then
+	if is_non_empty(settings.tohdr_flavor) then
 		table.insert(args, "--flavor")
 		table.insert(args, settings.tohdr_flavor)
 	end
 
-	if isNonEmpty(settings.tohdr_engine) then
+	if is_non_empty(settings.tohdr_engine) then
 		table.insert(args, "--engine")
 		table.insert(args, settings.tohdr_engine)
 	end
 
 	if settings.tohdr_maxSizeEnabled and settings.tohdr_maxSizeValue then
-		local unit = isNonEmpty(settings.tohdr_maxSizeUnit) and settings.tohdr_maxSizeUnit or "MB"
+		local unit = is_non_empty(settings.tohdr_maxSizeUnit) and settings.tohdr_maxSizeUnit or "MB"
 		table.insert(args, "--max-size")
 		table.insert(args, tostring(settings.tohdr_maxSizeValue) .. unit)
 	end
@@ -101,7 +107,7 @@ function M.buildConvertArgs(settings, inputPath, outputPath)
 		table.insert(args, tostring(settings.tohdr_minQuality))
 	end
 
-	if isNonEmpty(settings.tohdr_toneMap) then
+	if is_non_empty(settings.tohdr_toneMap) then
 		table.insert(args, "--tone-map")
 		table.insert(args, settings.tohdr_toneMap)
 	end
@@ -125,6 +131,17 @@ function M.buildConvertArgs(settings, inputPath, outputPath)
 	if settings.tohdr_headroom then
 		table.insert(args, "--headroom")
 		table.insert(args, tostring(settings.tohdr_headroom))
+	end
+
+	-- The one thing the intermediate cannot carry. Lightroom renders most of what
+	-- the raw says about the photograph into the TIFF's Exif and none of the
+	-- vendor MakerNote, so `tohdr` reads that block out of the original instead.
+	-- Both conditions matter: the user asked for it, and we actually found a file
+	-- to read. Nothing is passed when either is missing, and then `tohdr` behaves
+	-- exactly as it did before this existed.
+	if settings.tohdr_makerNote and is_non_empty(raw_path) then
+		table.insert(args, "--maker-note-from")
+		table.insert(args, raw_path)
 	end
 
 	table.insert(args, "--json")
@@ -175,7 +192,7 @@ end
 --- 128+signal, which is already the familiar shell rendering. A small nonzero
 --- value is genuinely ambiguous between those two platforms and there is no
 --- information here to resolve it, so this does not pretend to.
-function M.decodeExitStatus(status)
+function M.decode_exit_status(status)
 	local n = tonumber(status)
 	if n == nil then
 		return status
@@ -193,8 +210,8 @@ end
 --- budget could not be met, and what to change), so the last non-empty line is
 --- almost always the actionable part. Swallowing it and reporting only an exit
 --- code would throw away the useful half.
-function M.summarizeFailure(status, output)
-	status = M.decodeExitStatus(status)
+function M.summarize_failure(status, output)
+	status = M.decode_exit_status(status)
 	local last
 	for line in tostring(output or ""):gmatch("[^\r\n]+") do
 		if line:match("%S") then
@@ -205,6 +222,50 @@ function M.summarizeFailure(status, output)
 		return "tohdr failed (exit " .. tostring(status) .. "): " .. last
 	end
 	return "tohdr failed (exit " .. tostring(status) .. ") with no output"
+end
+
+--- Where the gain map in a successful run's output came from.
+---
+--- `"lightroom-embedded"` when `tohdr` transcoded the intermediate's own gain
+--- map, `"derived"` when it computed one from the pixels, `nil` when the output
+--- says neither.
+---
+--- This reads the JSON, not the prose, and that is the whole point of it. The
+--- plugin passes `--json`, and with `--json` the CLI prints *only* the JSON object
+--- -- the human-readable "  gain map: derived from the source's HDR pixels" line
+--- lives in the other branch of `convert::run` and is never emitted. So the gate
+--- that searched for that line could not match, and an SDR intermediate would have
+--- produced a washed-out HEIC reported as a success: the one failure this plugin
+--- exists to catch, silently unguarded.
+---
+--- Matched as a pattern rather than parsed, because Lightroom's Lua has no JSON
+--- decoder and this is one flat object of scalars from a serde struct -- no
+--- nesting, no escapes in this field's value. The text forms are still recognized
+--- so a run without `--json` is not a blind spot, and they are anchored to the
+--- start of a line for two reasons: a filename containing "gain map: derived"
+--- would otherwise fake one, and the *transcoded* line ends "...not derived", so a
+--- plain substring search for the word finds it in the message that means the
+--- opposite.
+---
+--- `nil` for an output that names no source -- an older binary, or a future one
+--- that renames the field. Callers must treat that as "do not fail the photo": a
+--- wrong accusation deletes a good file, where a missed one leaves a file the user
+--- can still look at.
+function M.gain_map_source(output)
+	local text = tostring(output or "")
+	local from_json = text:match('"gain_map_source"%s*:%s*"([^"]*)"')
+	if from_json then
+		return from_json
+	end
+	for line in text:gmatch("[^\r\n]+") do
+		local word = line:match("^%s*gain map:%s*(%a+)")
+		if word == "transcoded" then
+			return "lightroom-embedded"
+		elseif word == "derived" then
+			return "derived"
+		end
+	end
+	return nil
 end
 
 --- Pull the advisory lines out of a *successful* run's output.
@@ -250,7 +311,7 @@ end
 --- Returns nil when there is nothing to report, so the caller can skip showing a
 --- dialog at all -- an export that went exactly as asked must stay silent, or the
 --- dialog becomes noise that gets clicked away without reading.
-function M.summarizeAdvisories(list)
+function M.summarize_advisories(list)
 	if not list or #list == 0 then
 		return nil
 	end
@@ -264,7 +325,7 @@ function M.summarizeAdvisories(list)
 end
 
 --- Merge one run's advisories into a running list, preserving order and counts.
-function M.mergeAdvisories(into, list)
+function M.merge_advisories(into, list)
 	for _, item in ipairs(list or {}) do
 		local found
 		for _, existing in ipairs(into) do
@@ -284,39 +345,39 @@ end
 
 --- Decide which `tohdr` binary to run, in priority order:
 ---   1. explicit user-configured path (settings dialog "Custom tohdr path")
----   2. the bundled binary beside the plugin (pluginBinaryPath)
+---   2. the bundled binary beside the plugin (plugin_binary_path)
 ---
---- There is no third option -- see the note above `summarizeFailure`. Nothing
+--- There is no third option -- see the note above `summarize_failure`. Nothing
 --- is ever located by guessing.
 ---
---- All existence checks go through the injected `fileExists(path) -> bool`
+--- All existence checks go through the injected `file_exists(path) -> bool`
 --- so this function has no direct filesystem access and is fully testable
 --- with a fake.
 ---
---- Returns `path, nil` on success, or `nil, errorMessage` if nothing was
---- found -- callers should show `errorMessage` to the user rather than
+--- Returns `path, nil` on success, or `nil, error_message` if nothing was
+--- found -- callers should show `error_message` to the user rather than
 --- fail silently.
-function M.locateBinary(opts)
-	local userPath = opts.userBinaryPath
-	local pluginBinaryPath = opts.pluginBinaryPath
-	local fileExists = assert(opts.fileExists, "locateBinary: fileExists is required")
+function M.locate_binary(opts)
+	local user_path = opts.user_binary_path
+	local plugin_binary_path = opts.plugin_binary_path
+	local file_exists = assert(opts.file_exists, "locate_binary: file_exists is required")
 
-	if isNonEmpty(userPath) then
-		if fileExists(userPath) then
-			return userPath, nil
+	if is_non_empty(user_path) then
+		if file_exists(user_path) then
+			return user_path, nil
 		end
-		return nil, "The configured tohdr path does not exist: " .. userPath
+		return nil, "The configured tohdr path does not exist: " .. user_path
 	end
 
-	if isNonEmpty(pluginBinaryPath) and fileExists(pluginBinaryPath) then
-		return pluginBinaryPath, nil
+	if is_non_empty(plugin_binary_path) and file_exists(plugin_binary_path) then
+		return plugin_binary_path, nil
 	end
 
 	-- Name the expected location, because it is now the only automatic one and
 	-- a user has no other way to guess where we looked.
 	return nil, "Could not find the 'tohdr' binary. It belongs beside the "
 		.. "plugin's .lua files"
-		.. (isNonEmpty(pluginBinaryPath) and (" (expected at " .. pluginBinaryPath .. ")") or "")
+		.. (is_non_empty(plugin_binary_path) and (" (expected at " .. plugin_binary_path .. ")") or "")
 		.. " -- build it with `cargo build --release -p tohdr-cli` and copy it "
 		.. "there, or set a custom path in the export dialog."
 end

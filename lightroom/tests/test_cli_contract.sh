@@ -28,9 +28,10 @@ want_flag() {
     fi
 }
 
-# Every flag TohdrCli.buildConvertArgs can emit.
+# Every flag TohdrCli.build_convert_args can emit.
 for f in --output --flavor --engine --max-size --quality --min-quality \
-         --tone-map --gain-subsample --headroom --json --colour-space; do
+         --tone-map --gain-subsample --headroom --json --colour-space \
+         --maker-note-from; do
     want_flag "$f"
 done
 

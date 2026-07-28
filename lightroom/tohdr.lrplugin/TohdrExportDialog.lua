@@ -4,21 +4,21 @@ TohdrExportDialog.lua
 
 Builds the export-settings section shown in Lightroom's Export dialog:
 gain-map flavor, engine, max output size, quality, and tone-map. This file
-only constructs LrView widgets bound to `propertyTable` -- no CLI or process
+only constructs LrView widgets bound to `property_table` -- no CLI or process
 logic lives here (see TohdrCli.lua for that).
 
 ------------------------------------------------------------------------]]
 
 local LrView = import 'LrView'
 
-local TohdrExportDialog = {}
+local M = {}
 
 local bind = LrView.bind
 local share = LrView.share
 
 --- Fill in defaults the first time the dialog opens for this preset/export.
---- Called from TohdrExportServiceProvider.startDialog.
-function TohdrExportDialog.startDialog(propertyTable)
+--- Assigned to Adobe's `startDialog` field by ExportServiceProvider.lua.
+function M.start_dialog(property_table)
 	local defaults = {
 		tohdr_flavor = "both",
 		tohdr_engine = "apple",
@@ -28,19 +28,20 @@ function TohdrExportDialog.startDialog(propertyTable)
 		tohdr_quality = 85,
 		tohdr_minQuality = 40,
 		tohdr_toneMap = "reinhard",
+		tohdr_makerNote = true,
 		tohdr_binaryPath = "",
 	}
 	for k, v in pairs(defaults) do
-		if propertyTable[k] == nil then
-			propertyTable[k] = v
+		if property_table[k] == nil then
+			property_table[k] = v
 		end
 	end
 end
 
 --- The dialog section. Returned as a one-element array per the
 --- sectionsForTopOfDialog contract.
-function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
-	local labelWidth = share 'tohdr_labelWidth'
+function M.sections_for_top_of_dialog(f, property_table)
+	local label_width = share 'tohdr_labelWidth'
 
 	return {
 		{
@@ -50,7 +51,7 @@ function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
 				f:static_text {
 					title = "Flavor:",
 					alignment = "right",
-					width = labelWidth,
+					width = label_width,
 				},
 				f:popup_menu {
 					value = bind 'tohdr_flavor',
@@ -66,7 +67,7 @@ function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
 				f:static_text {
 					title = "Engine:",
 					alignment = "right",
-					width = labelWidth,
+					width = label_width,
 				},
 				-- Two engines, three values. Engine A is ImageIO. Engine B is our
 				-- muxer over a plane codec, and it has two codecs:
@@ -113,7 +114,7 @@ function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
 				},
 			},
 			f:row {
-				f:spacer { width = labelWidth },
+				f:spacer { width = label_width },
 				f:static_text {
 					title = "tohdr re-encodes down to --min-quality below if the first pass overshoots.",
 					enabled = bind 'tohdr_maxSizeEnabled',
@@ -126,7 +127,7 @@ function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
 				f:static_text {
 					title = "Quality:",
 					alignment = "right",
-					width = labelWidth,
+					width = label_width,
 				},
 				f:edit_field {
 					value = bind 'tohdr_quality',
@@ -149,7 +150,7 @@ function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
 				f:static_text {
 					title = "Tone map:",
 					alignment = "right",
-					width = labelWidth,
+					width = label_width,
 				},
 				f:popup_menu {
 					value = bind 'tohdr_toneMap',
@@ -163,10 +164,36 @@ function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
 			f:separator { fill_horizontal = 1 },
 
 			f:row {
+				f:spacer { width = label_width },
+				f:checkbox {
+					title = "Copy the camera's MakerNote from the original file",
+					value = bind 'tohdr_makerNote',
+				},
+			},
+			f:row {
+				f:spacer { width = label_width },
+				-- Two caveats, both measured, and neither guessable from the
+				-- checkbox. The engine one is the practical trap: Engine A rebuilds
+				-- its metadata through ImageIO's property model, which has a key for
+				-- Apple's MakerNote and none for anyone else's, so a Sony block
+				-- reaches the output only on the portable engines. `tohdr` says so
+				-- when it happens, and that notice now reaches the dialog.
+				f:static_text {
+					title = "Lens, shutter count, creative style. Needs a Portable engine --\n"
+						.. "the Apple engine writes only Apple's. Describes the capture,\n"
+						.. "not your edit, so as-shot white balance and style stay as shot.",
+					height_in_lines = 3,
+					enabled = bind 'tohdr_makerNote',
+				},
+			},
+
+			f:separator { fill_horizontal = 1 },
+
+			f:row {
 				f:static_text {
 					title = "tohdr path:",
 					alignment = "right",
-					width = labelWidth,
+					width = label_width,
 				},
 				f:edit_field {
 					value = bind 'tohdr_binaryPath',
@@ -183,19 +210,21 @@ function TohdrExportDialog.sectionsForTopOfDialog(f, propertyTable)
 							allowsMultipleSelection = false,
 						}
 						if path and path[1] then
-							propertyTable.tohdr_binaryPath = path[1]
+							property_table.tohdr_binaryPath = path[1]
 						end
 					end,
 				},
 			},
 			f:row {
-				f:spacer { width = labelWidth },
+				f:spacer { width = label_width },
 				f:static_text {
-					title = "Leave blank to auto-detect (bundled binary, then PATH).",
+					-- Not "then PATH": there is no PATH search and cannot be one --
+					-- Lightroom's sandbox has no os.getenv. See TohdrCli.lua.
+					title = "Leave blank to use the binary bundled beside the plugin.",
 				},
 			},
 		},
 	}
 end
 
-return TohdrExportDialog
+return M
