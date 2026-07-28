@@ -75,6 +75,8 @@ jobs:
       # deliberately does not carry it.
       - name: verify the bundle
         run: |
+          # Preinstalled, unused, and untrusted, so brew warns on every install.
+          brew untap aws/tap || true
           brew install --quiet lua
           bin=dist/tohdr.lrplugin/tohdr
           test -x "$bin"

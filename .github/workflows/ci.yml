@@ -96,7 +96,10 @@ jobs:
       # For the plugin's unit tests; the devshell deliberately does not carry it.
       - name: lua
         shell: bash
-        run: brew install --quiet lua
+        run: |
+          # Preinstalled, unused, and untrusted, so brew warns on every install.
+          brew untap aws/tap || true
+          brew install --quiet lua
 
       - name: lua plugin tests
         run: lua lightroom/tests/test_TohdrCli.lua
