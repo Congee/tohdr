@@ -46,13 +46,17 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      # Plug-in Manager shows Info.lua's version, so the tag must match it.
+      # Plug-in Manager shows Info.lua's four-part version, so the tag must match
+      # it. The fourth part is an install stamp, 0 in git, so the tag carries three.
       - name: version
         id: version
         run: |
           info=lightroom/tohdr.lrplugin/Info.lua
-          ver=$(sed -n 's/.*major = \([0-9]*\), minor = \([0-9]*\), revision = \([0-9]*\).*/\1.\2.\3/p' "$info")
+          pat='.*major = \([0-9]*\), minor = \([0-9]*\), revision = \([0-9]*\), build = \([0-9]*\).*'
+          ver=$(sed -n "s/$pat/\1.\2.\3/p" "$info")
+          build=$(sed -n "s/$pat/\4/p" "$info")
           [ -n "$ver" ] || { echo "no VERSION in $info" >&2; exit 1; }
+          [ "$build" = 0 ] || { echo "$info has build=$build; a stamp must not be committed" >&2; exit 1; }
           if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "$ver" ]; then
             echo "tag ${GITHUB_REF_NAME} != $ver from $info; bump revision or retag" >&2
             exit 1
